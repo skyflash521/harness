@@ -44,19 +44,5 @@
     "excludedCommands": [
       "node \"*codex-companion.mjs\"*"
     ]
-  },
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/plugins/flow/hooks/guard-git-write.py\"",
-            "shell": "bash"
-          }
-        ]
-      }
-    ]
   }
 }
