@@ -7,13 +7,17 @@ on:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    strategy:
+      # 要求する最低バージョンと最新の両方で走らせる。最低側は README が宣言する下限で、
+      # ここで走らせなければ下限で壊れる変更を検出できない。
+      matrix:
+        python-version: ["3.9", "3.x"]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-          cache: pip
+          python-version: ${{ matrix.python-version }}
 
       - name: Install
         run: pip install ruff rumdl
@@ -41,12 +45,15 @@ jobs:
 
   selftest:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.x"]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: selftests
         run: python3 scripts/run_selftests.py
@@ -55,6 +62,9 @@ jobs:
     runs-on: ubuntu-latest
     # 手動起動では比較範囲を決める sha が渡らないため、この検査は走らせない。
     if: github.event_name != 'workflow_dispatch'
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.x"]
     steps:
       # コミット単位の検査は各コミットの親を要求する。浅い checkout では親が存在しない。
       - uses: actions/checkout@v4
@@ -63,7 +73,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: version stamping
         env:
