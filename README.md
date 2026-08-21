@@ -99,6 +99,7 @@ pip install ruff rumdl
 **Python は 3.9 以上**を要求する。スクリプトが型注釈で組み込みジェネリクス(`list[str]` 等)を
 使うため。
 
-`rumdl` が外す規則とその理由は [.rumdl.toml](.rumdl.toml) に置く。
+検査器が採用する規則・外す規則とその理由は [.ruff.toml](.ruff.toml) と
+[.rumdl.toml](.rumdl.toml) が持つ。
 
 通す検査の一覧と合格条件は[検証手順](docs/conventions/verification.md)が定める。
