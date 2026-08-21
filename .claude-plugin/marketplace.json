@@ -1,0 +1,18 @@
+{
+  "name": "harness",
+  "owner": {
+    "name": "skyflash"
+  },
+  "plugins": [
+    {
+      "name": "guard",
+      "source": "./plugins/guard",
+      "description": "言語非依存の安全装置。rm の拒否とごみ箱誘導・sed インプレース監視・日時取得監視・許可プロンプト通知・ごみ箱スクリプトの自動承認"
+    },
+    {
+      "name": "flow",
+      "source": "./plugins/flow",
+      "description": "開発ワークフロー。スキル・エージェント・コミットゲート・watchdog 自動承認・リポジトリ横断の共通規約。導入契約を満たすリポジトリで有効化する"
+    }
+  ]
+}

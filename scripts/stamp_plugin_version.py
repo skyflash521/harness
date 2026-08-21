@@ -42,6 +42,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLUGINS_DIR = "plugins"
+HOOKS_DIR = ".githooks"
 VERSION_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 STAMP_COMMAND = "python3 scripts/stamp_plugin_version.py"
 
@@ -164,7 +165,27 @@ def is_increased(current, baseline):
     return current is not None and current > baseline
 
 
+def require_hooks_installed():
+    """core.hooksPath が向いていなければ、設定コマンドを案内して False を返す。
+
+    刻印はコミットの直前に行う。この時点で hooksPath が未設定だと、刻印漏れの検査もコミット
+    メッセージの検査も無言で素通りする。設定漏れは検出できるのでここで止める。
+    """
+    configured = run_git("config", "core.hooksPath", check=False).stdout.strip()
+    if configured == HOOKS_DIR:
+        return True
+    state = f"現在: {configured}" if configured else "未設定"
+    print(
+        f"エラー: core.hooksPath が {HOOKS_DIR} を指していない({state})。"
+        f"このままコミットするとゲートが働かない。\n"
+        f"  git config core.hooksPath {HOOKS_DIR}"
+    )
+    return False
+
+
 def cmd_stamp():
+    if not require_hooks_installed():
+        return 1
     head = has_head()
     plugins = touched_plugins(staged_paths(head))
     if not plugins:
@@ -246,7 +267,7 @@ def cmd_check(range_spec):
     if violations:
         for rev, name in violations:
             print(f"刻印違反: コミット {rev[:12]} のプラグイン {name} で version の3数値が増加していない")
-        print(f"回復コマンドは {STAMP_COMMAND} --bump プラグイン名(経路別の手順は CLAUDE.md)")
+        print(f"回復は {STAMP_COMMAND} --bump プラグイン名 で version を刻み直す")
         return 1
     print(f"刻印検査 OK({checked}コミット。マージコミットは対象外)")
     return 0

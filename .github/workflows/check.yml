@@ -1,0 +1,87 @@
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install ruff rumdl
+
+      - name: ruff
+        run: ruff check
+
+      - name: rumdl
+        run: rumdl check
+
+      - name: check section references
+        run: python3 scripts/check_section_references.py
+
+      - name: check adoption
+        run: python3 plugins/flow/contract/check_adoption.py .
+
+  lychee:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lycheeverse/lychee-action@v2
+        with:
+          args: --config lychee.toml .
+          lycheeVersion: v0.24.2
+
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: selftests
+        run: python3 scripts/run_selftests.py
+
+  stamp:
+    runs-on: ubuntu-latest
+    # 手動起動では比較範囲を決める sha が渡らないため、この検査は走らせない。
+    if: github.event_name != 'workflow_dispatch'
+    steps:
+      # コミット単位の検査は各コミットの親を要求する。浅い checkout では親が存在しない。
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: version stamping
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          set -eu
+          if [ "$EVENT" = pull_request ]; then
+            range="$BASE..$HEAD"
+          elif [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
+            # 新規 ref への初回 push。before が全ゼロで範囲比較に使えない。
+            range="$AFTER"
+          else
+            range="$BEFORE..$AFTER"
+          fi
+          python3 scripts/stamp_plugin_version.py --check "$range"
