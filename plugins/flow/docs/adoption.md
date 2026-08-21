@@ -27,8 +27,10 @@ guard プラグインはこの契約を課さない(有効化だけを各リポ�
 
 ### 3. 有効化
 
-`enabledPlugins` のキー `flow@harness` を真にし、`extraKnownMarketplaces` に marketplace
-`harness` の所在を書く。有効化だけでは、所在を持たない環境で解決できない参照になる。
+`enabledPlugins` のキー `flow@harness` を真にする。
+
+marketplace の登録先はリポジトリではなくマシン側の状態なので、この条項では扱わない。登録は
+[導入手順](#導入手順)で行い、済んでいなければプラグインが読み込まれず flow のスキルも現れない。
 
 ### 4. permissions と sandbox
 

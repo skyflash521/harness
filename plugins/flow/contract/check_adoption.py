@@ -9,12 +9,12 @@ flow のスキルは実行開始時にこれを起動し、欠けた条項があ
 
     1. 検証手順書が存在すること
     2. スクラッチ置き場が除外設定に入っていること
-    3. 有効化と marketplace の登録が、共有される設定に入っていること
+    3. 有効化が、共有される設定に入っていること
     4. 必要な permissions・sandbox エントリが設定に登録されていること
 
 条項3で見るのは登録先である。スキルが起動できていれば有効化されてはいるが、それが共有される設定に
 書かれているかは起動から分からない。ユーザースコープや共有しない設定に入っていると、clone した
-環境では有効化が失われ、marketplace の所在を欠いた解決できない参照も残る。
+環境で有効化が失われる。
 
 Usage: python3 <このスクリプトの絶対パス> [対象リポジトリのルート]
        ルートを省いた場合は CLAUDE_PROJECT_DIR、それも無ければカレントディレクトリを使う。
@@ -34,7 +34,6 @@ VERIFICATION_DOC = "docs/conventions/verification.md"
 SETTINGS_FILE = ".claude/settings.json"
 SCRATCH_DIRS = (".scratch", "docs/.scratch")
 PLUGIN_KEY = "flow@harness"
-MARKETPLACE = PLUGIN_KEY.split("@", 1)[1]
 
 
 def load_json(path):
@@ -78,14 +77,16 @@ def tracked(root, relative):
 
 
 def missing_registration(settings):
-    """共有される設定に足りない登録(有効化・marketplace)の説明を並べて返す。"""
+    """共有される設定に有効化が無ければ、その説明を並べて返す。
+
+    marketplace の登録先はマシン側の状態でリポジトリからは読めないので、ここでは扱わない。
+    登録が済んでいなければ flow のスキルが現れず、スキル経由でこの確認が走ることもない
+    (手動で実行すれば走るが、そのときも登録の有無は見ない)。
+    """
     settings = settings or {}
-    missing = []
     if not (settings.get("enabledPlugins") or {}).get(PLUGIN_KEY):
-        missing.append(f"enabledPlugins の {PLUGIN_KEY} が真でない")
-    if MARKETPLACE not in (settings.get("extraKnownMarketplaces") or {}):
-        missing.append(f"extraKnownMarketplaces に {MARKETPLACE} が無い")
-    return missing
+        return [f"enabledPlugins の {PLUGIN_KEY} が真でない"]
+    return []
 
 
 def check(root):
@@ -163,15 +164,12 @@ def _selftest():
             ok = False
             print(f"FAIL {name}: want={want} got={got}")
 
-    both = {"enabledPlugins": {PLUGIN_KEY: True},
-            "extraKnownMarketplaces": {MARKETPLACE: {}}}
     registration_cases = [
-        ("登録あり", both, 0),
-        ("有効化が偽", {**both, "enabledPlugins": {PLUGIN_KEY: False}}, 1),
-        ("有効化が別プラグインのみ", {**both, "enabledPlugins": {"other@harness": True}}, 1),
-        ("marketplace が別名のみ", {**both, "extraKnownMarketplaces": {"other": {}}}, 1),
-        ("どちらも無い", {}, 2),
-        ("None", None, 2),
+        ("有効化あり", {"enabledPlugins": {PLUGIN_KEY: True}}, 0),
+        ("有効化が偽", {"enabledPlugins": {PLUGIN_KEY: False}}, 1),
+        ("別プラグインのみ", {"enabledPlugins": {"other@harness": True}}, 1),
+        ("空の設定", {}, 1),
+        ("None", None, 1),
     ]
     for name, settings, want in registration_cases:
         got = len(missing_registration(settings))

@@ -40,21 +40,13 @@
       "Bash(node C:/*codex-companion.mjs*)"
     ]
   },
-  "sandbox": {
-    "excludedCommands": [
-      "node \"*codex-companion.mjs\"*"
-    ]
-  },
   "enabledPlugins": {
     "guard@harness": true,
     "flow@harness": true
   },
-  "extraKnownMarketplaces": {
-    "harness": {
-      "source": {
-        "source": "github",
-        "repo": "skyflash521/harness"
-      }
-    }
+  "sandbox": {
+    "excludedCommands": [
+      "node \"*codex-companion.mjs\"*"
+    ]
   }
 }
