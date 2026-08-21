@@ -19,6 +19,7 @@ version は「年.月日.時分秒」の3数値。各数値はゼロ埋めしな
                                              検査対象外
     stamp_plugin_version.py --bump NAME      回復用。指定プラグインの plugin.json の version だけを
                                              現在時刻で刻印してステージする
+    stamp_plugin_version.py --selftest       生成・比較・検出の各判定ロジックの自己テスト
 
 明示刻印のプラグインごとの評価順:
 
@@ -294,6 +295,8 @@ def cmd_check(range_spec):
         for rev, name in violations:
             print(f"刻印違反: コミット {rev[:12]} のプラグイン {name} で version の3数値が増加していない")
         print(f"回復は {STAMP_COMMAND} --bump プラグイン名 で version を刻み直す")
+        print("報告された全プラグインを刻み直すこと。一部を残すと、次の検査範囲が回復コミットだけに"
+              "なり、残した未刻印がこの検査を素通りする")
         return 1
     print(f"刻印検査 OK({checked}コミット。マージコミットは対象外)")
     return 0
@@ -309,7 +312,64 @@ def cmd_bump(name):
     return 0
 
 
+def _selftest():
+    ok = True
+    generate_cases = [
+        ("既存なし", datetime(2026, 8, 22, 4, 9, 52), None, (2026, 822, 40952)),
+        ("同一秒", datetime(2026, 8, 22, 4, 9, 52), (2026, 822, 40952), (2026, 822, 40953)),
+        ("時計巻き戻り", datetime(2026, 8, 22, 4, 9, 52), (2026, 823, 10000), (2026, 823, 10001)),
+        ("既存が小さい", datetime(2026, 8, 22, 4, 9, 52), (2026, 821, 191537), (2026, 822, 40952)),
+        ("先頭ゼロなし", datetime(2026, 1, 2, 3, 4, 5), None, (2026, 102, 30405)),
+    ]
+    for name, now, existing, want in generate_cases:
+        got = generate_version(now, existing)
+        if got != want:
+            ok = False
+            print(f"FAIL generate_version {name}: want={want} got={got}")
+        if parse_version(format_version(got)) != got:
+            ok = False
+            print(f"FAIL generate_version {name}: {format_version(got)} が有効な version でない")
+
+    increased_cases = [
+        ("基準なし・値あり", (1, 0, 0), None, True),
+        ("基準なし・値なし", None, None, False),
+        ("増加", (2026, 822, 2), (2026, 822, 1), True),
+        ("同値", (2026, 822, 1), (2026, 822, 1), False),
+        ("減少", (2026, 821, 9), (2026, 822, 1), False),
+        ("値なし", None, (2026, 822, 1), False),
+    ]
+    for name, current, baseline, want in increased_cases:
+        got = is_increased(current, baseline)
+        if got != want:
+            ok = False
+            print(f"FAIL is_increased {name}: want={want} got={got}")
+
+    parse_cases = [("1.2.3", (1, 2, 3)), ("2026.822.40952", (2026, 822, 40952)),
+                   ("01.2.3", None), ("1.2", None), ("1.2.3.4", None), ("", None), (None, None)]
+    for text, want in parse_cases:
+        got = parse_version(text)
+        if got != want:
+            ok = False
+            print(f"FAIL parse_version {text!r}: want={want} got={got}")
+
+    touched_cases = [
+        (["plugins/flow/docs/adoption.md", "scripts/x.py", "plugins/guard/hooks/a.py"], ["flow", "guard"]),
+        (["scripts/x.py", "README.md"], []),
+        (["plugins"], []),
+    ]
+    for paths, want in touched_cases:
+        got = touched_plugins(paths)
+        if got != want:
+            ok = False
+            print(f"FAIL touched_plugins {paths}: want={want} got={got}")
+
+    print("ALL PASS" if ok else "SOME FAILED")
+    return 0 if ok else 1
+
+
 def main(argv):
+    if argv == ["--selftest"]:
+        return _selftest()
     if not argv:
         return cmd_stamp()
     if argv == ["--verify-staged"]:
@@ -318,7 +378,8 @@ def main(argv):
         return cmd_check(argv[1])
     if len(argv) == 2 and argv[0] == "--bump":
         return cmd_bump(argv[1])
-    print("usage: stamp_plugin_version.py [--verify-staged | --check RANGE | --bump NAME]")
+    print("usage: stamp_plugin_version.py "
+          "[--verify-staged | --check RANGE | --bump NAME | --selftest]")
     return 2
 
 
