@@ -60,13 +60,11 @@ jobs:
 
   stamp:
     runs-on: ubuntu-latest
-    # 手動起動では比較範囲を決める sha が渡らないため、この検査は走らせない。
-    if: github.event_name != 'workflow_dispatch'
     strategy:
       matrix:
         python-version: ["3.9", "3.x"]
     steps:
-      # コミット単位の検査は各コミットの親を要求する。浅い checkout では親が存在しない。
+      # 検査は各プラグインの刻印コミットまで履歴をたどる。浅い checkout では届かない。
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -76,15 +74,4 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: version stamping
-        env:
-          BEFORE: ${{ github.event.before }}
-          AFTER: ${{ github.event.after }}
-        run: |
-          set -eu
-          if [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
-            # 新規 ref への初回 push。before が全ゼロで範囲比較に使えない。
-            range="$AFTER"
-          else
-            range="$BEFORE..$AFTER"
-          fi
-          python3 scripts/stamp_plugin_version.py --check "$range"
+        run: python3 scripts/stamp_plugin_version.py --check

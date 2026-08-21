@@ -27,5 +27,5 @@ git 書き込み監視フックの自己テストは追跡下の非ASCIIパス�
 
 `.github/workflows/` のワークフローが、全ブランチへの push でこの検査を走らせる。検査を増減させた
 ときは、この文書とワークフローの両方を合わせる。ワークフローはこれに加えて**バージョン刻印の検査**
-(`python3 scripts/stamp_plugin_version.py --check <範囲>`)を行う。刻印の検査は履歴のコミットを
+(`python3 scripts/stamp_plugin_version.py --check`)を行う。刻印の検査はコミット済みの履歴を
 対象とするので手元の作業ツリーでは意味を持たず、この文書の検査一覧には含めない。

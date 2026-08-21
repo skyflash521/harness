@@ -12,11 +12,8 @@ version は「年.月日.時分秒」の3数値。各数値はゼロ埋めしな
                                              検出し、plugin.json を刻印してステージする
     stamp_plugin_version.py --verify-staged  pre-commit の検査のみ。刻印漏れがあれば実行すべき
                                              刻印コマンドを案内して非0終了(ステージは書き換えない)
-    stamp_plugin_version.py --check RANGE    CI の検査。RANGE は base..head、または単一リビジョン
-                                             (単一なら到達可能な全コミットが対象)。コミット単位・
-                                             version 値基準で検査し、違反をコミットとプラグインの
-                                             組で列挙して非0終了。親が複数のコミット(マージ)は
-                                             検査対象外
+    stamp_plugin_version.py --check          CI の検査。各プラグインについて、最後の刻印より後に
+                                             配下が変わっていれば列挙して非0終了
     stamp_plugin_version.py --bump NAME      回復用。指定プラグインの plugin.json の version だけを
                                              現在時刻で刻印してステージする
     stamp_plugin_version.py --selftest       生成・比較・検出の各判定ロジックの自己テスト
@@ -243,62 +240,60 @@ def cmd_verify_staged():
     return 0
 
 
-def commit_files(rev, parent):
-    if parent:
-        return split_z(run_git("diff", "--name-only", "-z", parent, rev).stdout)
-    return split_z(run_git("ls-tree", "-r", "--name-only", "-z", rev).stdout)
+def head_plugins():
+    return touched_plugins(split_z(run_git("ls-tree", "-r", "--name-only", "-z", "HEAD").stdout))
 
 
-def commit_exists(rev):
-    return run_git("cat-file", "-e", f"{rev}^{{commit}}", check=False).returncode == 0
+def last_stamp_commit(name):
+    """version を実際に増加させた最後のコミット。無ければ None。
 
-
-def resolve_range(range_spec):
-    """比較範囲の起点がクローンに無ければ、終点単独へ落として返す。
-
-    履歴を書き換えて force push すると、push イベントの before は書き換え前の先端を指すが、
-    その commit は書き換え後のリモートから到達不能でクローンにも入らない。そのまま rev-list へ
-    渡すとエラーで落ちるので、新規 ref と同じ扱い(終点から到達可能な全コミット)にする。
-    検査対象はむしろ広がるため、取りこぼしは生じない。
+    plugin.json へ触れただけのコミットを基準にすると、version を据え置いたまま plugin.json を
+    編集する形(説明文の修正、刻印済みコミットの revert 等)で基準が先へ移り、増えていないのに
+    検査が通ってしまう。増加させたコミットだけを基準に採る。
     """
-    if ".." not in range_spec:
-        return range_spec
-    base, head = range_spec.split("..", 1)
-    if not base or commit_exists(base):
-        return range_spec
-    print(f"起点 {base[:12]} がクローンに無い(履歴の書き換え等)。終点から到達可能な全コミットを検査する")
-    return head
+    rel = plugin_json_path(name)
+    for rev in run_git("log", "--format=%H", "--", rel).stdout.split():
+        parent = f"{rev}^"
+        baseline = version_of(f"{parent}:{rel}") if blob_exists(parent, rel) else None
+        if is_increased(version_of(f"{rev}:{rel}"), baseline):
+            return rev
+    return None
 
 
-def cmd_check(range_spec):
-    # 浅いクローンでは親が graft 境界で切られ、境界のコミットがルート扱い(新規プラグイン規則)に
-    # 緩んで未刻印を素通りさせる。検査できないことを赤で知らせる。
+def changed_since(name, rev):
+    """rev より後にプラグイン配下が変わっていれば True。"""
+    return bool(run_git("log", "--format=%H", f"{rev}..HEAD", "--",
+                        f"{PLUGINS_DIR}/{name}").stdout.strip())
+
+
+def cmd_check():
+    """各プラグインについて、最後の刻印より後に配下が変わっていないことを検査する。
+
+    比較の基準を push の範囲に置かない。範囲に置くと、違反が報告された後に一部だけを刻印したり
+    無関係のコミットを push したりするだけで、刻印しなかった分が次の範囲から外れて緑に戻る——
+    直っていないのに検査が通る経路が残る。基準をプラグインごとの最後の刻印に置けば、その経路が
+    無くなり、かつ刻印すれば基準が先端へ移るので落ちた検査は必ず直せる。
+    """
     if run_git("rev-parse", "--is-shallow-repository").stdout.strip() == "true":
-        print("エラー: クローンが浅く、コミット単位の検査ができない。checkout の fetch-depth を 0 にすること")
+        print("エラー: クローンが浅く、刻印の履歴をたどれない。checkout の fetch-depth を 0 にすること")
         return 1
+    names = head_plugins()
     violations = []
-    checked = 0
-    for rev in run_git("rev-list", resolve_range(range_spec)).stdout.split():
-        parents = run_git("rev-list", "--parents", "-n", "1", rev).stdout.split()[1:]
-        if len(parents) >= 2:
-            continue  # マージコミットは比較親が一意でないため対象外
-        checked += 1
-        parent = parents[0] if parents else None
-        for name in touched_plugins(commit_files(rev, parent)):
-            rel = plugin_json_path(name)
-            if not blob_exists(rev, rel):
-                continue  # このコミットでプラグイン自体が削除されている
-            baseline = version_of(f"{parent}:{rel}") if parent else None
-            if not is_increased(version_of(f"{rev}:{rel}"), baseline):
-                violations.append((rev, name))
+    for name in names:
+        if version_of(f"HEAD:{plugin_json_path(name)}") is None:
+            violations.append((name, "有効な3数値 version が無い"))
+            continue
+        stamp = last_stamp_commit(name)
+        if stamp is None:
+            violations.append((name, "version を増加させたコミットが履歴に無い"))
+        elif changed_since(name, stamp):
+            violations.append((name, f"最後の刻印 {stamp[:12]} より後に配下が変わっている"))
     if violations:
-        for rev, name in violations:
-            print(f"刻印違反: コミット {rev[:12]} のプラグイン {name} で version の3数値が増加していない")
-        print(f"回復は {STAMP_COMMAND} --bump プラグイン名 で version を刻み直す")
-        print("報告された全プラグインを刻み直すこと。一部を残すと、次の検査範囲が回復コミットだけに"
-              "なり、残した未刻印がこの検査を素通りする")
+        for name, reason in violations:
+            print(f"刻印違反: プラグイン {name} は{reason}")
+        print(f"{STAMP_COMMAND} --bump プラグイン名 で刻印し、コミットして push し直すこと")
         return 1
-    print(f"刻印検査 OK({checked}コミット。マージコミットは対象外)")
+    print(f"刻印検査 OK(プラグイン{len(names)}件)")
     return 0
 
 
@@ -374,12 +369,12 @@ def main(argv):
         return cmd_stamp()
     if argv == ["--verify-staged"]:
         return cmd_verify_staged()
-    if len(argv) == 2 and argv[0] == "--check":
-        return cmd_check(argv[1])
+    if argv == ["--check"]:
+        return cmd_check()
     if len(argv) == 2 and argv[0] == "--bump":
         return cmd_bump(argv[1])
     print("usage: stamp_plugin_version.py "
-          "[--verify-staged | --check RANGE | --bump NAME | --selftest]")
+          "[--verify-staged | --check | --bump NAME | --selftest]")
     return 2
 
 
