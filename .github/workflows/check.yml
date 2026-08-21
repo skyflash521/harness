@@ -1,9 +1,7 @@
 name: check
 
 on:
-  pull_request:
   push:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -69,16 +67,11 @@ jobs:
 
       - name: version stamping
         env:
-          EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
           BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.event.after }}
         run: |
           set -eu
-          if [ "$EVENT" = pull_request ]; then
-            range="$BASE..$HEAD"
-          elif [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
+          if [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
             # 新規 ref への初回 push。before が全ゼロで範囲比較に使えない。
             range="$AFTER"
           else

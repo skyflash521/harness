@@ -248,10 +248,36 @@ def commit_files(rev, parent):
     return split_z(run_git("ls-tree", "-r", "--name-only", "-z", rev).stdout)
 
 
+def commit_exists(rev):
+    return run_git("cat-file", "-e", f"{rev}^{{commit}}", check=False).returncode == 0
+
+
+def resolve_range(range_spec):
+    """比較範囲の起点がクローンに無ければ、終点単独へ落として返す。
+
+    履歴を書き換えて force push すると、push イベントの before は書き換え前の先端を指すが、
+    その commit は書き換え後のリモートから到達不能でクローンにも入らない。そのまま rev-list へ
+    渡すとエラーで落ちるので、新規 ref と同じ扱い(終点から到達可能な全コミット)にする。
+    検査対象はむしろ広がるため、取りこぼしは生じない。
+    """
+    if ".." not in range_spec:
+        return range_spec
+    base, head = range_spec.split("..", 1)
+    if not base or commit_exists(base):
+        return range_spec
+    print(f"起点 {base[:12]} がクローンに無い(履歴の書き換え等)。終点から到達可能な全コミットを検査する")
+    return head
+
+
 def cmd_check(range_spec):
+    # 浅いクローンでは親が graft 境界で切られ、境界のコミットがルート扱い(新規プラグイン規則)に
+    # 緩んで未刻印を素通りさせる。検査できないことを赤で知らせる。
+    if run_git("rev-parse", "--is-shallow-repository").stdout.strip() == "true":
+        print("エラー: クローンが浅く、コミット単位の検査ができない。checkout の fetch-depth を 0 にすること")
+        return 1
     violations = []
     checked = 0
-    for rev in run_git("rev-list", range_spec).stdout.split():
+    for rev in run_git("rev-list", resolve_range(range_spec)).stdout.split():
         parents = run_git("rev-list", "--parents", "-n", "1", rev).stdout.split()[1:]
         if len(parents) >= 2:
             continue  # マージコミットは比較親が一意でないため対象外
