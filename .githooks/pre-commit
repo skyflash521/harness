@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# 刻印漏れの検査のみを行い、ステージは一切書き換えない(刻印は明示実行が担う)。
+# 有効化: git config core.hooksPath .githooks
+set -eu
+exec python3 scripts/stamp_plugin_version.py --verify-staged

@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""プラグイン版刻印スクリプト。plugin.json の version をコミット時刻から機械生成する。
+
+version は「年.月日.時分秒」の3数値。各数値はゼロ埋めしない整数とする(semver の数値識別子は
+先頭ゼロを許さないため。例: 2026年8月13日 9時4分55秒 なら 2026.813.90455)。単調性の保証:
+生成値が既存 version 以下になる場合(同一秒の連続コミット・時計巻き戻り)は、既存の第3数値に
+1を足した版を使う。既存 version には作業ツリーと HEAD の版のうち大きい方を採る。
+
+呼び出し形:
+
+    stamp_plugin_version.py                  明示刻印(冪等)。ステージに変更を含むプラグインを
+                                             検出し、plugin.json を刻印してステージする
+    stamp_plugin_version.py --verify-staged  pre-commit の検査のみ。刻印漏れがあれば実行すべき
+                                             刻印コマンドを案内して非0終了(ステージは書き換えない)
+    stamp_plugin_version.py --check RANGE    CI の検査。RANGE は base..head、または単一リビジョン
+                                             (単一なら到達可能な全コミットが対象)。コミット単位・
+                                             version 値基準で検査し、違反をコミットとプラグインの
+                                             組で列挙して非0終了。親が複数のコミット(マージ)は
+                                             検査対象外
+    stamp_plugin_version.py --bump NAME      回復用。指定プラグインの plugin.json の version だけを
+                                             現在時刻で刻印してステージする
+
+明示刻印のプラグインごとの評価順:
+
+1. ステージ境界の保護: 刻印対象の plugin.json に未ステージの差分が既にある場合は、書き換え・
+   ステージを行わずエラーで終了する(ステージがその未ステージ差分まで取り込み、意図しない内容が
+   コミットへ向かうため。スキップ判定より先に評価する)。
+2. 冪等スキップ: ステージ済み diff で version が既に HEAD から増加しているプラグインはスキップする。
+3. 刻印してステージする。
+
+HEAD が存在しない(リポジトリ最初のコミット前)、または HEAD に該当 plugin.json が無い
+(新規プラグイン)場合は比較基準なしとして扱う: ステージ済み plugin.json に有効な3数値 version が
+あればスキップ、無ければ現在時刻で刻印する。--verify-staged も同じ条件では「有効な3数値 version が
+ステージに存在すること」の要求に切り替わる。
+"""
+import json
+import re
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PLUGINS_DIR = "plugins"
+VERSION_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+STAMP_COMMAND = "python3 scripts/stamp_plugin_version.py"
+
+
+def run_git(*args, check=True):
+    result = subprocess.run(
+        ["git", *args], cwd=REPO_ROOT,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    if check and result.returncode != 0:
+        print("git コマンドが失敗した: " + " ".join(args))
+        print(result.stderr.strip())
+        raise SystemExit(1)
+    return result
+
+
+def split_z(stdout):
+    return [line for line in stdout.split("\0") if line]
+
+
+def plugin_json_path(name):
+    return f"{PLUGINS_DIR}/{name}/.claude-plugin/plugin.json"
+
+
+def parse_version(text):
+    """有効な3数値 version なら (a, b, c) を、無効なら None を返す。"""
+    if not isinstance(text, str):
+        return None
+    match = VERSION_RE.match(text)
+    return tuple(int(group) for group in match.groups()) if match else None
+
+
+def format_version(version):
+    return f"{version[0]}.{version[1]}.{version[2]}"
+
+
+def blob_exists(rev, path):
+    return run_git("cat-file", "-e", f"{rev}:{path}", check=False).returncode == 0
+
+
+def version_of(spec):
+    """git の rev:path 指定で plugin.json を読み version タプルを返す。読めなければ None。"""
+    result = run_git("show", spec, check=False)
+    if result.returncode != 0:
+        return None
+    try:
+        return parse_version(json.loads(result.stdout).get("version"))
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
+
+def has_head():
+    return run_git("rev-parse", "--verify", "-q", "HEAD", check=False).returncode == 0
+
+
+def staged_paths(head):
+    if head:
+        return split_z(run_git("diff", "--cached", "--name-only", "-z").stdout)
+    # 最初のコミット前は index の全内容がステージ分にあたる
+    return split_z(run_git("ls-files", "--cached", "-z").stdout)
+
+
+def touched_plugins(paths):
+    names = set()
+    for path in paths:
+        parts = path.split("/")
+        if len(parts) >= 2 and parts[0] == PLUGINS_DIR:
+            names.add(parts[1])
+    return sorted(names)
+
+
+def generate_version(now, existing):
+    candidate = (
+        now.year,
+        now.month * 100 + now.day,
+        now.hour * 10000 + now.minute * 100 + now.second,
+    )
+    if existing is not None and candidate <= existing:
+        return (existing[0], existing[1], existing[2] + 1)
+    return candidate
+
+
+def worktree_version(name):
+    path = REPO_ROOT / plugin_json_path(name)
+    try:
+        return parse_version(json.loads(path.read_text(encoding="utf-8")).get("version"))
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return None
+
+
+def stamp_and_stage(name, now, head):
+    """plugin.json の version を刻印してステージし、刻んだ版を返す。
+
+    単調性の基準には作業ツリーと HEAD の版のうち大きい方を使う。作業ツリー版だけを基準にすると、
+    version が HEAD より低い値へ手で書き換えられている状態で時計が HEAD の刻印時刻より前を指す
+    場合に、刻んだ版が HEAD 以下のままになり、検査が拒否し続けて刻印し直しても収束しない。
+    """
+    rel = plugin_json_path(name)
+    path = REPO_ROOT / rel
+    data = json.loads(path.read_text(encoding="utf-8"))
+    baselines = [v for v in (worktree_version(name), head_baseline(name, head)) if v is not None]
+    version = generate_version(now, max(baselines) if baselines else None)
+    data["version"] = format_version(version)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    run_git("add", "--", rel)
+    return version
+
+
+def head_baseline(name, head):
+    """HEAD 側の比較基準 version。HEAD 無し・plugin.json 無し・無効 version は None(基準なし)。"""
+    if not head:
+        return None
+    return version_of(f"HEAD:{plugin_json_path(name)}")
+
+
+def is_increased(current, baseline):
+    """比較基準が無ければ有効な version の存在を、あれば増加を要求する。"""
+    if baseline is None:
+        return current is not None
+    return current is not None and current > baseline
+
+
+def cmd_stamp():
+    head = has_head()
+    plugins = touched_plugins(staged_paths(head))
+    if not plugins:
+        print("ステージにプラグイン配下の変更は無い(刻印対象なし)")
+        return 0
+    now = datetime.now()
+    for name in plugins:
+        rel = plugin_json_path(name)
+        if not (REPO_ROOT / rel).is_file():
+            if head and blob_exists("HEAD", rel):
+                print(f"{name}: plugin.json が削除されている(プラグイン削除)ためスキップ")
+                continue
+            print(f"エラー: {rel} が存在しない。プラグインには plugin.json が必要")
+            return 1
+        # (1) ステージ境界の保護(スキップ判定より先に評価する)
+        if run_git("diff", "--name-only", "--", rel).stdout.strip():
+            print(
+                f"エラー: {rel} に未ステージの差分がある。刻印はステージを書き換えるため、"
+                "その差分をステージするか退避してから刻印し直すこと"
+            )
+            return 1
+        # (2) 冪等スキップ
+        baseline = head_baseline(name, head)
+        staged = version_of(f":{rel}")
+        if is_increased(staged, baseline):
+            print(f"{name}: 刻印済み({format_version(staged)})のためスキップ")
+            continue
+        # (3) 刻印してステージ
+        version = stamp_and_stage(name, now, head)
+        print(f"{name}: version {format_version(version)} を刻印してステージした")
+    return 0
+
+
+def cmd_verify_staged():
+    head = has_head()
+    violations = []
+    for name in touched_plugins(staged_paths(head)):
+        rel = plugin_json_path(name)
+        if not run_git("ls-files", "--cached", "--", rel).stdout.strip():
+            if head and blob_exists("HEAD", rel):
+                continue  # プラグイン削除はコミットしてよい
+            violations.append(name)
+            continue
+        if not is_increased(version_of(f":{rel}"), head_baseline(name, head)):
+            violations.append(name)
+    if violations:
+        for name in violations:
+            print(
+                f"刻印漏れ: プラグイン {name} の変更がステージされているのに、"
+                f"{plugin_json_path(name)} の version 増加がステージに含まれていない"
+            )
+        print(f"明示刻印を実行してからコミットし直すこと: {STAMP_COMMAND}")
+        return 1
+    return 0
+
+
+def commit_files(rev, parent):
+    if parent:
+        return split_z(run_git("diff", "--name-only", "-z", parent, rev).stdout)
+    return split_z(run_git("ls-tree", "-r", "--name-only", "-z", rev).stdout)
+
+
+def cmd_check(range_spec):
+    violations = []
+    checked = 0
+    for rev in run_git("rev-list", range_spec).stdout.split():
+        parents = run_git("rev-list", "--parents", "-n", "1", rev).stdout.split()[1:]
+        if len(parents) >= 2:
+            continue  # マージコミットは比較親が一意でないため対象外
+        checked += 1
+        parent = parents[0] if parents else None
+        for name in touched_plugins(commit_files(rev, parent)):
+            rel = plugin_json_path(name)
+            if not blob_exists(rev, rel):
+                continue  # このコミットでプラグイン自体が削除されている
+            baseline = version_of(f"{parent}:{rel}") if parent else None
+            if not is_increased(version_of(f"{rev}:{rel}"), baseline):
+                violations.append((rev, name))
+    if violations:
+        for rev, name in violations:
+            print(f"刻印違反: コミット {rev[:12]} のプラグイン {name} で version の3数値が増加していない")
+        print(f"回復コマンドは {STAMP_COMMAND} --bump プラグイン名(経路別の手順は CLAUDE.md)")
+        return 1
+    print(f"刻印検査 OK({checked}コミット。マージコミットは対象外)")
+    return 0
+
+
+def cmd_bump(name):
+    rel = plugin_json_path(name)
+    if not (REPO_ROOT / rel).is_file():
+        print(f"エラー: {rel} が存在しない")
+        return 1
+    version = stamp_and_stage(name, datetime.now(), has_head())
+    print(f"{name}: version {format_version(version)} を刻印してステージした")
+    return 0
+
+
+def main(argv):
+    if not argv:
+        return cmd_stamp()
+    if argv == ["--verify-staged"]:
+        return cmd_verify_staged()
+    if len(argv) == 2 and argv[0] == "--check":
+        return cmd_check(argv[1])
+    if len(argv) == 2 and argv[0] == "--bump":
+        return cmd_bump(argv[1])
+    print("usage: stamp_plugin_version.py [--verify-staged | --check RANGE | --bump NAME]")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
