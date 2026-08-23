@@ -1,12 +1,15 @@
 ---
 name: fable-review-loop
-description: flow:fable-reviewer(Fableモデル、read-only)にレビューさせ、各指摘を実コードで検証して修正/反証/受容/保留に仕分け、再レビューを反復する。未解決ゼロ・千日手・要ユーザー判断のいずれかで終了。Fableモデルでコードレビューを回したいときに使う。
+description: flow:fable-reviewer(Fableモデル、read-only)にレビューさせ、各指摘を実コードで検証して修正/反証/受容/保留に仕分け、再レビューを反復する。未解決ゼロ・千日手・要ユーザー判断のいずれかで終了。その時点で有効なレビュアーの指定がFableのときだけ使う。有効な指定が無い場合の既定はCodex版のループで、Claudeの判断でこちらへ切り替えない。
 ---
 
 # Fable 反復レビュー・ループ
 
 `flow:fable-reviewer` サブエージェント(read-only, Fableモデル)にレビューさせ、Claude が各指摘を
 実コードで検証して修正/反証/受容/保留に仕分け、再レビューさせる反復ループ。日本語で報告する。
+
+このループを使ってよい条件(ユーザーの指定と、指定が無いときの既定)は
+[flow:review-loop-judgement のレビュアーの選定](../review-loop-judgement/SKILL.md#レビュアーの選定どのループを使うか) が正本。
 
 ## 導入契約の確認(最初に行う)
 

@@ -1,6 +1,6 @@
 ---
 name: codex-review-loop
-description: codex:rescueにレビューさせ、各指摘を実コードで検証して修正/反証/受容/保留に仕分け、再レビューを反復する。未解決ゼロ・千日手・要ユーザー判断のいずれかで終了。コードレビューを回したいときに使う。
+description: codex:rescueにレビューさせ、各指摘を実コードで検証して修正/反証/受容/保留に仕分け、再レビューを反復する。未解決ゼロ・千日手・要ユーザー判断のいずれかで終了。コードレビューを回したいときに使う。その時点で有効なレビュアーの指定が無いときの既定のレビューループで、有効な指定が無ければ他のループではなくこれを使う。
 ---
 
 # Codex 反復レビュー・ループ
@@ -14,6 +14,8 @@ codex:rescue(read-only)にレビューさせ、Claude が各指摘を実コー�
 - **Codex は編集しない**(修正は Claude が行う)。Codex 出力はそのまま信じず裏取りする
 
 レビュアーの正体に依らない判断ロジックは [flow:review-loop-judgement](../review-loop-judgement/SKILL.md) スキルを見よ。
+どのループを使うかの選定(既定と、ユーザーの指定の扱い)は
+[flow:review-loop-judgement のレビュアーの選定](../review-loop-judgement/SKILL.md#レビュアーの選定どのループを使うか) が正本。
 codex を起動してから結果を受け取るまでのハング防止契約は [flow:codex-watchdog](../codex-watchdog/SKILL.md) スキルを見よ。
 このスキルはその上に、レビューループ固有の合否解釈・再試行上限・終了判定を定める。
 
