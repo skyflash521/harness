@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: auto-approve the codex-watchdog watchdog.sh launch.
+"""PreToolUse hook: auto-approve the codex-watchdog skill's bundled script launches.
 
-watchdog.sh は同梱の読み取り専用スクリプト(codex のジョブ状態ディレクトリに対する find/stat/
-grep/sleep)で、codex:codex-rescue を起動するどのスキルからも共有される。Claude Code は
-`bash <script>` 形のコマンドを許可パイプライン内で上書き不能な "ask" へ降格させることがあり、
-無害な読み取りでも呼び出し側にプロンプトが出る。PreToolUse の allow 判定は behavior:allow として
-直接返るのでこれを上書きできる。よってこのフックは、単一で連結の無い watchdog 起動だけを承認し、
-それ以外は何も出力せず通常の許可フローへ渡す(deny はしない)。
+codex-watchdog は同梱の読み取り専用スクリプトを2つ持つ。watchdog.sh(codex のジョブ状態
+ディレクトリに対する find/stat/grep/sleep)と wait_until.py(指定時刻まで待つだけ)で、
+codex:codex-rescue を起動するどのスキルからも共有される。どちらも許可リストに載る形ではなく、
+無害な読み取りでも呼び出し側にプロンプトが出る(Claude Code は `bash <script>` 形のコマンドを
+許可パイプライン内で上書き不能な "ask" へ降格させることがある)。PreToolUse の allow 判定は
+behavior:allow として直接返るのでこれを上書きできる。よってこのフックは、単一で連結の無い
+この2つの起動だけを承認し、それ以外は何も出力せず通常の許可フローへ渡す(deny はしない)。
 
 対象は第1引数で受け取ったプラグインルートから組み立てた絶対パスで特定する。パスの照合は、双方の
 区切りをスラッシュへ統一したうえで `os.path.normcase` にかけて比較する。Windows はパス区切りと
@@ -34,12 +35,19 @@ def _norm(path):
     return os.path.normcase(path.replace("\\", "/"))
 
 
-def watchdog_path(plugin_root):
-    return pathlib.PurePath(plugin_root, "skills", "codex-watchdog", "watchdog.sh").as_posix()
+# 承認する「インタプリタ, 同梱スクリプトの位置」の組。これ以外は承認しない。
+APPROVED_LAUNCHES = (
+    ("bash", ("skills", "codex-watchdog", "watchdog.sh")),
+    ("python3", ("skills", "codex-watchdog", "wait_until.py")),
+)
 
 
-def is_watchdog(cmd, plugin_root):
-    """True only for a single, un-chained `bash <同梱watchdog.sh> [args...]` command."""
+def script_path(plugin_root, parts):
+    return pathlib.PurePath(plugin_root, *parts).as_posix()
+
+
+def is_approved_launch(cmd, plugin_root):
+    """True only for a single, un-chained `<インタプリタ> <同梱スクリプト> [args...]` command."""
     if not isinstance(cmd, str) or not cmd.strip() or not plugin_root:
         return False
     # Any chaining/expansion/redirect could append a second command -> never approve.
@@ -49,10 +57,11 @@ def is_watchdog(cmd, plugin_root):
         tokens = shlex.split(cmd)
     except ValueError:
         return False
-    return (
-        len(tokens) >= 2
-        and tokens[0] == "bash"
-        and _norm(tokens[1]) == _norm(watchdog_path(plugin_root))
+    if len(tokens) < 2:
+        return False
+    return any(
+        tokens[0] == interpreter and _norm(tokens[1]) == _norm(script_path(plugin_root, parts))
+        for interpreter, parts in APPROVED_LAUNCHES
     )
 
 
@@ -67,7 +76,7 @@ def main():
     if data.get("tool_name") != "Bash":
         sys.exit(0)
     cmd = (data.get("tool_input") or {}).get("command")
-    if is_watchdog(cmd, plugin_root):
+    if is_approved_launch(cmd, plugin_root):
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "allow",
@@ -81,6 +90,7 @@ def _selftest():
     # スラッシュ区切り(bash ではバックスラッシュがエスケープ文字として食われる)。
     win_root = root.replace("/", chr(92))
     launch = "bash " + root + "/skills/codex-watchdog/watchdog.sh"
+    wait = "python3 " + root + "/skills/codex-watchdog/wait_until.py"
     spaced = "C:/Program Files/user/.claude/plugins/cache/harness/flow/1.0.0"
     cases = [
         (launch + ' 420 1200 "" 240 vprv0test9m2', root, True),
@@ -96,6 +106,12 @@ def _selftest():
         # 呼び出し元が発する形(空白入りのプラグインルートを引用符で囲む)
         ('bash "' + spaced + '/skills/codex-watchdog/watchdog.sh" 420 1200 "" 240 tok',
          spaced, True),
+        (wait + ' "2026-08-29 01:47"', root, True),
+        (wait + " --selftest", root, True),
+        # インタプリタとスクリプトの組が入れ替わった形は承認しない
+        (wait.replace("python3 ", "bash "), root, False),
+        (launch.replace("bash ", "python3 "), root, False),
+        (wait + " ; rm -rf x", root, False),
         (launch + " ; rm -rf x", root, False),
         (launch + " && echo done", root, False),
         (launch + " | grep x", root, False),
@@ -111,7 +127,7 @@ def _selftest():
     ]
     ok = True
     for cmd, plugin_root, want in cases:
-        got = is_watchdog(cmd, plugin_root)
+        got = is_approved_launch(cmd, plugin_root)
         if got != want:
             ok = False
             print(f"FAIL want={want} got={got} :: {cmd!r} root={plugin_root!r}")
