@@ -92,7 +92,8 @@ SKILL_DOC = "plugins/flow/skills/sample/SKILL.md"     # 指示層のスキル文
 CONVENTION_DOC = "plugins/flow/docs/sample.md"        # 指示層の規約文書
 AGENT_DOC = "plugins/flow/agents/sample.md"           # 指示層のエージェント定義
 HOOK_FILE = "plugins/flow/hooks/sample.py"            # パスを扱うフック
-TEST_DOC = "plugins/flow/tests/fixtures/sample.md"    # テストデータ
+TEST_DOC = "plugins/flow/tests/fixtures/sample.md"    # テストデータの文書
+TEST_CODE = "plugins/flow/tests/fixtures/sample.py"   # テストデータのコード
 REPO = "C:/Users/user/repo"                           # 消費リポジトリの絶対パス
 WIN_DOC = "C:\\Users\\user\\repo\\docs\\module.md"    # 区切りがバックスラッシュの絶対パス
 # 許可リストに無いユーザー名。P5 が deny になる形を表す。
@@ -140,6 +141,11 @@ CASES = [
     (*_write(DOC, "詳細は .scratch/a.md、.scratch/b.md を参照。\n"), "", "deny"),
     (*_write(DOC, "scripts/run_selftests.py を実行する。\n"), "", "allow"),
     (*_write(CODE_FILE, "# 段階導入の順序を決める\n"), "", "allow"),
+    # 指示層・テスト層のコードは、コードでも作業過程の相対表現の免除が続く。
+    (*_write(HOOK_FILE, "# 改修後の挙動を返す\n"), "", "allow"),
+    (*_write(TEST_CODE, "# 改修後の挙動を返す\n"), "", "allow"),
+    # 「before this call」のように this の後が change・fix でない形は許可のままとする。
+    (*_write(DOC, "before this call の戻り値を使う。\n"), "", "allow"),
     # P1・P5 の適用は Markdown に限らない(拡張子による免除は P2・P3 だけ)。
     (*_write(CODE_FILE, HOME_LINE), "", "deny"),
     (*_write(CODE_FILE, "# 詳細は .scratch/plan.md を見る\n"), "", "deny"),
@@ -208,6 +214,7 @@ CASES = [
     (*_write(TEST_DOC, "改修後 C:/Users/alice/x .scratch/a.md\n"), "", "allow"),
     (*_write("TUNING.md", "段階導入の手順。\n"), "", "allow"),
     (*_write("CHANGELOG.md", "段階導入の記録。\n"), "", "allow"),
+    (*_write("CHANGELOG.md", "改修後の挙動。\n"), "", "allow"),
     # パスの正規化(バックスラッシュ→スラッシュ・小文字化)を経て初めて成立する判定。実際の
     # ツール入力は Windows の絶対パスで届くので、正規化が抜けると免除が総崩れになる。
     (*_write(WIN_DOC, "改修後の値。\n"), "", "deny"),
@@ -223,6 +230,22 @@ CASES = [
     ("Write", {"file_path": DOC}, "", "allow"),
     ("Edit", {"file_path": DOC}, "本文\n", "allow"),
     ("Write", {"file_path": "", "content": "改修後\n"}, "", "allow"),
+]
+
+# impl pending: コードのコメント・docstring に書かれた作業時点の相対表現を deny する判定と、
+# 「今回の改修」「今回の実装」「(before|after) this (change|fix)」の検出
+PENDING_CASES = [
+    (*_write(CODE_FILE, "# 改修後の値を返す\n"), "", "deny"),
+    (*_write(CODE_FILE, '"""今回の変更で足した関数。"""\n'), "", "deny"),
+    (*_edit(CODE_FILE, "x = 1", "x = 2  # 改修前は 1 だった"), "x = 1\n", "deny"),
+    (*_write("scripts/tool.sh", "# 今回の対応で足した分岐\n"), "", "deny"),
+    (*_write("config/app.yml", "# 改修後の既定値\n"), "", "deny"),
+    (*_write(DOC, "今回の改修で入れた分岐。\n"), "", "deny"),
+    (*_write(DOC, "今回の実装の範囲。\n"), "", "deny"),
+    (*_write(CODE_FILE, "# 今回の実装で足した分岐\n"), "", "deny"),
+    (*_write(DOC, "Before this change the flag was unset.\n"), "", "deny"),
+    (*_write(DOC, "after this fix the branch is gone.\n"), "", "deny"),
+    (*_write(CODE_FILE, "# before this change we retried twice\n"), "", "deny"),
 ]
 
 # (tool_name, 読み取りで出た例外, 期待する検査の続け方)。
@@ -390,6 +413,10 @@ def selftest():
         actual = "deny" if evaluate(tool_name, tool_input, before) else "allow"
         if actual != expected:
             failures.append(f"expected={expected} actual={actual}: {tool_name} {tool_input!r}")
+    for tool_name, tool_input, before, expected in PENDING_CASES:
+        actual = "deny" if evaluate(tool_name, tool_input, before) else "allow"
+        if actual == expected:
+            failures.append(f"予期せぬ成功(impl pending の印を外せ): {tool_name} {tool_input!r}")
     for tool_name, error, expected in READ_FAILURE_CASES:
         actual = read_failure_action(tool_name, error)
         if actual != expected:
@@ -431,7 +458,8 @@ def selftest():
             print(f"FAIL {line}")
         raise SystemExit(1)
     total = len(CASES) + len(READ_FAILURE_CASES) + len(MESSAGE_CASES)
-    print(f"ALL PASS ({total} cases + 列挙順・候補行・窓幅・代替文面の 4 検査)")
+    print(f"ALL PASS ({total} cases + 期待失敗 {len(PENDING_CASES)} 件 + "
+          "列挙順・候補行・窓幅・代替文面の 4 検査)")
 
 
 def main():
