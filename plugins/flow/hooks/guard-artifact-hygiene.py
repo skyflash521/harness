@@ -43,6 +43,10 @@ HOME_PATH = re.compile(r"[a-z]:[/\\]users[/\\]([\w-]+(?:\.[\w-]+)*)", re.IGNOREC
 # 規約が推奨する汎用ダミー値と、個人を特定しない標準プロファイル。
 HOME_PLACEHOLDERS = frozenset({"user", "username", "example", "public", "default", "ユーザー名"})
 
+# 基準点がこの変更作業そのものにある英語形。this の直後を change・fix に限るので、
+# 「before this call」のような実行時の対象を指す用法とは分かれる。
+RELATIVE_EN = re.compile(r"\b(?:before|after) this (?:change|fix)\b", re.IGNORECASE)
+
 INSTRUCTION_LAYER = re.compile(r"(?:^|/)plugins/[^/]+/(?:skills|agents|docs|hooks)/")
 HOOK_LAYER = re.compile(r"(?:^|/)plugins/[^/]+/hooks/")
 INSTRUCTION_NAMES = ("claude.md", "claude.local.md")
@@ -74,7 +78,9 @@ ATOMS = (
     # 作業過程の名詞と結合した複合形だけを採る。
     *(_word("P2", word, HYGIENE_WORK, REMEDY_RELATIVE) for word in (
         "改修前", "改修後", "今回の変更", "今回の修正", "今回の対応", "今回のレビュー",
-        "今回の指摘", "今回のコミット", "今回の作業")),
+        "今回の指摘", "今回のコミット", "今回の作業", "今回の改修", "今回の実装")),
+    Atom("P2", "この変更を基準にした英語の相対参照", RELATIVE_EN, HYGIENE_WORK,
+         REMEDY_RELATIVE, None),
     *(_word("P3", word, AUTHORING_SCOPE, REMEDY_STATE) for word in (
         "現時点では", "当面", "初期実装では", "段階導入", "先行導入")),
     Atom("P5", "ドライブ文字付きユーザーホームパス", HOME_PATH, HYGIENE_ENV,
@@ -126,6 +132,10 @@ CASES = [
     (*_write(DOC, "今回の指摘に沿って直す。\n"), "", "deny"),
     (*_write(DOC, "今回のコミットに含める。\n"), "", "deny"),
     (*_write(DOC, "今回の作業で足した節。\n"), "", "deny"),
+    (*_write(DOC, "今回の改修で入れた分岐。\n"), "", "deny"),
+    (*_write(DOC, "今回の実装の範囲。\n"), "", "deny"),
+    (*_write(DOC, "Before this change the flag was unset.\n"), "", "deny"),
+    (*_write(DOC, "after this fix the branch is gone.\n"), "", "deny"),
     (*_write(DOC, "現時点では未対応。\n"), "", "deny"),
     (*_write(DOC, "当面はこの形で運用する。\n"), "", "deny"),
     (*_write(DOC, "初期実装では未採用。\n"), "", "deny"),
@@ -141,12 +151,20 @@ CASES = [
     (*_write(DOC, "詳細は .scratch/a.md、.scratch/b.md を参照。\n"), "", "deny"),
     (*_write(DOC, "scripts/run_selftests.py を実行する。\n"), "", "allow"),
     (*_write(CODE_FILE, "# 段階導入の順序を決める\n"), "", "allow"),
+    # コードのコメント・docstring も作業過程の相対表現の対象になる。
+    (*_write(CODE_FILE, "# 改修後の値を返す\n"), "", "deny"),
+    (*_write(CODE_FILE, '"""今回の変更で足した関数。"""\n'), "", "deny"),
+    (*_edit(CODE_FILE, "x = 1", "x = 2  # 改修前は 1 だった"), "x = 1\n", "deny"),
+    (*_write("scripts/tool.sh", "# 今回の対応で足した分岐\n"), "", "deny"),
+    (*_write("config/app.yml", "# 改修後の既定値\n"), "", "deny"),
+    (*_write(CODE_FILE, "# 今回の実装で足した分岐\n"), "", "deny"),
+    (*_write(CODE_FILE, "# before this change we retried twice\n"), "", "deny"),
     # 指示層・テスト層のコードは、コードでも作業過程の相対表現の免除が続く。
     (*_write(HOOK_FILE, "# 改修後の挙動を返す\n"), "", "allow"),
     (*_write(TEST_CODE, "# 改修後の挙動を返す\n"), "", "allow"),
     # 「before this call」のように this の後が change・fix でない形は許可のままとする。
     (*_write(DOC, "before this call の戻り値を使う。\n"), "", "allow"),
-    # P1・P5 の適用は Markdown に限らない(拡張子による免除は P2・P3 だけ)。
+    # P1・P5 の適用は Markdown に限らない(拡張子による免除は P3 だけ)。
     (*_write(CODE_FILE, HOME_LINE), "", "deny"),
     (*_write(CODE_FILE, "# 詳細は .scratch/plan.md を見る\n"), "", "deny"),
     # 複合形の境界。裸の語に一致させると実行時の概念を指す正当用法まで止まる。
@@ -232,22 +250,6 @@ CASES = [
     ("Write", {"file_path": "", "content": "改修後\n"}, "", "allow"),
 ]
 
-# impl pending: コードのコメント・docstring に書かれた作業時点の相対表現を deny する判定と、
-# 「今回の改修」「今回の実装」「(before|after) this (change|fix)」の検出
-PENDING_CASES = [
-    (*_write(CODE_FILE, "# 改修後の値を返す\n"), "", "deny"),
-    (*_write(CODE_FILE, '"""今回の変更で足した関数。"""\n'), "", "deny"),
-    (*_edit(CODE_FILE, "x = 1", "x = 2  # 改修前は 1 だった"), "x = 1\n", "deny"),
-    (*_write("scripts/tool.sh", "# 今回の対応で足した分岐\n"), "", "deny"),
-    (*_write("config/app.yml", "# 改修後の既定値\n"), "", "deny"),
-    (*_write(DOC, "今回の改修で入れた分岐。\n"), "", "deny"),
-    (*_write(DOC, "今回の実装の範囲。\n"), "", "deny"),
-    (*_write(CODE_FILE, "# 今回の実装で足した分岐\n"), "", "deny"),
-    (*_write(DOC, "Before this change the flag was unset.\n"), "", "deny"),
-    (*_write(DOC, "after this fix the branch is gone.\n"), "", "deny"),
-    (*_write(CODE_FILE, "# before this change we retried twice\n"), "", "deny"),
-]
-
 # (tool_name, 読み取りで出た例外, 期待する検査の続け方)。
 READ_FAILURE_CASES = [
     ("Write", FileNotFoundError(), "empty"),
@@ -310,8 +312,12 @@ def applicable_atoms(file_path):
         exempt.update(atom.group for atom in ATOMS)
     if _is_instruction(path, name):
         exempt.update(("P1", "P2", "P3"))
-    if not name.endswith(PROSE_SUFFIXES) or name.startswith(VERSION_LOG_PREFIXES):
+    if name.startswith(VERSION_LOG_PREFIXES):
         exempt.update(("P2", "P3"))
+    # P3 の正本は恒久仕様書の記述範囲を定めるので散文に限る。P2 の正本は成果物全般を対象とし、
+    # コメント・docstring を名指しで含むため、拡張子では免除しない。
+    if not name.endswith(PROSE_SUFFIXES):
+        exempt.add("P3")
     if HOOK_LAYER.search(path) or "/.claude/hooks/" in path:
         exempt.add("P5")
     return tuple(atom for atom in ATOMS if atom.group not in exempt)
@@ -413,10 +419,6 @@ def selftest():
         actual = "deny" if evaluate(tool_name, tool_input, before) else "allow"
         if actual != expected:
             failures.append(f"expected={expected} actual={actual}: {tool_name} {tool_input!r}")
-    for tool_name, tool_input, before, expected in PENDING_CASES:
-        actual = "deny" if evaluate(tool_name, tool_input, before) else "allow"
-        if actual == expected:
-            failures.append(f"予期せぬ成功(impl pending の印を外せ): {tool_name} {tool_input!r}")
     for tool_name, error, expected in READ_FAILURE_CASES:
         actual = read_failure_action(tool_name, error)
         if actual != expected:
@@ -458,14 +460,16 @@ def selftest():
             print(f"FAIL {line}")
         raise SystemExit(1)
     total = len(CASES) + len(READ_FAILURE_CASES) + len(MESSAGE_CASES)
-    print(f"ALL PASS ({total} cases + 期待失敗 {len(PENDING_CASES)} 件 + "
-          "列挙順・候補行・窓幅・代替文面の 4 検査)")
+    print(f"ALL PASS ({total} cases + 列挙順・候補行・窓幅・代替文面の 4 検査)")
 
 
 def main():
     # 既定の標準出力コーデック(日本語 Windows では cp932)には理由文が持つ記号が無く、
     # 出力時の UnicodeEncodeError でフックが無出力のまま落ちる。
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    # 標準入力も同じ理由で固定する。ハーネスが渡す JSON は UTF-8 で、cp932 で読むと日本語の
+    # 原子が化けて一致せず、フックが違反を無言で通す。
+    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     if "--selftest" in sys.argv:
         selftest()
         return
