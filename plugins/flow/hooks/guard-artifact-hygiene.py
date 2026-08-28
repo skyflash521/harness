@@ -467,12 +467,13 @@ def main():
     # 既定の標準出力コーデック(日本語 Windows では cp932)には理由文が持つ記号が無く、
     # 出力時の UnicodeEncodeError でフックが無出力のまま落ちる。
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    # 標準入力も同じ理由で固定する。ハーネスが渡す JSON は UTF-8 で、cp932 で読むと日本語の
-    # 原子が化けて一致せず、フックが違反を無言で通す。
-    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     if "--selftest" in sys.argv:
         selftest()
         return
+    # 標準入力も同じ理由で固定する。ハーネスが渡す JSON は UTF-8 で、cp932 で読むと日本語の
+    # 原子が化けて一致せず、フックが違反を無言で通す。自己テストは標準入力を読まないので、
+    # その分岐より後ろに置く(閉じた標準入力では sys.stdin が None になる)。
+    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     try:
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, EOFError, UnicodeDecodeError):
