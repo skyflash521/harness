@@ -12,7 +12,78 @@ deny する。既存の違反を含むファイルへの無関係な編集や、
 
 Usage: configured as an Edit/Write PreToolUse hook. Run with --selftest.
 """
+import json
+import re
 import sys
+from collections import Counter, namedtuple
+from pathlib import Path
+
+TARGET_TOOLS = ("Edit", "Write")
+# 候補行の抜粋の上限と、抜粋の窓を一致箇所の前後へ広げる文字数。
+EXCERPT_LIMIT = 3
+WINDOW = 40
+
+HYGIENE_WORK = "artifact-hygiene.md §2"
+HYGIENE_ENV = "artifact-hygiene.md §3"
+AUTHORING_SCOPE = "document-authoring.md §2"
+
+REMEDY_SCRATCH = "参照先を恒久的な正本に差し替えるか、内容をこの文書内に自己完結で書く"
+REMEDY_RELATIVE = "作業の時点に依存しない自己完結の記述に書き直す(例: 挙動そのものを述べる)"
+REMEDY_STATE = "到達状態(最終的な規約・挙動)だけを述べる形に書き直す"
+REMEDY_PATH = "リポジトリ相対パスか汎用のダミー値に置き換える"
+
+# 後読みは `.scratch` がパス要素の先頭であることを要求する(`cache.scratch/x.md` には一致しない)。
+# 区切りの直後をファイル名文字に限るので、置き場そのものへの言及(`.scratch/` に置く)は通る。
+SCRATCH_REFERENCE = re.compile(
+    r"(?<![A-Za-z0-9._-])\.scratch[/\\][A-Za-z0-9._-][A-Za-z0-9._/\\-]*"
+)
+# ユーザー名セグメントの捕捉を単語文字・ハイフン・語中のドットに限るので、直後のバッククォート・
+# 閉じ括弧・文末のドットなどの表示区切りが捕捉へ入らず、許可リスト照合が区切り記号で外れない。
+HOME_PATH = re.compile(r"[a-z]:[/\\]users[/\\]([\w-]+(?:\.[\w-]+)*)", re.IGNORECASE)
+# 規約が推奨する汎用ダミー値と、個人を特定しない標準プロファイル。
+HOME_PLACEHOLDERS = frozenset({"user", "username", "example", "public", "default", "ユーザー名"})
+
+INSTRUCTION_LAYER = re.compile(r"(?:^|/)plugins/[^/]+/(?:skills|agents|docs|hooks)/")
+HOOK_LAYER = re.compile(r"(?:^|/)plugins/[^/]+/hooks/")
+INSTRUCTION_NAMES = ("claude.md", "claude.local.md")
+# ホーム直下の .claude ディレクトリと .claude.json。個人設定・自動メモリの置き場で、実ホーム
+# パスを書かないと動かない。消費リポジトリの .claude は home との間にリポジトリのセグメントが
+# 挟まるので一致しない。
+HOME_CLAUDE = re.compile(r"(?:^[a-z]:)?/(?:users|home)/[^/]+/\.claude(?:/|\.json)")
+# バージョン見出し下の記述と、調整手順書の進行状態。どちらも到達状態のみの範囲外。
+VERSION_LOG_PREFIXES = ("changelog", "tuning")
+PROSE_SUFFIXES = (".md", ".markdown")
+
+# group は対象パス判定での免除の単位、keep は一致を違反として数えるかの述語。
+Atom = namedtuple("Atom", "group label pattern source remedy keep")
+
+
+def _outside_placeholder(match):
+    return match.group(1).lower() not in HOME_PLACEHOLDERS
+
+
+def _word(group, word, source, remedy):
+    return Atom(group, word, re.compile(re.escape(word)), source, remedy, None)
+
+
+# この並び順が deny メッセージの列挙順になる。
+ATOMS = (
+    Atom("P1", "スクラッチ配下ファイルへの参照", SCRATCH_REFERENCE, HYGIENE_WORK,
+         REMEDY_SCRATCH, None),
+    # 裸の「今回」は「今回のリクエスト」のような実行時の概念を指す正当用法と区別できないので、
+    # 作業過程の名詞と結合した複合形だけを採る。
+    *(_word("P2", word, HYGIENE_WORK, REMEDY_RELATIVE) for word in (
+        "改修前", "改修後", "今回の変更", "今回の修正", "今回の対応", "今回のレビュー",
+        "今回の指摘", "今回のコミット", "今回の作業")),
+    *(_word("P3", word, AUTHORING_SCOPE, REMEDY_STATE) for word in (
+        "現時点では", "当面", "初期実装では", "段階導入", "先行導入")),
+    Atom("P5", "ドライブ文字付きユーザーホームパス", HOME_PATH, HYGIENE_ENV,
+         REMEDY_PATH, _outside_placeholder),
+)
+
+HEADER = ("[guard-artifact-hygiene] 書き込もうとしたテキストに次の記述が新たに含まれています。"
+          "当該記述の全出現を点検し、すべて書き直してください(1 箇所だけ直しても再び deny されます)。")
+FOOTER = "既存の同種記述を消して数を合わせることはこの deny の対処ではありません。"
 
 # 自己テストが使うファイルパス。検査対象かどうかはパス文字列だけで決まるので、実在は要らない。
 DOC = "docs/module.md"                                # 検査対象の恒久仕様書
@@ -125,6 +196,13 @@ CASES = [
     (*_write(f"{REPO}/.claude/agents/sample.md", "改修後の挙動。\n"), "", "allow"),
     (*_write(f"{REPO}/.claude/agents/sample.md", "ログは C:/Users/alice/logs。\n"), "", "deny"),
     (*_write(f"{REPO}/.claude/hooks/sample.py", HOME_LINE), "", "allow"),
+    # ホーム直下の .claude は個人設定の置き場で、実ホームパスを書く用法が正当。消費リポジトリの
+    # .claude は同じ名前でも成果物なので検査する(直上の 2 件がその形をピンしている)。
+    (*_write("C:/Users/alice/.claude/settings.json", HOME_LINE), "", "allow"),
+    (*_write("C:/Users/alice/.claude/CLAUDE.md", "ログは C:/Users/alice/logs。\n"), "", "allow"),
+    (*_write("/home/alice/.claude/agents/sample.md", "ログは C:/Users/alice/logs。\n"),
+     "", "allow"),
+    (*_write("C:/Users/alice/.claude.json", HOME_LINE), "", "allow"),
     (*_write("CLAUDE.md", "改修後の挙動。\n"), "", "allow"),
     (*_write("CLAUDE.md", "ログは C:/Users/alice/logs。\n"), "", "deny"),
     (*_write(TEST_DOC, "改修後 C:/Users/alice/x .scratch/a.md\n"), "", "allow"),
@@ -179,13 +257,96 @@ MESSAGE_CASES = [
 ]
 
 
-# 自己テストが判定を呼ぶ接合部。判定の中核は純関数で、ファイル読み取りは呼び出し側の薄い層に閉じる。
-ATOMS = ()
+def _out_of_scope(path):
+    """成果物衛生規約の適用範囲外の置き場か。作業過程の記述がそこでは正当になる。"""
+    return (
+        "/.scratch/" in path or path.startswith(".scratch/")
+        or "/appdata/local/temp/" in path or "/var/folders/" in path
+        or path.startswith(("/tmp/", "/private/tmp/"))
+        or "/.claude/projects/" in path or bool(HOME_CLAUDE.search(path))
+    )
+
+
+def _is_instruction(path, name):
+    """実行時の相対表現と禁止語の引用が正当に現れる指示層か。"""
+    return bool(INSTRUCTION_LAYER.search(path)) or "/.claude/" in path or name in INSTRUCTION_NAMES
+
+
+def _is_test(path):
+    return "/tests/" in path or "/test/" in path or path.startswith(("tests/", "test/"))
+
+
+def applicable_atoms(file_path):
+    """このパスで検査する原子。免除はその原子の正当用法が実在する層だけに効かせる。"""
+    path = file_path.replace("\\", "/").lower()
+    if _out_of_scope(path):
+        return ()
+    name = path.rsplit("/", 1)[-1]
+    exempt = set()
+    if _is_test(path):
+        exempt.update(atom.group for atom in ATOMS)
+    if _is_instruction(path, name):
+        exempt.update(("P1", "P2", "P3"))
+    if not name.endswith(PROSE_SUFFIXES) or name.startswith(VERSION_LOG_PREFIXES):
+        exempt.update(("P2", "P3"))
+    if HOOK_LAYER.search(path) or "/.claude/hooks/" in path:
+        exempt.add("P5")
+    return tuple(atom for atom in ATOMS if atom.group not in exempt)
+
+
+def _matches(atom, text):
+    return [hit for hit in atom.pattern.finditer(text) if atom.keep is None or atom.keep(hit)]
+
+
+def _after_text(tool_name, tool_input, before_text):
+    """ツール入力を適用した変更後全文。ツール自体が成立しない入力なら None。"""
+    if tool_name == "Write":
+        content = tool_input.get("content")
+        return content if isinstance(content, str) else None
+    old = tool_input.get("old_string")
+    new = tool_input.get("new_string", "")
+    if not isinstance(old, str) or not isinstance(new, str) or not old:
+        return None
+    hits = before_text.count(old)
+    # 一致が無い、または一意でないまま replace_all を伴わない Edit は、ツール自体が失敗する。
+    if hits == 0 or (hits > 1 and not tool_input.get("replace_all")):
+        return None
+    return before_text.replace(old, new)
+
+
+def _changed_lines(before_text, after_text):
+    """変更が及んだ行を変更後の並びで返す。無変更の既存行は前後に同数あり差に残らない。"""
+    remaining = Counter(after_text.splitlines()) - Counter(before_text.splitlines())
+    lines = []
+    for line in after_text.splitlines():
+        if remaining[line] > 0:
+            remaining[line] -= 1
+            lines.append(line)
+    return lines
 
 
 def evaluate(tool_name, tool_input, before_text):
     """禁止記述の出現数が増えたなら deny 理由を返す。増えていない・検査対象外なら None。"""
-    raise NotImplementedError
+    if tool_name not in TARGET_TOOLS or not isinstance(tool_input, dict):
+        return None
+    file_path = tool_input.get("file_path")
+    if not isinstance(file_path, str) or not file_path:
+        return None
+    atoms = applicable_atoms(file_path)
+    if not atoms:
+        return None
+    after_text = _after_text(tool_name, tool_input, before_text)
+    if after_text is None:
+        return None
+    increases = []
+    for atom in atoms:
+        before_hits = len(_matches(atom, before_text))
+        after_hits = len(_matches(atom, after_text))
+        if after_hits > before_hits:
+            increases.append((atom, before_hits, after_hits))
+    if not increases:
+        return None
+    return _format_reason(increases, _changed_lines(before_text, after_text))
 
 
 def read_failure_action(tool_name, error):
@@ -193,18 +354,37 @@ def read_failure_action(tool_name, error):
 
     "empty" なら変更前を空文字列として検査を続け、"allow" なら検査せず許可する。
     """
-    raise NotImplementedError
+    if tool_name == "Write" and isinstance(error, FileNotFoundError):
+        return "empty"
+    return "allow"
+
+
+def _window(line, match):
+    return line[max(0, match.start() - WINDOW):match.end() + WINDOW]
 
 
 def _format_reason(increases, changed_lines):
     """増えた原子の一覧と変更が及んだ行から deny 理由の文面を組み立てる。"""
-    raise NotImplementedError
+    parts = [HEADER]
+    for atom, before_hits, after_hits in increases:
+        excerpts = [(hits[0].group(0), _window(line, hits[0]))
+                    for line, hits in ((line, _matches(atom, line)) for line in changed_lines)
+                    if hits]
+        source = f"根拠: flow の {atom.source}。対処: {atom.remedy}"
+        if not excerpts:
+            # 行の差から候補行を絞れない想定外の形。増加の事実だけを件数で伝える。
+            parts.append(f"- 「{atom.label}」 — "
+                         f"出現が {before_hits} 件から {after_hits} 件に増えました。{source}")
+            continue
+        parts.append(f"- 「{atom.label}」(増加 {after_hits - before_hits} 件) — {source}")
+        parts.extend(f"  候補行: 「{hit}」 {window}" for hit, window in excerpts[:EXCERPT_LIMIT])
+        if len(excerpts) > EXCERPT_LIMIT:
+            parts.append(f"  候補行 他 {len(excerpts) - EXCERPT_LIMIT} 行")
+    parts.append(FOOTER)
+    return "\n".join(parts)
 
 
 def selftest():
-    # impl pending: 書き込み後の全文で禁止記述の出現数が増えたときだけ deny する判定と、その文面
-    print("SKIP: 判定が未実装のため自己テストは無効化されている")
-    return
     failures = []
     for tool_name, tool_input, before, expected in CASES:
         actual = "deny" if evaluate(tool_name, tool_input, before) else "allow"
@@ -255,8 +435,39 @@ def selftest():
 
 
 def main():
+    # 既定の標準出力コーデック(日本語 Windows では cp932)には理由文が持つ記号が無く、
+    # 出力時の UnicodeEncodeError でフックが無出力のまま落ちる。
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if "--selftest" in sys.argv:
         selftest()
+        return
+    try:
+        data = json.load(sys.stdin)
+    except (json.JSONDecodeError, EOFError, UnicodeDecodeError):
+        return
+    if not isinstance(data, dict):
+        return
+    tool_name, tool_input = data.get("tool_name"), data.get("tool_input")
+    if tool_name not in TARGET_TOOLS or not isinstance(tool_input, dict):
+        return
+    file_path = tool_input.get("file_path")
+    if not isinstance(file_path, str) or not file_path or not applicable_atoms(file_path):
+        return
+    try:
+        before_text = Path(file_path).read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        if read_failure_action(tool_name, error) != "empty":
+            return
+        before_text = ""
+    reason = evaluate(tool_name, tool_input, before_text)
+    if reason:
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }))
 
 
 if __name__ == "__main__":
