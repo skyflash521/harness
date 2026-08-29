@@ -209,7 +209,14 @@ def cmd_stamp():
         baseline = head_baseline(name, head)
         staged = version_of(f":{rel}")
         if is_increased(staged, baseline):
-            print(f"{name}: 刻印済み({format_version(staged)})のためスキップ")
+            # スキップは「誰かが既に刻印してステージした」状態を告げている。自分の刻印の再実行なら
+            # 冪等で正しいが、身に覚えが無ければ同じ作業ツリーで別のセッションが動いている兆候で、
+            # そのままコミットへ進むと相手のステージ分を巻き込む。ここで気付けるように書き添える。
+            print(
+                f"{name}: 刻印済み({format_version(staged)})のためスキップ"
+                "(この刻印に身に覚えが無いなら、同じ作業ツリーで別のセッションが動いている疑い。"
+                "進める前に git status でステージの内容を確かめること)"
+            )
             continue
         # (3) 刻印してステージ
         version = stamp_and_stage(name, now, head)

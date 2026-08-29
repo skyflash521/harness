@@ -23,6 +23,13 @@ Additionally every `git reset` form is denied outright (it rewrites the index/HE
 safe variant to allow); the agent must ask the user to add an explicit allow rule if one is ever
 truly needed, rather than running it.
 
+A well-formed `git add` is denied too when the index already holds staged paths this command does
+not name (see _unnamed_staged). The index is one shared state per worktree, and `git commit` takes
+all of it, so an agent that stages into an index someone else is also using either sweeps their
+entries into its commit or has its own swept into theirs -- the writer never sees it happen. The
+staged set that a commit will take must therefore be one the agent named on purpose, so an
+unexpected entry stops the add until its origin is known.
+
 Usage: configured as a Bash PreToolUse hook. Run with --selftest.
 """
 
@@ -288,9 +295,18 @@ def _tracked_file(root, path):
 
 
 def _safe_add(args, root):
+    """Return the named paths (repo-relative, POSIX) for a safe add, else None.
+
+    The spelling comes from the same resolve() the tracked-file check uses, so it matches what git
+    records for an ordinary file. It does not for a path resolve() rewrites: a tracked symlink
+    (resolved to its target) or a name spelled in a case the index does not hold. Such a path reads
+    as unnamed to the caller's shared-index check, which stops the add rather than letting it
+    through.
+    """
     if len(args) < 2 or args[0] != "--":
-        return False
+        return None
     root = Path(root).resolve()
+    named = []
     for raw_path in args[1:]:
         if (
             not raw_path
@@ -298,17 +314,68 @@ def _safe_add(args, root):
             or raw_path.startswith(("~", ":"))
             or any(char in raw_path for char in GLOB_CHARS)
         ):
-            return False
+            return None
         path = (root / raw_path).resolve(strict=False)
         try:
-            path.relative_to(root)
+            relative = path.relative_to(root).as_posix()
         except ValueError:
-            return False
+            return None
         if path.is_symlink() or path.is_file():
+            named.append(relative)
             continue
         if path.is_dir() or not _tracked_file(root, path):
-            return False
-    return True
+            return None
+        named.append(relative)
+    return named
+
+
+def _staged_paths(root):
+    """Nameable paths currently staged in the index, repo-relative POSIX. None when git cannot answer.
+
+    --diff-filter=d drops staged DELETIONS, because `git add` cannot name a path the index no
+    longer holds (it fails with `pathspec did not match`). The rename source left by `git mv` is
+    such a path -- and it is reported as a deletion whenever git does not pair it with the new name
+    (rename detection turned off by config, or a content edit staged with the rename that puts
+    similarity under the threshold) -- so counting it would leave the add denied with nothing the
+    agent could do to satisfy it. A staged deletion made by someone else is therefore not caught
+    here; the staged set is still compared against the intended file list before the commit.
+    Unknown (None) skips the check rather than denying: this guard adds a stop on top of the form
+    rules, and a git that cannot answer must not block the forms that were already allowed.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "diff", "--cached", "--name-only", "--diff-filter=d", "-z"],
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    # Decode as UTF-8 explicitly, for the reason _tracked_file compares bytes: git emits paths as
+    # UTF-8, so text=True would decode them through the locale codec (e.g. cp932 here) instead.
+    return [entry.decode("utf-8", "replace") for entry in result.stdout.split(b"\0") if entry]
+
+
+def _unnamed_staged(named, staged):
+    """Staged paths this add does not name. Empty when staged is unknown (None)."""
+    if staged is None:
+        return []
+    already = set(named)
+    return sorted(path for path in staged if path not in already)
+
+
+def _shared_index_reason(unnamed):
+    listed = ", ".join(unnamed[:10]) + (", ..." if len(unnamed) > 10 else "")
+    return (
+        f"The index already holds staged paths this command does not name: {listed}. The index is "
+        "one shared state per worktree and git commit takes all of it, so these entries would ride "
+        "into your commit, and what you stage now can be swept into a commit made by whoever "
+        "staged them. Do not retry until you know where they came from: run git status, and if "
+        "they are not yours, stop and tell the user (another session may be working in this "
+        "worktree) instead of committing or unstaging them. If they do belong in this commit, "
+        "name every intended file in one git add -- <files>."
+    )
 
 
 def _safe_commit(args):
@@ -385,8 +452,12 @@ def _message_format_problem(message):
     )
 
 
-def classify(command, root=None):
-    """Return ("deny", reason) or ("pass", None)."""
+def classify(command, root=None, staged=None):
+    """Return ("deny", reason) or ("pass", None).
+
+    staged is the index's current staged path list (see _staged_paths); None means it was not
+    looked up, and the shared-index check is then skipped.
+    """
     if not isinstance(command, str) or not command.strip():
         return "pass", None
     try:
@@ -464,9 +535,13 @@ def classify(command, root=None):
         if problem:
             return "deny", problem
         return "pass", None
-    if _safe_add(args, root):
-        return "pass", None
-    return "deny", "Retry with git add -- <explicit-file>..."
+    named = _safe_add(args, root)
+    if named is None:
+        return "deny", "Retry with git add -- <explicit-file>..."
+    unnamed = _unnamed_staged(named, staged)
+    if unnamed:
+        return "deny", _shared_index_reason(unnamed)
+    return "pass", None
 
 
 def main():
@@ -479,7 +554,12 @@ def main():
     if data.get("tool_name") != "Bash":
         return
     command = (data.get("tool_input") or {}).get("command")
-    decision, reason = classify(command)
+    root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    # Read the index only for a command that could be an add. The substring test cannot miss a real
+    # `git add` (both words are literally present in one), and it keeps every other Bash call --
+    # the vast majority -- from paying for a git subprocess.
+    could_add = isinstance(command, str) and "git" in command and "add" in command
+    decision, reason = classify(command, root, _staged_paths(root) if could_add else None)
     if decision == "deny":
         print(json.dumps({
             "hookSpecificOutput": {
@@ -625,6 +705,21 @@ def selftest():
         ("echo 'git commit -m x'", "pass"),
         ("", "pass"),
     ]
+    # The shared-index check, driven by an injected staged list so the run does not depend on what
+    # the real index happens to hold. The cases above pass no list, so only these exercise it.
+    index_cases = [
+        ("git add -- README.md", [], "pass"),
+        # Re-adding a file that is already staged names it, so nothing is unexpected.
+        ("git add -- README.md", ["README.md"], "pass"),
+        ("git add -- README.md CLAUDE.md", ["CLAUDE.md"], "pass"),
+        # An entry staged by someone else -- the collision this check exists for.
+        ("git add -- README.md", ["CLAUDE.md"], "deny"),
+        ("git add -- README.md", ["README.md", "plugins/flow/.claude-plugin/plugin.json"], "deny"),
+        # A rejected form stays rejected whatever the index holds.
+        ("git add -- missing-file.py", ["CLAUDE.md"], "deny"),
+        # commit is not this check's subject: it takes the whole index by definition.
+        (f"git commit -m '件名\n\n本文\n\n{TRAILER}'", ["CLAUDE.md"], "pass"),
+    ]
     # hooks -> flow -> plugins -> リポジトリルート。
     repo = Path(__file__).resolve().parents[3]
     failures = []
@@ -632,6 +727,10 @@ def selftest():
         actual, _ = classify(command, repo)
         if actual != expected:
             failures.append((command, expected, actual))
+    for command, staged, expected in index_cases:
+        actual, _ = classify(command, repo, staged)
+        if actual != expected:
+            failures.append((f"{command} [staged={staged}]", expected, actual))
     if failures:
         for command, expected, actual in failures:
             print(f"FAIL expected={expected} actual={actual}: {command!r}")
@@ -642,7 +741,7 @@ def selftest():
     if not _tracked_file(repo, repo / "plugins/flow/tests/fixtures/日本語パス検査.txt"):
         print("FAIL _tracked_file rejected a tracked non-ASCII path")
         raise SystemExit(1)
-    print(f"ALL PASS ({len(cases)} cases + non-ASCII tracked-path check)")
+    print(f"ALL PASS ({len(cases) + len(index_cases)} cases + non-ASCII tracked-path check)")
 
 
 if __name__ == "__main__":
