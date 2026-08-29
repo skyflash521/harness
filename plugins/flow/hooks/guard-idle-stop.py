@@ -1,24 +1,32 @@
 #!/usr/bin/env python3
-"""Stop hook: 待ちの実体が無いのにターンを終えようとする停止を block する。
+"""Stop hook: 停止を原則すべて禁じ、末尾行が停止宣言のものだけを許可する。
 
 ターン終了はツール呼び出しを伴わないので、PreToolUse 系のガードでは捕捉できない。何もせずに
 止まった・着手を宣言して止まった・走っていないものを「実行中」と書いた、という失敗はいずれも
 この瞬間に起きるため、Stop フックだけがその発火点になる。
 
-判定は Stop フックの入力が持つ3つの実体で行う。`background_tasks`(実行中の背景処理)と
-`session_crons`(予約済みの起床)は待ちの実体が在るかを機械的に示し、`last_assistant_message` は
-その停止で何を主張したかを示す。**継続を主張していない停止は対象外**——作業を終えて報告した停止まで
-止めると、ガードが常時発火して意味を失うため、主張が在るときだけ実体と突き合わせる。
+**禁止する言い回しを数え上げる形(拒否リスト)は採らない。** 言い回しは無限にあり、数え上げは
+必ず抜ける——拒否リストで組んだ旧実装では、助詞の有無だけで「このまま実装します」が素通りし、
+助詞を落として広げると今度は疑問文「どちらで進めますか」を誤って止めた。誤検出を潰すたびに例外が
+積み増され、そのたびに新しい抜けが空いた。よってここでは逆に、**停止を既定で禁じ、末尾行に停止
+宣言を書いたものだけを通す**(許可リスト)。抜け道は「宣言を書く」ことしかなく、書けば何を根拠に
+止まったかが応答に残る。誤検出の形も一種類(宣言の書き忘れ)で、出口は常に同じ一つになる。
 
-ユーザーの応答を待つ停止も、待っていると書けば止める——待つ相手が人であることは機械で確かめ
-られないので、実体の無い待ちと区別が付かない。抜けるには、待っていると書くのをやめ、何を選ぶ
-のかを確定的に問う形へ直す。その出口を deny メッセージが示す。
-判定は決定的な語検出で緩く広く拾い、**精度は語で作らない**。取るべき行動は deny メッセージが
-自己完結して伝える——読み手が別の文書を開かなくても次の一手が決まるように書く。
+宣言は3種で、`待機` だけが機械で裏取りできる——`background_tasks`(実行中の背景処理)か
+`session_crons`(予約済みの起床)が実際に在ることを要求する。`完了` と `要判断` は裏取りできないが、
+**明示的に宣言させること自体が目的**である。無意識に手番を返すことができなくなり、どの理由で
+止まったかが後から読める。
 
-**`stop_hook_active` で素通ししない。** 一度ブロックしたら通す作りにすると、指示を無視して同じ文面で
-止まり直すだけで抜けられ、ガードとして成立しない。毎回の停止に掛け、条件が消えたときだけ通す
-——応答を直せば(作業を始める・確定的に問う)条件は消える。ブロックの連鎖は本フックの側では止めず、ハーネス側の保護に委ねる。
+判定は**末尾行の等値比較**で行い、本文の走査をしない。等値なら、宣言する意図があるときだけ一致する。
+
+`stop_hook_active` で素通ししない。一度ブロックしたら通す作りでは、宣言を書かないまま止まり直す
+だけで抜けられる。ブロックの連鎖は本フックの側では止めず、ハーネス側の保護に委ねる。
+
+**応答本文を渡さないハーネスでは判定せず通す**(キーが無い場合も `null` の場合も同じ)。
+本文が無ければ宣言の有無を確かめようがなく、
+止め続ければ何を書いても抜けられない恒久ブロックになる。判定できないことを不許可の理由にしない。
+同じ理由で、`background_tasks` と `session_crons` を渡さないハーネスでは `待機` が使えない——この
+場合は残る2種で止まることになる(行き止まりにはならないので、この限界は受け入れる)。
 
 Usage: configured as a Stop hook. Run with --selftest.
 """
@@ -27,153 +35,90 @@ import subprocess
 import sys
 from pathlib import Path
 
-# 着手の宣言。応答の末尾付近にあるものだけを見る(本文中の経過説明と区別するため)。
-# 助詞を含めない——「を実装します」だけを持つと「このまま実装します」を取り逃がす。狭めた分だけ
-# 抜け道が増えるので、精度は語で作らず deny メッセージに委ねる。
-TAIL_WINDOW = 240
-ANNOUNCE = (
-    "入ります", "始めます", "開始します", "進みます", "取り掛かります", "着手します",
-    "作ります", "作成します", "書きます", "実行します", "調べます", "検証します",
-    "確認します", "していきます", "続けます", "進めます", "修正します", "直します",
-    "適用します", "反映します", "実装します", "回します", "足します", "外します",
-)
+# 停止宣言。応答の末尾行がこのいずれかと(表記の揺れを吸収したうえで)等しいときだけ許可する。
+DONE = "[停止: 完了]"
+DECISION = "[停止: 要判断]"
+WAIT = "[停止: 待機]"
+MARKERS = (DONE, DECISION, WAIT)
 
-# 継続の主張。引用と否定を除いた本文のどこにあっても見る。
-ONGOING = (
-    "実行中", "継続中", "検査中", "処理中", "作業中", "計測中",
-    "実行しています", "走っています", "動いています",
-    "待機中", "待っています", "完了を待ち", "完了待ち", "応答待ち", "結果待ち", "結果を待ち",
-)
-
-# 継続の主張を打ち消す語。一致箇所の直後に現れたら主張とみなさない。
-NEGATION = (
-    "ではない", "ではなく", "はない", "はなく", "もない", "もなく", "ありませ",
-    "が無", "は無", "も無", "がない", "がなく",
-)
-NEGATION_WINDOW = 12
-# 「〜中」で終わる語は、直後がこれらなら状態の主張でなく時間・連体の修飾(「作業中に」「実行中の」)。
-MODIFIER_AFTER = ("に", "の")
-
-# 引用の囲み。開き文字から対応する閉じ文字までを判定対象から外す。
-QUOTES = {"「": "」", "『": "』", "`": "`", '"': '"'}
+# 表記の揺れとして吸収するもの。全角のコロン・角括弧と空白の有無は、日本語入力で書き手が繰り返し
+# 踏むので等値比較の前に畳む。畳んでも行の構造は変わらない。**前後に添えた文や囲み記号は畳まない**
+# ——畳むと、宣言する意図のある行と、宣言に言及しただけの行の区別が付かなくなる。
+FOLD = {"：": ":", "［": "[", "］": "]", " ": "", "　": "", "\t": ""}
 
 TAG = "[guard-idle-stop]"
 
-REASON_ANNOUNCE = (
-    "着手を宣言して止まろうとしている。宣言は着手ではない。"
-    "予約済みの起床を張っていても、それが裏付けるのは待ちが自力で終わることだけで、"
-    "宣言した作業を後回しにしてよいことではない。"
-    "取るべき行動は次の三つのいずれかで、宣言して手番を返すことはどれでもない。"
-    "(1) 宣言した作業を、この同じターンで始める。"
-    "(2) ユーザーの判断が要るなら、条件節でぼかさずに問う——"
-    "「〜いただければ」「〜でよろしければ」「問題なければ」のような、"
-    "承諾を先取りして着手を予告する言い方をやめ、何を選ぶのかだけを確定的に書く。"
-    "選択肢は「〜する」の形か体言で書く——ます形で書くと着手の宣言と同じ形になり、また止められる。"
-    "(3) 何かの完了を待っているなら、何の完了を待つのかを書き、"
-    "自分の側から発火できる起床を張ってから止まる。"
-    "同じ言い方で止まり直しても通らない——この検査は毎回の停止に掛かる。"
+_HOW = (
+    "停止するには、応答の**末尾行を停止宣言だけ**にすること。前後に文や囲み記号を付けない。"
+    f"{DONE} — 依頼された作業が終わり、手番を返す。"
+    f"{DECISION} — ユーザーの判断が要り、それ無しでは進めない。"
+    "何を選ぶのかを確定的に書いたうえで付ける。"
+    f"{WAIT} — 何かの完了を待つ。実行中の背景処理か予約済みの起床が実際に在るときだけ使える。"
 )
-REASON_PHANTOM = (
-    "実行中・待機中だと書いているが、実行中の背景処理も予約済みの起床も無い。"
-    "出力が無いことは実行中であることを示さない。取るべき行動は、その対象を観測して事実を確かめるか、"
-    "観測できないなら未検証と明記したうえで自分で取り直すこと。"
-    "推測を状態の報告として書かない。"
-    "待っている相手がユーザーなら、待っていると書くのをやめ、"
-    "何を選ぶのかだけを確定的に問う形へ直すこと。"
-    "過去の経過や、このセッションの外で動いているものの状態を述べているだけなら、"
-    "その語を使わずに結果だけを書き直すこと。"
-    "外部の完了を本当に待つなら、自分の側から発火できる起床を張ってから止まること。"
+
+REASON_NO_MARKER = (
+    "末尾行が停止宣言になっていない。このハーネスは停止を既定で禁じており、"
+    "宣言の無い停止は、作業の途中で手番を返したものとして扱う。"
+    "止まらずに作業を続けるか、止まる理由を宣言すること。"
+    "宣言を文中で言及しただけ・囲み記号で包んだだけでは許可されない。" + _HOW
 )
-REASON_NO_WAKEUP = (
-    "背景処理の完了を待つと書いているが、予約済みの起床が無い。完了通知は届かないことがあり、"
-    "届かなければこの待ちは自分では終わらない。取るべき行動は、自分の側から発火できる起床を"
-    "張ってから止まるか、張らないなら待たずに自分で取り直すこと。"
+REASON_WAIT_UNSUBSTANTIATED = (
+    f"{WAIT} と宣言しているが、実行中の背景処理も予約済みの起床も無い。"
+    "待っている対象が存在しないので、この宣言は成り立たない。"
+    "取るべき行動は、待つ対象を実際に起動するか、自分の側から発火できる起床を張るか、"
+    "待たずにその作業を自分で済ませること。"
+    f"作業が終わっているなら {DONE}、ユーザーの判断が要るなら {DECISION} を使う。"
+)
+REASON_MULTIPLE = (
+    "末尾行に停止宣言が複数ある。どの理由で止まるのかが決まらない。1つだけにすること。" + _HOW
 )
 
 
-def _hit(text, needles):
-    """text に needles のいずれかが含まれるか。"""
-    return any(needle in text for needle in needles)
+def fold(text):
+    """表記の揺れを畳む。何を畳むかは `FOLD` が持つ(ここへ列挙を写すと片方が古くなる)。"""
+    for src, dst in FOLD.items():
+        text = text.replace(src, dst)
+    return text
 
 
-def strip_quoted(text):
-    """引用の囲みの中身を落とす。
+def last_line(message):
+    """末尾の空でない行。
 
-    規約そのものを編集するセッションの報告は、判定語を引用として含む(「実行中」という語そのものを論じる文など)。
-    引用を残すと、語について述べただけの報告が主張として扱われる。
+    **引用の除去をここへ足さない。** 行をまたいで消す実装は、閉じられない囲みが本文に1つあるだけで
+    宣言行ごと落とし、逆に末尾が引用なら本文中間の行を末尾へ昇格させる。等値比較にした以上、
+    説明のための言及を落とす仕組みは要らない。
     """
-    out = []
-    closing = None
-    for char in text:
-        if closing is None:
-            if char in QUOTES:
-                closing = QUOTES[char]
-            else:
-                out.append(char)
-        elif char == closing:
-            closing = None
-    return "".join(out)
-
-
-def asserts_ongoing(message):
-    """継続の主張が在るか。引用の中身・修飾用法・打ち消された一致は数えない。"""
-    text = strip_quoted(message)
-    for needle in ONGOING:
-        start = text.find(needle)
-        while start != -1:
-            end = start + len(needle)
-            after = text[end:end + NEGATION_WINDOW]
-            # 打ち消しは同じ文の中だけを見る。別の文の否定を一致へ結び付けない。
-            if not _hit(after.split("。")[0], NEGATION) and not _is_modifier(needle, after):
-                return True
-            start = text.find(needle, end)
-    return False
-
-
-def _is_modifier(needle, after):
-    """「〜中」が状態の主張でなく修飾として使われているか(「作業中に」「実行中の」)。"""
-    return needle.endswith("中") and after[:1] in MODIFIER_AFTER
-
-
-def announces(message):
-    """着手の宣言が末尾付近に在るか。直後が「か」の一致は疑問であって宣言ではない。"""
-    tail = strip_quoted(message)[-TAIL_WINDOW:]
-    for needle in ANNOUNCE:
-        start = tail.find(needle)
-        while start != -1:
-            end = start + len(needle)
-            if tail[end:end + 1] != "か":
-                return True
-            start = tail.find(needle, end)
-    return False
+    for line in reversed(message.splitlines()):
+        if line.strip():
+            return line.strip()
+    return ""
 
 
 def verdict(data):
     """block する理由を返す。block しないなら None。"""
     if data.get("hook_event_name") != "Stop":
         return None
-    message = data.get("last_assistant_message") or ""
-    if not message:
+    # 本文を渡さないハーネスでは判定材料が無い。キーの不在も null も情報量は同じなので、どちらも
+    # 不許可の理由にしない(止め続ければ何を書いても抜けられない恒久ブロックになる)。空文字は
+    # 宣言を書けば抜けられるので、これだけは block 側に残す。
+    message = data.get("last_assistant_message")
+    if message is None:
         return None
-    tasks = data.get("background_tasks") or []
-    crons = data.get("session_crons") or []
-    if asserts_ongoing(message):
-        # 予約済みの起床が在れば、自分の側から発火できる再開経路を持っている。待ちとして成立するので
-        # 主張を裏取り不足として扱わない(背景処理に載らない外部ジョブの待ちがこれに当たる)。
-        # **この免除を待ちの判定の外へ出さない。** 起床が裏付けるのは待ちが自力で終わることだけで、
-        # 宣言した作業を後回しにしてよいことではない。外へ出すと、ハートビートを張る手順
-        # (レビューループ・自律開発)の実行中は宣言して止まる失敗が一切検出されなくなる。
-        if crons:
-            return None
-        return REASON_NO_WAKEUP if tasks else REASON_PHANTOM
-    if not tasks and announces(message):
-        return REASON_ANNOUNCE
+    line = fold(last_line(message))
+    found = [m for m in MARKERS if fold(m) in line]
+    if len(found) > 1:
+        return REASON_MULTIPLE
+    if len(found) != 1 or line != fold(found[0]):
+        return REASON_NO_MARKER
+    if found[0] == WAIT:
+        if not (data.get("background_tasks") or data.get("session_crons")):
+            return REASON_WAIT_UNSUBSTANTIATED
     return None
 
 
 def main():
-    # 出力・入力の符号化を固定する。ハーネスが渡す JSON は UTF-8 で、既定の cp932 で読むと日本語の
-    # 語が化けて一致せず、フックが停止を無言で通す。理由の日本語も出力時に落ちる。
+    # 出力・入力の符号化を固定する。ハーネスが渡す JSON は UTF-8 で、既定の符号化で読むと日本語の
+    # 宣言が化けて一致せず、すべての停止をブロックし続ける。理由の日本語も出力時に落ちる。
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     try:
@@ -184,10 +129,7 @@ def main():
         return
     reason = verdict(data)
     if reason:
-        print(json.dumps({
-            "decision": "block",
-            "reason": f"{TAG} {reason}",
-        }))
+        print(json.dumps({"decision": "block", "reason": f"{TAG} {reason}"}))
 
 
 def selftest():
@@ -203,50 +145,45 @@ def selftest():
     task = {"id": "b1", "type": "shell", "status": "running", "description": "検査"}
     cron = {"id": "c1"}
     block_cases = [
-        # 宣言して止まった(待つ対象が無い)
-        (stop("記録しました。\n\nこれからフック本体を書きます。"), REASON_ANNOUNCE),
-        (stop("次は Stop フックの検証に入ります。"), REASON_ANNOUNCE),
-        (stop("指摘を反映しました。次はレビューを回します。"), REASON_ANNOUNCE),
-        # 承諾を先取りして着手を予告する曖昧な言い方も止める
-        (stop("お任せいただけるなら、このまま実装します。"), REASON_ANNOUNCE),
-        (stop("問題なければ次の修正に進みます。"), REASON_ANNOUNCE),
-        (stop("よろしければレビューを回します。"), REASON_ANNOUNCE),
-        (stop("指示していただければ、それだけを実行します。"), REASON_ANNOUNCE),
-        # 走っていないのに実行中と書いた
-        (stop("検査を実行中です(自己テストのみ継続中)。"), REASON_PHANTOM),
-        (stop("codex の結果待ちです。"), REASON_PHANTOM),
-        # 一度ブロックした後でも、同じ文面なら通さない
-        (stop("これからフックを書きます。", active=True), REASON_ANNOUNCE),
-        # 背景処理は在るが再開経路が無い
-        (stop("検査を実行中です。", tasks=[task]), REASON_NO_WAKEUP),
-        # 起床の免除は待ちの判定にだけ効く。宣言して止まることは免除しない
-        (stop("次はレビューを回します。", crons=[cron]), REASON_ANNOUNCE),
-        # ます形の選択肢は着手の宣言と同じ形になる
-        (stop("どちらにしますか。1. 先に修正を適用します 2. レビューを回します"), REASON_ANNOUNCE),
+        # 宣言が無い停止は、内容によらずすべて止める
+        (stop("コミットしました。ハッシュは 90d8326 です。"), REASON_NO_MARKER),
+        (stop("次はレビューを回します。"), REASON_NO_MARKER),
+        (stop("お任せいただけるなら、このまま実装します。"), REASON_NO_MARKER),
+        (stop("どちらで進めますか。1. フックを作る 2. 文書だけにする"), REASON_NO_MARKER),
+        (stop(""), REASON_NO_MARKER),
+        # 宣言が末尾行でない
+        (stop(f"{DONE}\n\n続けて別の作業もあります。"), REASON_NO_MARKER),
+        # 宣言に文を添えた・囲み記号で包んだ末尾行は許可しない(等値でないため)
+        (stop(f"末尾に {DONE} と書く決まりにしました。"), REASON_NO_MARKER),
+        (stop(f"作業は終わりました。\n\n`{DONE}`"), REASON_NO_MARKER),
+        (stop(f"作業は終わりました。\n\n{DONE} 以上です。"), REASON_NO_MARKER),
+        # 待機の宣言に実体が無い
+        (stop(f"レビューの完了を待ちます。\n\n{WAIT}"), REASON_WAIT_UNSUBSTANTIATED),
+        # 宣言が複数
+        (stop(f"作業は終わりました。\n\n{DONE} {DECISION}"), REASON_MULTIPLE),
+        # 一度ブロックした後でも、宣言が無ければ通さない
+        (stop("これからフックを書きます。", active=True), REASON_NO_MARKER),
     ]
     pass_cases = [
-        # 作業を終えて報告しただけの停止
-        stop("コミットしました。ハッシュは 90d8326 です。"),
-        stop("5検査すべて合格しました。"),
-        # 選択肢を確定的に示して判断を求める停止(着手の予告を含まない)
-        stop("どちらで進めますか。1. フックを作る 2. 文書だけにする"),
-        stop("この方針でよろしいですか。"),
-        # 継続の主張を打ち消している完了報告
-        stop("実行中の背景処理はありません。すべて完了しました。"),
-        stop("待機中のタスクは無く、作業は終わっています。"),
-        # 判定語を引用しただけの報告
-        stop("判定語の一覧に「実行中」「継続中」を並べました。"),
-        # 「〜中に」「〜中の」は状態の主張でなく修飾
-        stop("作業中に見つけた別件は打ち切りました。"),
-        # 予約済みの起床が在る正しい待ち
-        stop("レビューの完了を待っています。", tasks=[task], crons=[cron]),
-        stop("外部の CI の完了を待っています。", crons=[cron]),
-        # 背景処理が在る停止は待ちの実体があるので、宣言を咎めない
-        stop("次はレビューを回します。", tasks=[task]),
+        # 完了の宣言
+        stop(f"コミットしました。ハッシュは 90d8326 です。\n\n{DONE}"),
+        # 要判断の宣言
+        stop(f"どちらで進めますか。1. フックを作る 2. 文書だけにする\n\n{DECISION}"),
+        # 表記の揺れ(全角コロン・全角角括弧・空白の有無)は吸収する
+        stop("作業は終わりました。\n\n[停止：完了]"),
+        stop("作業は終わりました。\n\n[停止:完了]"),
+        stop("作業は終わりました。\n\n［停止：完了］"),
+        # 本文が null のハーネスでも判定しない(恒久ブロックを避ける)
+        {"hook_event_name": "Stop", "last_assistant_message": None},
+        # 待機の宣言と実体
+        stop(f"レビューの完了を待ちます。\n\n{WAIT}", tasks=[task]),
+        stop(f"外部の CI の完了を待ちます。\n\n{WAIT}", crons=[cron]),
+        # 一度ブロックした後でも、宣言があれば通す
+        stop(f"作業は終わりました。\n\n{DONE}", active=True),
+        # 応答本文を渡さないハーネスでは判定しない(恒久ブロックを避ける)
+        {"hook_event_name": "Stop", "stop_hook_active": False},
         # 入力が Stop でない
         {"hook_event_name": "SubagentStop", "last_assistant_message": "これから書きます。"},
-        # 応答本文が取れない
-        stop(""),
     ]
     ok = True
     for data, expected in block_cases:
@@ -270,8 +207,7 @@ def _roundtrip_ok(data, expected):
     """ハーネスと同じ形(UTF-8 の JSON を標準入力へ)で自分を起動し、block が出るか確かめる。
 
     判定関数を直接叩くだけの自己テストは、標準入力の復号を通らない。既定の符号化で読むと日本語の
-    語が化けて一致せず、フックは例外も出さずに停止を通す——この経路を通さない検査は、壊れていても
-    合格する。
+    宣言が化けて一致せず、判定が変わる——この経路を通さない検査は、壊れていても合格する。
     """
     payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
     result = subprocess.run(
