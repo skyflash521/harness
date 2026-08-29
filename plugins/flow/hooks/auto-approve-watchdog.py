@@ -69,6 +69,10 @@ def main():
     if "--selftest" in sys.argv:
         sys.exit(_selftest())
     plugin_root = sys.argv[1] if len(sys.argv) > 1 else ""
+    # 符号化を固定する。ハーネスが渡す JSON は UTF-8 で、既定の符号化で読むと非ASCII が化け、
+    # 一致しないまま素通りする(復号例外で無出力に落ちる形もある)。出力側も同じ理由で固定する。
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     try:
         data = json.load(sys.stdin)
     except Exception:

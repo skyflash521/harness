@@ -49,9 +49,13 @@ def has_rm(command):
 
 
 def main():
+    # 符号化を固定する。ハーネスが渡す JSON は UTF-8 で、既定の符号化で読むと非ASCII が化け、
+    # 一致しないまま素通りする(復号例外で無出力に落ちる形もある)。出力側も同じ理由で固定する。
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     try:
         data = json.load(sys.stdin)
-    except (json.JSONDecodeError, EOFError):
+    except (json.JSONDecodeError, EOFError, UnicodeDecodeError):
         return
     if data.get("tool_name") != "Bash":
         return

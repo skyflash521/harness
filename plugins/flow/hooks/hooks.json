@@ -26,6 +26,18 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-idle-stop.py\"",
+            "shell": "bash"
+          }
+        ]
+      }
     ]
   }
 }
