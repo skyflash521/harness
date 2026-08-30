@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stop hook: 停止を既定で禁じ、末尾行が停止宣言のものだけを許可する。
+"""Stop フック: 停止を既定で禁じ、末尾行が停止宣言のものだけを許可する。
 
 宣言は3種。`待機` は終端でない `background_tasks` が在るときだけ通す——手番が戻る経路の無いまま止まるのを
 防ぐ。`完了` と `要判断` は音を鳴らす。
@@ -10,8 +10,7 @@
 判定は末尾行の等値比較。応答本文を渡さないハーネスでは判定せず通す——判定できないことを不許可の
 理由にすると、何を書いても抜けられない恒久ブロックになる。
 
-Usage: configured as a Stop hook with the plugin root as first argument.
-Run with --selftest.
+使い方: プラグインルートを第1引数に渡す Stop フックとして登録する。--selftest で自己テスト。
 """
 import json
 import platform
@@ -31,14 +30,13 @@ ENDED = ("completed", "failed", "killed", "cancelled", "canceled", "timeout")
 
 
 def wait_script():
-    """誘導先 wait.py の絶対パス。第1引数(プラグインルート)から組み立てる。"""
+    """誘導先 wait.py の絶対パス。"""
     roots = [arg for arg in sys.argv[1:] if arg != "--selftest"]
     if not roots:
         return f"<flow プラグイン同梱の scripts/{WAIT_SCRIPT}>"
     return Path(roots[0], "scripts", WAIT_SCRIPT).as_posix()
 
 
-# 等値比較の前に畳む表記の揺れ。前後に添えた文や囲み記号は畳まない。
 FOLD = {"：": ":", "［": "[", "］": "]", " ": "", "　": "", "\t": ""}
 
 TAG = "[guard-idle-stop]"

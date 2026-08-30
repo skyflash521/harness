@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: `ScheduleWakeup` を deny し、時間待ちを wait.py の背景実行へ誘導する。
+"""PreToolUse フック: `ScheduleWakeup` を deny し、時間待ちを wait.py の背景実行へ誘導する。
 
 禁止の理由と代替は deny メッセージが持つ。ツールを呼んだその場で届く唯一の説明になるため。
 
-Usage: configured as a `ScheduleWakeup` PreToolUse hook with the plugin root as first
-argument. Run with --selftest.
+使い方: プラグインルートを第1引数に渡す `ScheduleWakeup` の PreToolUse フックとして登録する。--selftest で自己テスト。
 """
 import importlib.util
 import json

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SessionStart hook: 停止宣言の規約をセッション開始時に知らせる。
+"""SessionStart フック: 停止宣言の規約をセッション開始時に知らせる。
 
 知らせなければ、エージェントは必ず初回の停止で `guard-idle-stop.py` にブロックされる。deny
 メッセージが規約を教えるので回復はするが、教わるために1ターンを確実に失う。
@@ -8,8 +8,7 @@
 のに弾かれる」形になる。説明文はここが正本(deny メッセージとは長さの制約が違うので、同じ文言に
 ならない)。
 
-Usage: configured as a SessionStart hook with the plugin root as first argument.
-Run with --selftest.
+使い方: プラグインルートを第1引数に渡す SessionStart フックとして登録する。--selftest で自己テスト。
 """
 import importlib.util
 import json
@@ -60,7 +59,6 @@ def main():
 def selftest():
     ok, cases = True, 0
     context = build_context()
-    # 宣言が増えたとき、その宣言だけ知らせ漏れる状態を防ぐ。
     cases += 1
     missing = [m for m in load_guard().MARKERS if m not in context]
     if missing:
@@ -72,7 +70,6 @@ def selftest():
         if marker not in context:
             ok = False
             print(f"FAIL 宣言が文脈に無い: {marker}")
-        # 囲み記号付きで示すと、そのまま末尾行へ写した相手が判定側に弾かれる。
         cases += 1
         if f"`{marker}`" in context:
             ok = False
