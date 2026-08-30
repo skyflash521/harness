@@ -56,7 +56,7 @@ INSTRUCTION_NAMES = ("claude.md", "claude.local.md")
 HOME_CLAUDE = re.compile(r"(?:^[a-z]:)?/(?:users|home)/[^/]+/\.claude(?:/|\.json)")
 # バージョン見出し下の記述と、調整手順書の進行状態。どちらも到達状態のみの範囲外。
 VERSION_LOG_PREFIXES = ("changelog", "tuning")
-PROSE_SUFFIXES = (".md", ".markdown")
+DOC_SUFFIXES = (".md", ".markdown")
 
 # group は対象パス判定での免除の単位、keep は一致を違反として数えるかの述語。
 Atom = namedtuple("Atom", "group label pattern source remedy keep")
@@ -316,9 +316,7 @@ def applicable_atoms(file_path):
         exempt.update(("P1", "P2", "P3"))
     if name.startswith(VERSION_LOG_PREFIXES):
         exempt.update(("P2", "P3"))
-    # P3 の正本は恒久仕様書の記述範囲を定めるので散文に限る。P2 の正本は成果物全般を対象とし、
-    # コメント・docstring を名指しで含むため、拡張子では免除しない。
-    if not name.endswith(PROSE_SUFFIXES):
+    if not name.endswith(DOC_SUFFIXES):
         exempt.add("P3")
     if HOOK_LAYER.search(path) or "/.claude/hooks/" in path:
         exempt.add("P5")
