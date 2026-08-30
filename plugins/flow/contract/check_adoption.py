@@ -16,9 +16,9 @@ flow のスキルは実行開始時にこれを起動し、欠けた条項があ
 書かれているかは起動から分からない。ユーザースコープや共有しない設定に入っていると、clone した
 環境で有効化が失われる。
 
-Usage: python3 <このスクリプトの絶対パス> [対象リポジトリのルート]
+使い方: python3 <このスクリプトの絶対パス> [対象リポジトリのルート]
        ルートを省いた場合は CLAUDE_PROJECT_DIR、それも無ければカレントディレクトリを使う。
-Exit code: 全条項を満たせば 0、1つでも欠ければ 1。
+終了コード: 全条項を満たせば 0、1つでも欠ければ 1。
 """
 import json
 import os
@@ -106,8 +106,6 @@ def check(root):
         problems.append(f"条項3・4: {SETTINGS_FILE} が無い、または JSON として読めない")
         return problems
 
-    # 契約は登録先を「追跡される」設定ファイルと定める。追跡されていなければ、登録は手元にしか
-    # 存在せず clone した環境へ届かない。内容だけを見ると、この失敗形態が素通りする。
     if not tracked(root, SETTINGS_FILE):
         problems.append(f"条項3・4: {SETTINGS_FILE} が追跡されていない(clone した環境へ共有されない)")
 

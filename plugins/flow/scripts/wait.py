@@ -21,10 +21,10 @@
 待てる長さの上限(5時間)はこのスクリプトに固定で、呼び出し側から変えられない。閾値はユーザーが
 決めた値で、上限を超える待ちは待たずに止まってユーザーへ諮る側の判断に回すため。
 
-Usage: python3 wait.py "<YYYY-MM-DD HH:MM[:SS]>"
+使い方: python3 wait.py "<YYYY-MM-DD HH:MM[:SS]>"
        python3 wait.py <秒数>
        python3 wait.py --selftest
-Exit code: 0=目標時刻に到達(過去の時刻を渡した場合も即 0)、2=引数を解釈できない、
+終了コード: 0=目標時刻に到達(過去の時刻を渡した場合も即 0)、2=引数を解釈できない、
            3=残りが上限の5時間を超える。
 """
 import datetime
@@ -94,7 +94,7 @@ def main(argv):
         return selftest()
 
     if len(argv) != 1:
-        print(__doc__.split("Usage:")[1].strip(), file=sys.stderr)
+        print(__doc__.split("使い方:")[1].strip(), file=sys.stderr)
         return 2
 
     now = datetime.datetime.now()
@@ -108,8 +108,7 @@ def main(argv):
         print(f"残り {int(remaining)} 秒は上限 {MAX_SECONDS} 秒を超える: 待たない", flush=True)
         return 3
 
-    # バックグラウンド実行では標準出力がブロックバッファリングされるため、待機に入る前に
-    # 明示的に流す。流さないと、解釈した目標時刻を待機中に確認できない。
+    # バックグラウンド実行では標準出力がブロックバッファリングされ、待機中は流れない。
     print(f"目標: {target:%Y-%m-%d %H:%M:%S} / 待機秒数: {int(remaining)}", flush=True)
     while remaining > 0:
         time.sleep(remaining)

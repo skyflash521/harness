@@ -3,18 +3,14 @@
 
 外側ランナー(呼び出し元シェルのtimeout機構)や自動背景化に頼ると、背景化した子プロセスが
 オーファン化してkillされず上限を超えて走り続けることがある。このラッパーはコマンド自身の
-中で上限を持ち、子プロセスを止める(Windowsはプロセスツリー全体を taskkill /F /T、それ以外は
-開始したプロセスグループへ SIGKILL。子孫プロセスが独自のセッション/プロセスグループへ移った
-場合はその限りではない)。**キル操作自体が失敗しても、このラッパー(と呼び出し側)は無期限には
-待たない**: キル後は短い上限で1回だけ追加で待ち、それでも終了しなければ失敗として報告して
-復帰する。子の標準出力・標準エラーはこのラッパーへパイプで受けて自身の標準出力・標準エラーへ
-逐次中継する(子にラッパー自身のfdを直接継承させない)。継承させると、killに失敗して子が
-生き残った場合に子がfdを保持し続け、ラッパー自身が復帰してもパイプの書き込み側が閉じきらず、
-呼び出し側(このラッパーの出力を読む側)が子の終了まで待たされてしまうため。
+中で上限を持ち、Windows ではプロセスツリー全体を、それ以外では開始したプロセスグループを止める
+(子孫が独自のセッションやプロセスグループへ移った場合はその限りではない)。**キル操作自体が失敗
+しても、このラッパーと呼び出し側は無期限には待たない**: キル後は短い上限で1回だけ追加で待ち、
+それでも終了しなければ失敗として報告して復帰する。子の標準出力・標準エラーは中継するので、
+キルに失敗して子が生き残っても呼び出し側は復帰できる。
 
-Usage: python3 run_capped.py <cap_seconds> -- <command...>
-Exit code: 124 if the cap was exceeded (regardless of whether the kill itself
-fully succeeded), otherwise the child's exit code.
+使い方: python3 run_capped.py <cap_seconds> -- <command...>
+終了コード: 上限を超えたら 124(キル自体の成否によらない)、それ以外は子の終了コード。
 """
 import math
 import os
@@ -52,11 +48,9 @@ def _parse_args(args):
 
 
 def _relay(src, dst):
-    """read(n) はバッファ層がnバイト分溜まるかEOFまで戻らないことがあり、子プロセスが
-    少量ずつ出力しては待つ場合に中継が遅延する。read1(n) は下層ストリームへの読み出しを
-    高々1回しか行わないため、その時点で利用可能な分だけをすぐ返す(真に逐次的な中継)。
-    """
+    """子の出力を逐次中継する。"""
     try:
+        # read(n) は n バイト溜まるか EOF まで戻らないが、read1(n) はその時点の分だけ返す。
         for chunk in iter(lambda: src.read1(4096), b""):
             dst.write(chunk)
             dst.flush()
@@ -119,6 +113,7 @@ def main():
         popen_kwargs["start_new_session"] = True
     proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              **popen_kwargs)
+    # 非デーモンスレッドが生きている間、Python プロセスは終了しない。
     stdout_thread = threading.Thread(target=_relay, args=(proc.stdout, sys.stdout.buffer),
                                       daemon=True)
     stderr_thread = threading.Thread(target=_relay, args=(proc.stderr, sys.stderr.buffer),
@@ -136,8 +131,6 @@ def main():
             _kill_windows(proc)
         else:
             _kill_posix(proc)
-        # 中継スレッドはデーモンなので join を待たずにプロセスごと終了してよい
-        # (子が生き残っていてもラッパー自身のfdはここで閉じ、呼び出し側は復帰できる)。
         return 124
 
 
