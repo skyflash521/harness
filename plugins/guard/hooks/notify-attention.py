@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Best-effort attention sound for Windows, macOS, and Linux.
 
-Used when Claude needs the user: a permission prompt appeared, or the turn ended and
-the conversation is waiting for input.
+Used when Claude needs the user: a permission prompt appeared.
 
 Sound playback is deliberately non-critical: missing commands, missing sound files,
 unavailable audio devices, and all other failures are silently ignored. Players are
