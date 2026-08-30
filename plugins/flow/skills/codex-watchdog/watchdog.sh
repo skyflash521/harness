@@ -1,108 +1,64 @@
 #!/usr/bin/env bash
-# codex-watchdog — read-only. Shared by any skill that launches the codex:codex-rescue
-# agent (flow:codex-review-loop, flow:codex-consult, ...) and must not wait on it forever. Watches
-# the codex companion job log for THIS round and exits with a code describing codex's
-# fate. Performs NO writes (safe to allowlist as one command, so callers run without
-# permission prompts).
+# codex-watchdog — 読み取り専用。codex:codex-rescue エージェントを起動するスキルが、そのラウンドを
+# 無限に待たないために使う。codex companion のジョブログを見張り、codex の結末を終了コードで返す。
+# 書き込みは一切しないので、単一のコマンドとして許可リストに載せられる。
 #
-#   exit 0  normal end    (companion logged "Turn completed." or a "Final output" line)
-#   exit 2  failure        (companion logged "Turn failed.")
-#   exit 3  stall / hang    (job-log mtime has not advanced for STALL_SECS — heuristic)
-#   exit 4  no codex start / cap reached
-#                           (a) no job log within STARTUP_GRACE_SECS (clamped <= WALL_CAP_SECS):
-#                               retry-favoring heuristic for a no-start (also trips on an
-#                               abnormally slow start or a discovery glitch); the only consequence
-#                               is a caller retry. Default 240s is generous so a slow-but-healthy
-#                               start is not tripped.
-#                           (b) WALL_CAP_SECS elapsed with the log identified but no terminal.
+#   exit 0  正常終了
+#   exit 2  失敗
+#   exit 3  停滞(ジョブログの更新時刻が STALL_SECS 進まない。ヒューリスティック)
+#   exit 4  codex が始まらない、または上限に達した
+#             (a) STARTUP_GRACE_SECS 以内にこのラウンドのジョブログが現れない。遅い起動や探索の
+#                 失敗でも当たる、再試行を優先するヒューリスティック。
+#             (b) ログは特定できたが WALL_CAP_SECS を超えても終局しない。
 #
-# Before exiting it prints, to stdout:
-#     LOG=<path>            (empty if no log was identified)
-#     OUTCOME=<code> <reason>
-# so the caller reads its background output file to learn WHICH log holds the result.
+# 終了前に標準出力へ次を出す。呼び出し側はこれを読めば、どのログに結果があるかを推測せずに済む。
+#     LOG=<選んだログのパス>   (特定できなければ空)
+#     OUTCOME=<コード> <理由>
 #
-# Args (optional, positional): $1=STALL_SECS  $2=WALL_CAP_SECS  $3=STATE_ROOT
-#                              $4=STARTUP_GRACE_SECS (no-start fast-fail; default 240)
-#                              $5=RUNID (correlation token; enables concurrent sessions)
+# 引数(すべて省略可、位置指定): $1=STALL_SECS  $2=WALL_CAP_SECS  $3=STATE_ROOT
+#                               $4=STARTUP_GRACE_SECS  $5=RUNID(相関トークン)
 #
-# Identifying THIS round's log — two modes:
+# RUNID を渡すと、そのトークンを含むジョブログだけをこのラウンドのものとして選ぶ。時刻にも起動順にも
+# 依存しないので、同じリポジトリで複数のセッションを同時に回してもログを取り違えない。
 #
-#   (A) RUNID mode ($5 set): the caller embeds a unique token (RUNID) at the very top of the
-#       task prompt; the companion records the prompt opening in the job's ".json" metadata
-#       (the "summary" field), so this round's log is the one whose sibling "task-*.json" (or, as
-#       a fallback, the ".log" body) contains the RUNID. This identifies the round by CONTENT, not
-#       by time or launch order, so concurrent rounds — even two checkouts of a same-named repo —
-#       never collide, and the "watchdog-before-agent" ordering constraint is no longer required
-#       for correctness (it only helps no-start be detected sooner).
-#
-#   (B) baseline mode ($5 empty/absent — backward compatible): this round's log is one that did
-#       NOT exist at the baseline snapshot; the newest such log wins. A still-running orphan log
-#       from a prior or failed round stays in the baseline and is never mistaken for this round's.
-#       Correctness depends on the baseline being taken before the companion creates this round's
-#       log — ensured by launch ordering (the caller starts this watchdog before the agent; the
-#       ~100ms baseline precedes the agent's ~seconds-later job log). A rare mis-order only
-#       false-fires no-start, which degrades to a safe retry.
-#
-# Accepted limitation (baseline mode only; the agent response is the primary result channel, so a
-# wrong watchdog signal degrades to a retry, never a wrong fix): two checkouts of a same-named
-# repo share the "<repo>-*" prefix, so a truly concurrent codex run in the other checkout could be
-# selected. RUNID mode removes this limitation entirely.
+# RUNID を渡さない場合は、起動時点に存在しなかった最新のログを選ぶ。**呼び出し側はエージェントより
+# 先にこれを起動すること。** 同じ名前のリポジトリを2つチェックアウトしていると、もう一方で同時に走る
+# codex のログを選びうる。結果の主チャネルはエージェントの応答なので、この誤選択は呼び出し側の再試行に
+# 縮退し、誤った修正には至らない。
+
 set -u
 
 STALL_SECS="${1:-420}"
 WALL_CAP_SECS="${2:-1200}"
 STATE_ROOT="${3:-${STATE_ROOT:-${HOME:-}/.claude/plugins/data/codex-openai-codex/state}}"
-# Default sized as a generous safety margin above a typical companion startup (a few seconds):
-# a loaded host can delay this round's log noticeably, so the grace is large enough not to trip a
-# slow-but-healthy start, yet small enough to catch a genuine no-start far sooner than the wall cap.
 STARTUP_GRACE_SECS="${4:-240}"
-# Correlation token for concurrent-safe round identification (empty = backward-compatible baseline
-# mode). Restrict to a regex-safe charset (alnum, `_`, `-`; no `.` so the token is an ERE literal
-# with no metacharacters) so it can be matched with a bounded pattern and cannot smuggle
-# shell/pattern metacharacters; reject anything else fast with a parseable OUTCOME.
+# RUNID は英数と _ と - に限る。ERE のメタ文字を持ち込ませないため。
 RUNID="${5:-}"
 case "$RUNID" in
-  '') ;;                                  # empty = baseline mode, fine
+  '') ;;
   *[!A-Za-z0-9_-]*) printf 'LOG=\nOUTCOME=4 bad-arg (invalid RUNID: %s)\n' "$RUNID"; exit 4;;
 esac
-# Validate the time args as non-negative integers up front. A non-numeric value would make the
-# integer comparisons below silently error out (`[ N -ge abc ]`), disabling a backstop and
-# reintroducing the very silent hang this watchdog exists to prevent. Fail fast instead with a
-# parseable OUTCOME so the caller surfaces the bad arg rather than waiting forever.
+# bash の整数比較は非数値だと黙ってエラーになり、歯止めが外れる。
 for _v in "$STALL_SECS" "$WALL_CAP_SECS" "$STARTUP_GRACE_SECS"; do
-  # Reject non-integers. (An empty arg never reaches here: ${x:-default} already substituted a
-  # valid default, so empty is safe, not a hang path.)
   case "$_v" in
     ''|*[!0-9]*) printf 'LOG=\nOUTCOME=4 bad-arg (non-integer time value: %s)\n' "$_v"; exit 4;;
   esac
-  # Bound the magnitude so the integer comparisons below cannot overflow bash's 64-bit ints and
-  # silently disable a backstop. <=18 digits keeps every value under 10^18 < 2^63. (No sane
-  # timeout needs more; this is a safety bound, not a tuning limit.)
+  # bash の整数は64ビット。18桁までなら比較が溢れない。
   [ "${#_v}" -gt 18 ] && { printf 'LOG=\nOUTCOME=4 bad-arg (time value out of range: %s)\n' "$_v"; exit 4; }
 done
-# Clamp so the no-log deadline is unambiguous: the grace never exceeds the wall cap, so a
-# never-identified log always ends as "no-start" at the grace, and the wall cap only ever bounds
-# the identified-but-no-terminal case. This removes the otherwise pathological grace > wall-cap
-# branch (and the conditional wording it would need).
 [ "$STARTUP_GRACE_SECS" -gt "$WALL_CAP_SECS" ] && STARTUP_GRACE_SECS="$WALL_CAP_SECS"
 POLL=5
 
 mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 now() { date +%s; }
 
-# Terminal markers, anchored to the companion's own log lines, which begin with a full ISO
-# timestamp ("[2026-06-15T03:00:13.785Z] Turn completed."). The strict YYYY-MM-DDT anchor stops
-# the same words inside an assistant message, a `Running command: ... "Turn completed"` echo, or
-# a short "[2]"/"[note]" bracket line from faking an end.
+# companion 自身のログ行は完全な ISO 時刻で始まる。応答本文の中の同じ語を終局と誤らないための錨。
 ts_re='^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[^]]*\] '
 done_re="${ts_re}(Turn completed\.|Final output)"
 fail_re="${ts_re}Turn failed\."
 report() { printf 'LOG=%s\nOUTCOME=%s %s\n' "$1" "$2" "$3"; }
 
-# Scope discovery to THIS repo's state dir(s). No fall-back to the whole STATE_ROOT: if the
-# "<repo>-*" convention ever stops matching, discovery simply finds nothing and the watcher
-# degrades to the never-identified exit 4 (no-start at the grace, caller retries) rather than
-# risk selecting an unrelated repo's log.
+# companion はリポジトリ名を接頭辞にした状態ディレクトリを作る。合わなければ何も見つからない。
 repo=$(basename "$PWD" 2>/dev/null || printf '')
 list_logs() {
   local d
@@ -112,41 +68,26 @@ list_logs() {
     done
 }
 
-# True if $1 was present at the baseline snapshot (exact line match against the baseline set).
 in_baseline() { printf '%s\n' "$baseline" | awk -v k="$1" '$0==k{f=1} END{exit !f}'; }
 
-# True if the log $1 belongs to THIS round, identified by the RUNID embedded at the top of the
-# task prompt. The companion saves the prompt opening into the job's sibling "task-*.json"
-# ("summary" field), so the ".json" is authoritative when present; only when it is absent do we
-# fall back to the ".log" body. The match is the full "TASK-RUNID: <RUNID>" marker bounded by a
-# non-token character or end of line, so one token is never a substring-match of a longer token
-# (e.g. RUNID "abc" must not match "...TASK-RUNID: abc1"). RUNID is charset-validated to alnum/
-# `_`/`-` above, so it is a literal ERE fragment with no metacharacters.
+# companion はタスク指示文の冒頭をジョブの .json の summary へ保存する。無ければログ本文を見る。
+# 一致は境界付きで取る。短いトークンが長いトークンの一部に当たらないようにするため。
 has_runid() {
   local lg="$1" js="${1%.log}.json" pat
   pat='TASK-RUNID:[[:space:]]*'"${RUNID}"'([^A-Za-z0-9_-]|$)'
   if [ -f "$js" ]; then
-    grep -Eq -- "$pat" "$js" 2>/dev/null   # .json present -> its verdict is final
+    grep -Eq -- "$pat" "$js" 2>/dev/null
     return
   fi
-  grep -Eq -- "$pat" "$lg" 2>/dev/null      # .json absent -> fall back to the log body
+  grep -Eq -- "$pat" "$lg" 2>/dev/null
 }
 
-# Snapshot pre-existing logs (paths only). LAUNCH ORDERING (no readiness poll — staying
-# prompt-free): the caller starts this watchdog in the background BEFORE the agent. This snapshot
-# is a ~100ms find, while the companion's job log appears ~seconds after the agent launches, so
-# this round's log is reliably "new since baseline" without any handshake. A rare mis-order only
-# false-fires no-start, which degrades to a safe retry — not worth a prompt-generating poll.
 baseline=$(list_logs | sort)
 
-# Start the grace/wall clocks right after the baseline snapshot.
 start=$(now)
 
-# Pick the newest log for THIS round in the given mode ($1):
-#   "runid"    — the newest log whose metadata/body contains the RUNID (content-based;
-#                concurrent-safe; independent of launch order).
-#   "baseline" — the newest log that did not exist at the baseline snapshot.
-# Prints empty if none match.
+# このラウンドのログを選ぶ。runid は RUNID を含む最新、baseline は起動時点に無かった最新。
+# どちらも見つからなければ空を出力する。
 pick_active() {
   local mode="$1" p cm best="" bestmt=0
   while IFS= read -r p; do
@@ -162,15 +103,8 @@ pick_active() {
   printf '%s' "$best"
 }
 
-# Select this round's log. When RUNID is set, use ONLY the RUNID-tagged match — never fall back to
-# baseline selection. Falling back on every poll before a RUNID-tagged log appeared used to let a
-# concurrent session's own new log be mistaken for this round's (observed in practice: an unrelated
-# session's log was picked up as "completed" while this round's own job was still starting). RUNID
-# mode is now exactly what the header already claims ("removes this limitation entirely"): if the
-# marker never reaches the job log (e.g. dropped somewhere before logging), this round simply times
-# out at STARTUP_GRACE_SECS/WALL_CAP_SECS like a genuine no-start/stall — a safe degrade to a caller
-# retry, never a wrong log selection. Baseline mode (RUNID unset) is unchanged: backward-compatible,
-# single-session only, with the same-name-repo limitation noted above.
+# RUNID を渡した回は RUNID 一致だけで選ぶ。起動時点との差へ落ちると、同時に走る別セッションの
+# ログを選びうる。
 select_log() {
   local lg=""
   if [ -n "$RUNID" ]; then
@@ -181,14 +115,9 @@ select_log() {
   printf '%s' "$lg"
 }
 
-# Single loop, two backstops (grace is clamped <= wall cap):
-#   - never-identified log: STARTUP_GRACE_SECS -> exit 4 (no-start), checked first.
-#   - identified but no terminal marker: WALL_CAP_SECS -> exit 4 (wall-cap).
-# Once identified, watch it: failure first, then success, then stall.
 log=""
 while :; do
   [ -z "$log" ] && log=$(select_log)
-  # No-start fast-fail (retry-favoring HEURISTIC; see header exit 4(a)).
   if [ -z "$log" ] && [ $(( $(now) - start )) -ge "$STARTUP_GRACE_SECS" ]; then
     report "$log" 4 "no-start (no job log within ${STARTUP_GRACE_SECS}s)"
     exit 4
