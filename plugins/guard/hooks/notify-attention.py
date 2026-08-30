@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Best-effort attention sound for Windows, macOS, and Linux.
+"""Windows・macOS・Linux で注意喚起音を鳴らす。鳴らせなければ黙って諦める。
 
-Sound playback is deliberately non-critical: missing commands, missing sound files,
-unavailable audio devices, and all other failures are silently ignored. Players are
-launched fire-and-forget so the caller is never delayed by playback.
+再生は失敗してよい扱いとし、コマンド・音源・音声デバイスのいずれが欠けても無視する。
+呼び出し側を待たせないため、プレイヤーは起動しっぱなしにして終了を待たない。
 """
 
 from __future__ import annotations
@@ -19,11 +18,7 @@ DEVNULL = subprocess.DEVNULL
 
 
 def _spawn(command: list[str]) -> bool:
-    """Launch one player fire-and-forget, returning whether it was spawned.
-
-    The caller must not be delayed, so we never wait for the player to finish.
-    Short notification sounds exit on their own.
-    """
+    """プレイヤーを1つ起動しっぱなしにし、起動できたかを返す。"""
     try:
         subprocess.Popen(
             command,

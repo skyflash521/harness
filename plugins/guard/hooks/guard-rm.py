@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: deny Bash `rm`(削除でなく trash.py によるごみ箱送りへ誘導する)。
+"""PreToolUse フック: Bash の `rm` を deny し、trash.py によるごみ箱送りへ誘導する。
 
 一時文書・未追跡ファイルであっても、削除は取り消せない場合がある(git追跡外・エディタの
 ローカル履歴にも残らない等)。rm はコマンド先頭がどこにあっても常に deny し、同じ引数で
@@ -7,11 +7,7 @@
 無プロンプトで承認する)を使わせる。ユーザー確認を都度挟まず自律進行を止めないまま、誤削除を
 可逆にする。
 
-誘導先は第1引数で受け取ったプラグインルートから組み立てた絶対パスで示す。相対パスで示すと、
-消費リポジトリ側に同名のスクリプトが無い限り誘導どおりの実行が成立しないため。
-
-Usage: configured as a Bash PreToolUse hook with the plugin root as first argument.
-Run with --selftest.
+使い方: プラグインルートを第1引数に渡す Bash の PreToolUse フックとして登録する。--selftest で自己テスト。
 """
 import json
 import pathlib
@@ -20,7 +16,7 @@ import sys
 
 
 def trash_script():
-    """誘導先 trash.py の絶対パス。第1引数(プラグインルート)から組み立てる。"""
+    """誘導先 trash.py の絶対パス。"""
     roots = [arg for arg in sys.argv[1:] if arg != "--selftest"]
     if not roots:
         return "<guard プラグイン同梱の scripts/trash.py>"
@@ -49,8 +45,7 @@ def has_rm(command):
 
 
 def main():
-    # 符号化を固定する。ハーネスが渡す JSON は UTF-8 で、既定の符号化で読むと非ASCII が化け、
-    # 一致しないまま素通りする(復号例外で無出力に落ちる形もある)。出力側も同じ理由で固定する。
+    # ハーネスが渡す JSON は UTF-8。既定の符号化で読むと非ASCII が化けて素通りする。
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     try:
@@ -61,8 +56,7 @@ def main():
         return
     command = (data.get("tool_input") or {}).get("command") or ""
     if has_rm(command):
-        # 誘導先のパスは引用符で囲む。プラグインのキャッシュ先が空白を含むパスに置かれると、
-        # 引用の無いコマンドは分割されて起動に失敗するため。
+        # プラグインのキャッシュ先は空白を含みうる。引用の無いコマンドは分割されて起動に失敗する。
         reason = (
             f'rm は常に deny します。同じ引数で python3 "{trash_script()}" <path>... を'
             "使ってください(削除でなくOS標準のごみ箱へ送る可逆な代替です)。"

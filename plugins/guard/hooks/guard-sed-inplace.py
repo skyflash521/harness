@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: deny `sed -i`(インプレース編集は Edit ツールで行う)。
+"""PreToolUse フック: `sed -i` を deny し、インプレース編集を Edit ツールへ誘導する。
 
 Edit/Grep で代替できる sed のインプレース編集を Bash で打つと、書き込みのため許可プロンプトが
-出る。それを deny して Edit ツールへ誘導する。コマンド先頭の sed だけを対象にし(引数中の sed は
-無視)、値フラグ(-e/-f)の引数・複合コマンド・複数行・行末コメントを踏まえて現実的な sed -i を判定する。
+出る。それを deny して Edit ツールへ誘導する。
 
-Usage: configured as a Bash PreToolUse hook. Run with --selftest.
+使い方: Bash の PreToolUse フックとして登録する。--selftest で自己テスト。
 """
 import json
 import re
@@ -14,7 +13,7 @@ import sys
 
 
 def is_inplace_flag(flag):
-    """sed のフラグが in-place 編集(-i / -i.bak / -ni / --in-place)か。-e/-f/-l の値部分は除外。"""
+    """sed のフラグが in-place 編集(-i・-i.bak・-ni・--in-place)か。"""
     if flag.startswith("--in-place"):
         return True
     if not flag.startswith("-") or flag.startswith("--"):
@@ -46,8 +45,7 @@ def has_sed_inplace(command):
 
 
 def main():
-    # 符号化を固定する。ハーネスが渡す JSON は UTF-8 で、既定の符号化で読むと非ASCII が化け、
-    # 一致しないまま素通りする(復号例外で無出力に落ちる形もある)。出力側も同じ理由で固定する。
+    # ハーネスが渡す JSON は UTF-8。既定の符号化で読むと非ASCII が化けて素通りする。
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     try:

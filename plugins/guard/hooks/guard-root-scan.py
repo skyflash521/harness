@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: deny ドライブルート起点の再帰探索(`find /` 等)。
+"""PreToolUse フック: ドライブルート起点の再帰探索(`find /` 等)を deny する。
 
 Git Bash の `/` は MSYS ルートで、`/c` `/d` … として全ドライブが自動マウントされる。そこを起点に
 再帰探索を始めると、走査対象に全ドライブが入る。実測ではこの形の探索が数時間経っても終わらず、
@@ -9,33 +9,26 @@ CPU を1コア占有し続けた(所要時間がそこまで伸びた理由は�
 
 そこで、走査コマンドにルート相当のパスが渡された呼び出しを deny し、走査対象がリポジトリの
 管理下に絞られる代替(Glob/Grep ツール・`git ls-files`・`rg --files`)へ誘導する。
-判定はコマンドのセグメントごとに「走査コマンドか」「そのパスオペランドがルート相当か」で行う。
 `cd /` でルートへ移ってから暗黙のカレントを走査する形も同じ暴走なので併せて見る。
 
 浅い深さで区切れば走査量が小さく収まり実用的な時間で終わるため、`find` に浅い `-maxdepth` が
 あるときは通す。これが明示的な迂回手段であり、ルート直下を確かめたいだけの正当な用途はこれで足りる。
 
-Usage: configured as a Bash PreToolUse hook. Run with --selftest.
+使い方: Bash の PreToolUse フックとして登録する。--selftest で自己テスト。
 """
 import json
 import re
 import shlex
 import sys
 
-# 常に再帰する走査コマンド。
 ALWAYS_RECURSIVE = {"find", "rg", "ripgrep", "fd", "fdfind", "ag", "ack", "tree", "du"}
-# 再帰フラグが付いたときだけ走査になるコマンドと、その再帰フラグの短縮形。
 # ls の `-r` は逆順であって再帰ではないので、大文字だけを見る。
 RECURSIVE_LETTERS = {"grep": "rR", "egrep": "rR", "fgrep": "rR", "ls": "R"}
-# 第1オペランドがパスでなく検索パターンであるコマンド。
 PATTERN_FIRST = {"grep", "egrep", "fgrep", "rg", "ripgrep", "ag", "ack", "fd", "fdfind"}
-# 引数を1つ取り、その引数がパスではないフラグ。
 VALUE_FLAGS = {"-e", "--regexp", "-f", "--file"}
-# これらがあるとパターンはフラグ側で与えられており、第1オペランドはパスになる。
 PATTERN_BY_FLAG = VALUE_FLAGS | {"--files"}
 # ルート相当のパス: `/`・`/c`(ドライブの自動マウント)・`/cygdrive/c`・`C:`。
 ROOT_RE = re.compile(r"(?:/(?:[a-z]|cygdrive/[a-z])?|[a-z]:)/*", re.IGNORECASE)
-# 走査量が小さく収まるとみなす深さ。
 MAX_BOUNDED_DEPTH = 2
 
 
@@ -92,9 +85,9 @@ def find_path_operands(args):
     operands = []
     for arg in args:
         if arg in ("-H", "-L", "-P") or arg.startswith("-O"):
-            continue  # 起点より前に置くオプション
+            continue
         if arg.startswith("-"):
-            break  # ここから式
+            break
         operands.append(arg)
     return operands
 
@@ -109,7 +102,7 @@ def path_operands(name, args):
     while index < len(args):
         arg = args[index]
         if arg in VALUE_FLAGS:
-            index += 2  # フラグ + パスではないその引数
+            index += 2
         elif arg.startswith("-") and arg != "-":
             index += 1
         else:
@@ -134,7 +127,7 @@ def scans_root(command):
     parsed = segments(command)
     if parsed is None:
         return False
-    at_root = False  # 直前までの cd でルートへ移っているか
+    at_root = False
     for tokens in parsed:
         name = head_name(tokens[0])
         args = tokens[1:]
@@ -151,15 +144,13 @@ def scans_root(command):
         operands = path_operands(name, args)
         if any(is_root_path(operand) for operand in operands):
             return True
-        # cd でルートへ移った後の、カレント起点(明示・暗黙とも)の走査も同じ暴走になる。
         if at_root and all(operand.rstrip("/") in ("", ".") for operand in operands):
             return True
     return False
 
 
 def main():
-    # 符号化を固定する。ハーネスが渡す JSON は UTF-8 で、既定の符号化で読むと非ASCII が化け、
-    # 一致しないまま素通りする(復号例外で無出力に落ちる形もある)。出力側も同じ理由で固定する。
+    # ハーネスが渡す JSON は UTF-8。既定の符号化で読むと非ASCII が化けて素通りする。
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     try:
