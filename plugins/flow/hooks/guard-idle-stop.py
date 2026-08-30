@@ -4,8 +4,8 @@
 宣言は3種。`待機` は終端でない `background_tasks` が在るときだけ通す——手番が戻る経路の無いまま止まるのを
 防ぐ。`完了` と `要判断` は音を鳴らす。
 
-併せて実行中の `wait.py` を数え、`完了`・`要判断` では1つでも、`待機` では2つ以上を
-ブロックする。
+併せてこのセッションが起動した背景処理を数え、生存しているものが残ったままの `完了`・`要判断` と、
+生存している `wait.py` が2つ以上ある `待機` をブロックする。
 
 判定は末尾行の等値比較。応答本文を渡さないハーネスでは判定せず通す——判定できないことを不許可の
 理由にすると、何を書いても抜けられない恒久ブロックになる。
@@ -26,7 +26,7 @@ MARKERS = (DONE, DECISION, WAIT)
 HANDOVER = (DONE, DECISION)
 
 WAIT_SCRIPT = "wait.py"
-RUNNING = "running"
+LIVE = ("running", "pending", "backgrounded")
 ENDED = ("completed", "failed", "killed", "cancelled", "canceled", "timeout")
 
 
@@ -77,10 +77,10 @@ REASON_WAIT_UNSUBSTANTIATED = (
 REASON_MULTIPLE = (
     "末尾行に停止宣言が複数ある。どの理由で止まるのかが決まらない。1つだけにすること。" + _HOW
 )
-REASON_WAIT_LEFT_RUNNING = (
-    f"{WAIT_SCRIPT} が実行中のまま手番を返そうとしている。"
-    "止め忘れた待機は、手番を返した後で目標時刻に発火し、確認するものが無いターンを1つ作る。"
-    "TaskStop で止めてから宣言し直すこと(対象のIDは起動時の戻り値が示す)。"
+REASON_TASK_LEFT_RUNNING = (
+    "このセッションが起動した背景処理が残ったまま手番を返そうとしている: {tasks}。"
+    "残したものは後で終わって手番を戻し、確認するものが無いターンを1つ作る。"
+    "用が済んだものは TaskStop で止めてから宣言し直すこと(対象のIDは起動時の戻り値が示す)。"
     f"まだ待つのであれば、止めずに {WAIT} を使う。"
 )
 REASON_WAIT_DUPLICATED = (
@@ -126,13 +126,25 @@ def live_tasks(data):
     return [t for t in tasks_of(data) if t.get("status") not in ENDED]
 
 
-def running_waits(data):
-    """実行中と分かる wait.py の件数。状態を読めないものは数えない——不明を実行中とみなすと、
-    終わった待機を止めようがないまま停止が塞がり続ける。"""
+def label(tasks):
+    """deny 文で残っている処理を名指しするための一覧。多いときは残りを件数で補う。"""
+    shown = ", ".join(str(t.get("id", "?")) for t in tasks[:5])
+    return shown if len(tasks) <= 5 else f"{shown} ほか{len(tasks) - 5}件"
+
+
+def live_now(data):
+    """生存と分かる背景処理。語彙に無い状態は数えない——読めない値を生存とみなすと、
+    既に終わった処理を止めようがないまま停止が塞がり続ける。語彙が増えて漏れても、
+    漏れは素通り側にだけ倒れる。"""
+    return [t for t in tasks_of(data) if t.get("status") in LIVE]
+
+
+def live_waits(data):
+    """生存と分かる wait.py の件数。"""
     def is_wait(task):
         fields = " ".join(str(task.get(key, "")) for key in ("command", "description"))
         return f"/{WAIT_SCRIPT}" in fields.replace("\\", "/")
-    return sum(1 for t in tasks_of(data) if t.get("status") == RUNNING and is_wait(t))
+    return sum(1 for t in live_now(data) if is_wait(t))
 
 
 def decide(data):
@@ -146,14 +158,13 @@ def decide(data):
         return None, REASON_MULTIPLE
     if len(found) != 1 or line != fold(found[0]):
         return None, REASON_NO_MARKER
-    waits = running_waits(data)
     if found[0] == WAIT:
         if not live_tasks(data):
             return None, REASON_WAIT_UNSUBSTANTIATED
-        if waits > 1:
+        if live_waits(data) > 1:
             return None, REASON_WAIT_DUPLICATED
-    elif waits:
-        return None, REASON_WAIT_LEFT_RUNNING
+    elif live_now(data):
+        return None, REASON_TASK_LEFT_RUNNING.format(tasks=label(live_now(data)))
     return found[0], None
 
 
@@ -195,7 +206,18 @@ def selftest():
     waiting_ended = dict(waiting, id="b4", status="completed")
     other_test = dict(waiting, id="b5", description="回帰検査",
                       command="python3 -m pytest tests/test_wait.py")
+    unknown = dict(task, id="b6", status="mystery")
+    pending = dict(task, id="b7", status="pending")
+    crowd = [dict(task, id=f"c{n}") for n in range(6)]
     block_cases = [
+        (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[task]),
+         REASON_TASK_LEFT_RUNNING.format(tasks="b1")),
+        (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[pending]),
+         REASON_TASK_LEFT_RUNNING.format(tasks="b7")),
+        (stop("作業は終わりました。\n\n[停止: 完了]", tasks=crowd),
+         REASON_TASK_LEFT_RUNNING.format(tasks="c0, c1, c2, c3, c4 ほか1件")),
+        (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[other_test]),
+         REASON_TASK_LEFT_RUNNING.format(tasks="b5")),
         (stop("コミットしました。ハッシュは 90d8326 です。"), REASON_NO_MARKER),
         (stop("次はレビューを回します。"), REASON_NO_MARKER),
         (stop("お任せいただけるなら、このまま実装します。"), REASON_NO_MARKER),
@@ -210,9 +232,9 @@ def selftest():
          REASON_WAIT_UNSUBSTANTIATED),
         (stop("外部の CI の完了を待ちます。\n\n[停止: 待機]", tasks=[waiting_ended]),
          REASON_WAIT_UNSUBSTANTIATED),
-        (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[waiting]), REASON_WAIT_LEFT_RUNNING),
+        (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[waiting]), REASON_TASK_LEFT_RUNNING.format(tasks="b2")),
         (stop("どちらで進めますか。\n\n[停止: 要判断]", tasks=[waiting_seconds]),
-         REASON_WAIT_LEFT_RUNNING),
+         REASON_TASK_LEFT_RUNNING.format(tasks="b3")),
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting, waiting_seconds]),
          REASON_WAIT_DUPLICATED),
         (stop("作業は終わりました。\n\n[停止: 完了] [停止: 要判断]"), REASON_MULTIPLE),
@@ -231,10 +253,10 @@ def selftest():
         ({"hook_event_name": "Stop", "stop_hook_active": False}, None),
         (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[task]), "[停止: 待機]"),
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting]), "[停止: 待機]"),
+        (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[unknown]), "[停止: 待機]"),
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting, task]), "[停止: 待機]"),
-        (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[task]), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[waiting_ended]), "[停止: 完了]"),
-        (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[other_test]), "[停止: 完了]"),
+        (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[unknown]), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止: 完了]", active=True), "[停止: 完了]"),
     ]
     ok = True
