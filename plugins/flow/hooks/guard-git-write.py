@@ -1,36 +1,29 @@
 #!/usr/bin/env python3
-"""PreToolUse hook for the commit skill's git writes.
+"""PreToolUse フック: コミットスキルが発する git の書き込みを検査する。
 
-Only these forms pass silently:
+無言で通るのは次の2つだけ。
 
-    git add -- <explicit-file>...
-    git commit -m <message>          (subject line must contain a Japanese character)
+    git add -- <明示したファイル>...
+    git commit -m <メッセージ>          (件名に日本語が1文字以上あること)
 
-The commit subject (first line of the message) must hold at least one Hiragana/Katakana/Kanji:
-the repo's commit subjects are Japanese by convention, so an English-only (ASCII-only) subject is
-denied here and the worker redrafts in Japanese. Two more subjects are denied because neither can
-be the message that was drafted: a placeholder (see _probe_subject_problem) and one opening with
-the commit command itself (see LEAKED_COMMAND_PREFIX). The message's line structure is checked too
--- see _message_format_problem.
+件名が ASCII だけの形は deny し、日本語で起草し直させる。起草されたメッセージではありえない件名も
+deny する——使い捨ての語だけの件名と、コマンド自身の先頭が引数へ紛れ込んだ件名。メッセージの行構造も
+検査する。
 
-Every recognized add/commit form other than these is denied, so the agent retries with the
-regular form instead of asking the user for permission. A form this hook does not recognize as
-add/commit (e.g. a launcher not in WRAPPERS such as watch/strace, or git inside a `bash -c`
-string) falls through here, but it does not begin with `git add`/`git commit`, so it misses the
-settings allow globs and prompts via allow-miss rather than auto-running. Unrelated commands pass.
+これら以外の add/commit は deny するので、エージェントはユーザーへ許可を求めず通常の形で出し直す。
+add/commit と認識できない形(フックが起動子として知らない語や bash -c の中の git)はここを素通りするが、
+git add・git commit で始まらないので設定の許可 glob にも一致せず、許可プロンプトが出るだけで自動
+実行はされない。無関係なコマンドは通る。
 
-Additionally every `git reset` form is denied outright (it rewrites the index/HEAD and has no
-safe variant to allow); the agent must ask the user to add an explicit allow rule if one is ever
-truly needed, rather than running it.
+git reset はどの形も deny する。インデックスと HEAD を書き換え、安全に許せる変種が無いため。
 
-A well-formed `git add` is denied too when the index already holds staged paths this command does
-not name (see _unnamed_staged). The index is one shared state per worktree, and `git commit` takes
-all of it, so an agent that stages into an index someone else is also using either sweeps their
-entries into its commit or has its own swept into theirs -- the writer never sees it happen. The
-staged set that a commit will take must therefore be one the agent named on purpose, so an
-unexpected entry stops the add until its origin is known.
+整った git add も、そのコマンドが名指ししていないファイルが既にステージされていれば deny する。
+インデックスは作業ツリー単位の共有状態で git commit はその全体を取るので、他のセッションが使って
+いるインデックスへステージすると、相手の分を自分のコミットへ巻き込むか、自分の分を相手へ持って
+行かれる——書いた側からは見えない。コミットが取るステージ集合は、意図して名指ししたものだけでなければ
+ならない。
 
-Usage: configured as a Bash PreToolUse hook. Run with --selftest.
+使い方: Bash の PreToolUse フックとして登録する。--selftest で自己テスト。
 """
 
 import json
@@ -39,90 +32,50 @@ import re
 import shlex
 import subprocess
 import sys
+from collections import namedtuple
 from pathlib import Path
 
 CONTROL_CHARS = ";&|<>\n"
 GLOB_CHARS = "*?[]{}"
-# A commit subject counts as Japanese if it holds one Hiragana (U+3040-309F), Katakana
-# (U+30A0-30FF), or Kanji (CJK Ext-A U+3400-4DBF and Unified U+4E00-9FFF). Japanese punctuation
-# alone does not qualify -- an English subject with a stray full-width comma should still be denied.
 JAPANESE_CHAR = re.compile(r"[぀-ヿ㐀-䶿一-鿿]")
 TARGET_WORD = re.compile(r"(?<![\w-])(add|commit)(?![\w-])")
-# The newline escape. Inside the single-quoted -m argument a backslash is literal, so this is what a
-# line break that never reached git looks like. Only this escape is rejected -- it is the one that
-# stands in for the message's line structure -- and it is rejected wherever it appears.
 ESCAPE_NEWLINE = "\\n"
 TRAILER_PREFIX = "co-authored-by:"
-# The whole trailer is spelled out, so that each part it can lose is refused: the model name written
-# inside angle brackets (a bracketed placeholder filled in as-is), the address dropped instead of
-# the brackets, the Claude prefix or the model name left off.
 TRAILER_SHAPE = re.compile(
     r"co-authored-by:\s*claude\s+[^<>\s][^<>]*\s<noreply@anthropic\.com>", re.IGNORECASE
 )
-# Placeholder subjects. A commit issued to try out the command form rather than to record the
-# drafted message puts the staged work into history under a throwaway subject, and neither --amend
-# nor git reset is available to repair it. The subject is what gives such a commit away: a
-# throwaway word, optionally followed by a noun it attaches to and a number ("テスト行1"). Purely ASCII
-# placeholders (test, wip, foo) need no entry -- an ASCII-only subject is already denied by the
-# Japanese-subject rule, which runs first.
 PLACEHOLDER_SUBJECT = re.compile(
     r"(?:テスト|てすと|ﾃｽﾄ|試験|試行|試し|動作確認|ダミー|だみー|サンプル|仮|あ+)"
     r"(?:行|番|目|文|コミット|メッセージ)?"
 )
-# Digits, whitespace and punctuation are stripped from the subject before matching, so the counter
-# in "テスト行1" does not defeat the match. \w covers Japanese, so \W leaves only punctuation.
+# Python の \w は日本語を含むので、\W は約物だけを残す。
 SUBJECT_FILLER = re.compile(r"[\s\d\W_]+")
-# The front of the commit command itself, leaking into the -m argument while the command is
-# assembled ("git試行コミットの禁止を追加"). A drafted subject never opens with the command that
-# carries it, and the commit that results cannot be repaired, so this is denied rather than left to
-# the after-the-fact check. `git` followed by a space is left alone -- 「git のフックを見直す」 is a
-# subject about git, not a leak.
 LEAKED_COMMAND_PREFIX = re.compile(r"^(?:git\s*commit\b|git(?=[^\x00-\x7f])|-m\b)", re.IGNORECASE)
-# Process wrappers that run the FOLLOWING command. Claude Code strips a documented set of these
-# before matching a command against the allow list, so e.g. `time git commit --amend` would
-# otherwise become `git commit --amend`, match `Bash(git commit *)`, and auto-run. This set MUST
-# cover Claude Code's strip-list (as of 2.1.x: env, time, timeout, nice, nohup, stdbuf) so the
-# inner add/commit is denied here instead (deny beats allow). The remaining entries
-# (command/builtin/exec/ionice/setsid/xargs/sudo/doas/taskset/chrt) are NOT stripped — a git
-# add/commit behind them does not match the allow glob and merely prompts — but denying them is
-# safe-side and future-proofs against the strip-list growing, so they are kept as defense.
+# Claude Code は許可リスト照合の前にこれらの一部(2.1.x では env・time・timeout・nice・nohup・stdbuf)を剥がす。
+# 剥がされる語がこの集合から漏れると、内側の add/commit が許可 glob に一致して自動実行される。
 WRAPPERS = {
     "command", "builtin", "env", "exec", "time", "timeout", "nice", "ionice",
     "nohup", "setsid", "stdbuf", "xargs", "sudo", "doas", "taskset", "chrt",
     "!", "coproc",
 }
-# Tokens that make a following `git` a genuine new command start rather than plain text: shell
-# control operators (including bare `&`, background), `cd` (a preceding directory change), and a
-# subshell open paren.
+# シェルの制御演算子・cd・サブシェルの開き括弧の後は、次の git が新しいコマンドの先頭になる。
 CONTROL_OR_WRAPPER = {"cd", "&&", "||", ";", "|", "&", "("}
 GIT_VALUE_OPTIONS = {
     "-C", "-c", "--git-dir", "--work-tree", "--namespace",
     "--super-prefix", "--exec-path", "--config-env",
 }
-# Global options that move git off the current repo/worktree.
 REPOSITION_OPTIONS = {"-C", "--git-dir", "--work-tree"}
-# Subcommands with no write/state-change mode under any flag or repo-local config: a repositioned
-# git running one of these is a harmless read (e.g. inspecting a sibling clone) and is allowed.
-# diff/log/show are deliberately excluded even though mostly read-only: they run the diff engine,
-# which can invoke an externally configured textconv/ext-diff/gpg program from the TARGET repo's
-# own .gitattributes/config with no special flag required, so their safety isn't provable from the
-# command line alone. Everything not listed is denied -- an unknown or write-capable subcommand
-# outside the guarded cwd would bypass this guard's assumptions.
+# diff・log・show は除く。対象リポジトリの設定が指す textconv・ext-diff・gpg を無フラグで起動しうる。
 REPOSITION_READONLY = {
     "status", "blame", "grep", "cat-file", "ls-files", "ls-tree",
     "rev-parse", "rev-list", "merge-base", "describe", "shortlog",
 }
-# Long-option flags on an otherwise-readonly subcommand that still run an external helper
-# (grep/cat-file --textconv; cat-file --filters run a configured external driver). Matched via
-# _is_unsafe_reposition_arg, which also catches git's unambiguous-abbreviation form (e.g.
-# `--textcon`), not just the exact spelling.
+# grep・cat-file の --textconv と --filters は外部ドライバを起動する。git は一意な短縮形も受け付ける。
 REPOSITION_UNSAFE_LONG = ("--open-files-in-pager", "--filters", "--textconv")
 
 
 def _is_unsafe_reposition_arg(arg):
-    """True for -O (grep's short --open-files-in-pager, incl. glued forms like -Ovim) or any
-    (possibly abbreviated, per git's unambiguous long-option prefix matching) form of a
-    REPOSITION_UNSAFE_LONG flag."""
+    """読み取り専用のサブコマンドでも外部ヘルパを起動する引数か。"""
     if arg.startswith("-O"):
         return True
     name = arg.split("=", 1)[0]
@@ -132,7 +85,7 @@ def _is_unsafe_reposition_arg(arg):
 
 
 def _has_shell_syntax(text):
-    """Detect control operators or live expansion outside single quotes."""
+    """引用符の外に制御演算子か展開があるか。"""
     single = double = False
     i = 0
     while i < len(text):
@@ -169,7 +122,7 @@ def _is_plain_git(token):
 
 
 def _mentions_target(tokens):
-    """Conservatively recognize a non-plain add/commit invocation."""
+    """素の形でない add/commit の呼び出しを、安全側に倒して見分ける。"""
     for index, token in enumerate(tokens):
         if not _is_git(token):
             continue
@@ -182,9 +135,6 @@ def _mentions_target(tokens):
         if pos >= len(tokens):
             continue
         subcommand = tokens[pos]
-        # A substituted subcommand (`git $(printf commit)`) could be add/commit -> deny. Only the
-        # subcommand position is checked, so `git log "$(date)"` (a non-add/commit read whose ARG
-        # holds the substitution) is left to the normal flow, not denied here.
         if "$" in subcommand or "`" in subcommand:
             return True
         if subcommand not in {"add", "commit"}:
@@ -201,13 +151,7 @@ def _mentions_target(tokens):
 
 
 def _mentions_reset(tokens):
-    """True when a git invocation actually runs the reset subcommand (any form).
-
-    git reset is denied outright: it rewrites the index/HEAD and has no safe variant to allow.
-    Mirrors _mentions_target's prefix analysis so a non-executing mention (`echo git reset`) is
-    not denied -- only git at argv[0], behind a wrapper/control-op/VAR= prefix, or a non-plain
-    git path counts as a real invocation.
-    """
+    """git が実際に reset を走らせる形か。echo の引数のような言及は含めない。"""
     for index, token in enumerate(tokens):
         if not _is_git(token):
             continue
@@ -233,25 +177,10 @@ def _mentions_reset(tokens):
 
 
 def _mentions_repositioned_git(command, tokens):
-    """True when a repositioned git invocation is not a provably read-only subcommand.
+    """別のリポジトリへ移した git の呼び出しのうち、読み取り専用と示せないもの。
 
-    The readonly carve-out only applies when the WHOLE command has no shell syntax
-    (_has_shell_syntax: no `;`/`&`/`|`/`<`/`>`/newline/`$`/backtick outside quotes) and no
-    parens -- this rules out a second, differently-reachable git invocation hiding after a
-    separator this scan wouldn't recognize, rather than trying to enumerate every separator
-    spelling. Under that gate, tokens after the subcommand cannot belong to another command, so
-    they are scanned to the end via _is_unsafe_reposition_arg with no separate boundary needed.
-
-    Unlike _mentions_target/_mentions_reset, a repositioned invocation that fails the carve-out is
-    denied UNCONDITIONALLY, without the prefix/wrapper reachability analysis those two use: that
-    analysis exists to avoid denying a git mention inside unrelated text (e.g. an echo argument),
-    but it means any prefix word it doesn't recognize (a shell keyword such as `!`/`coproc`, or one
-    not yet added to WRAPPERS/CONTROL_OR_WRAPPER) silently escapes deny. A repositioned git is
-    already a deliberate, argument-bearing invocation (not incidental text), so erring toward
-    denying it outright is safe-side and closes this class of bypass without enumerating every
-    possible shell keyword. A missing or substituted subcommand is not provably read-only and is
-    denied. A subcommand-level -C (`git log -C`) sits after the subcommand, not in the global run,
-    so it is not matched.
+    読み取り専用としての除外が効くのは、コマンド全体にシェル構文も括弧も無いときだけ。
+    除外に外れた再配置は、呼び出しへの到達可能性を調べずに deny する。
     """
     single_invocation = not _has_shell_syntax(command) and "(" not in tokens and ")" not in tokens
     for index, token in enumerate(tokens):
@@ -262,7 +191,7 @@ def _mentions_repositioned_git(command, tokens):
         while pos < len(tokens) and tokens[pos].startswith("-"):
             option = tokens[pos].split("=", 1)[0]
             if option in REPOSITION_OPTIONS or option.startswith("-C"):
-                repositioned = True  # -C, --git-dir, --work-tree, and glued -C<path>
+                repositioned = True
             pos += 1
             if option in GIT_VALUE_OPTIONS and "=" not in tokens[pos - 1]:
                 pos += 1
@@ -277,7 +206,7 @@ def _mentions_repositioned_git(command, tokens):
 
 
 def _tracked_file(root, path):
-    """True only when path exactly names one tracked file, including a deletion."""
+    """パスが追跡下の1ファイルを正確に指すか。削除済みの登録も含む。"""
     relative = path.relative_to(root).as_posix()
     try:
         result = subprocess.run(
@@ -287,21 +216,16 @@ def _tracked_file(root, path):
         )
     except OSError:
         return False
-    # Compare BYTES: git emits paths as UTF-8, and -z avoids quoting/escaping. Decoding via
-    # text=True would use the locale codec (e.g. cp932 here) and corrupt or raise on a non-ASCII
-    # name. Split the raw bytes on NUL and compare to the UTF-8-encoded path.
+    # git はパスを UTF-8 バイトで出す。text=True はロケールの符号化で壊す。
     entries = [entry for entry in result.stdout.split(b"\0") if entry]
     return result.returncode == 0 and entries == [relative.encode("utf-8")]
 
 
 def _safe_add(args, root):
-    """Return the named paths (repo-relative, POSIX) for a safe add, else None.
+    """安全な add が名指ししたパスをリポジトリ相対の POSIX で返す。安全でなければ None。
 
-    The spelling comes from the same resolve() the tracked-file check uses, so it matches what git
-    records for an ordinary file. It does not for a path resolve() rewrites: a tracked symlink
-    (resolved to its target) or a name spelled in a case the index does not hold. Such a path reads
-    as unnamed to the caller's shared-index check, which stops the add rather than letting it
-    through.
+    シンボリックリンクや、インデックスと大文字小文字の異なる綴りでは、返す綴りがインデックスの持つ
+    綴りと一致しない。呼び出し側の比較でステージ項目が名指しされていない側へ落ち、その add は止まる。
     """
     if len(args) < 2 or args[0] != "--":
         return None
@@ -330,17 +254,10 @@ def _safe_add(args, root):
 
 
 def _staged_paths(root):
-    """Nameable paths currently staged in the index, repo-relative POSIX. None when git cannot answer.
+    """インデックスに現在ステージされている、名指しできるパス。git が答えられなければ None。
 
-    --diff-filter=d drops staged DELETIONS, because `git add` cannot name a path the index no
-    longer holds (it fails with `pathspec did not match`). The rename source left by `git mv` is
-    such a path -- and it is reported as a deletion whenever git does not pair it with the new name
-    (rename detection turned off by config, or a content edit staged with the rename that puts
-    similarity under the threshold) -- so counting it would leave the add denied with nothing the
-    agent could do to satisfy it. A staged deletion made by someone else is therefore not caught
-    here; the staged set is still compared against the intended file list before the commit.
-    Unknown (None) skips the check rather than denying: this guard adds a stop on top of the form
-    rules, and a git that cannot answer must not block the forms that were already allowed.
+    ステージ済みの削除は含めない——git add はインデックスがもう持たないパスを名指しできない。
+    None のときは検査を飛ばす。既に許されていた形を、git が答えられないことで塞がないため。
     """
     try:
         result = subprocess.run(
@@ -352,13 +269,12 @@ def _staged_paths(root):
         return None
     if result.returncode != 0:
         return None
-    # Decode as UTF-8 explicitly, for the reason _tracked_file compares bytes: git emits paths as
-    # UTF-8, so text=True would decode them through the locale codec (e.g. cp932 here) instead.
+    # git はパスを UTF-8 で出す。text=True はロケールの符号化で復号してしまう。
     return [entry.decode("utf-8", "replace") for entry in result.stdout.split(b"\0") if entry]
 
 
 def _unnamed_staged(named, staged):
-    """Staged paths this add does not name. Empty when staged is unknown (None)."""
+    """この add が名指ししていないステージ済みパス。staged が None なら空。"""
     if staged is None:
         return []
     already = set(named)
@@ -383,13 +299,9 @@ def _safe_commit(args):
 
 
 def _probe_subject_problem(subject):
-    """Return a deny reason when the subject is nothing but a placeholder, else None.
+    """件名が使い捨ての語だけなら deny 理由を返す。そうでなければ None。
 
-    Matching is anchored at both ends of the subject with its digits, spaces and punctuation
-    removed, so only a subject that says nothing beyond the placeholder is caught: a real subject
-    that merely holds one of these words (「テストを追加」「テスト分割を見直す」) still passes.
-    The rule is lexical, so a probe under some other invented wording is not caught here -- the
-    prohibition itself lives in the worker definition; this only closes the plainest spelling.
+    語彙による判定なので、別の言い回しで書かれた試行コミットはここでは捕まえない。
     """
     core = SUBJECT_FILLER.sub("", subject)
     if not core or not PLACEHOLDER_SUBJECT.fullmatch(core):
@@ -404,19 +316,9 @@ def _probe_subject_problem(subject):
 
 
 def _message_format_problem(message):
-    """Return a deny reason when the message's LINE STRUCTURE or its trailer breaks the repo
-    convention, else None.
+    """メッセージの行構造かトレーラが規約から外れていれば deny 理由を返す。そうでなければ None。
 
-    A newline escape anywhere in the message, and a Co-Authored-By trailer that is not the final
-    line below a subject, both mean the message does not have the line structure that was drafted.
-    The escape is read as a lost line break wherever it appears rather than only in a message with
-    no real line break at all: a partly flattened message (escapes between subject and body, one
-    real break before the trailer) is the same defect, and the narrower rule would have let it
-    through. Prose that means to name the escape rather than break a line is caught by the same
-    blanket rule, and spells the sequence out in words instead.
-
-    A message with no trailer at all is denied too, so that deleting the trailer never becomes the
-    way past the other denials.
+    トレーラが無いメッセージも deny する。トレーラを消すことが他の deny の抜け道にならないように。
     """
     if ESCAPE_NEWLINE in message:
         return (
@@ -453,10 +355,9 @@ def _message_format_problem(message):
 
 
 def classify(command, root=None, staged=None):
-    """Return ("deny", reason) or ("pass", None).
+    """("deny", 理由) か ("pass", None) を返す。
 
-    staged is the index's current staged path list (see _staged_paths); None means it was not
-    looked up, and the shared-index check is then skipped.
+    staged はインデックスの現在のステージ一覧。None なら共有インデックス検査を飛ばす。
     """
     if not isinstance(command, str) or not command.strip():
         return "pass", None
@@ -498,9 +399,7 @@ def classify(command, root=None, staged=None):
             return "deny", "Use plain git add/commit from the repository cwd"
         return "pass", None
     if _has_shell_syntax(command):
-        # ANSI-C quoting is the near miss that turns into a flattened message: `$'...\n...'` is
-        # denied here for its `$`, and dropping the `$` leaves the escapes as literal text inside
-        # plain single quotes. Name the correct fix instead of letting the generic reason stand.
+        # ANSI-C クォート($'...')はドル記号で deny され、外すとエスケープが文字列として残る。
         if "$'" in command:
             return "deny", (
                 "ANSI-C quoting ($'...') is not allowed: the $ makes this an expansion. Pass the "
@@ -548,8 +447,7 @@ def main():
     if "--selftest" in sys.argv:
         selftest()
         return
-    # 符号化を固定する。ハーネスが渡す JSON は UTF-8 で、既定の符号化で読むと非ASCII が化け、
-    # 一致しないまま素通りする(復号例外で無出力に落ちる形もある)。出力側も同じ理由で固定する。
+    # ハーネスが渡す JSON は UTF-8。既定の符号化で読むと非ASCII が化けて素通りする。
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     try:
@@ -560,11 +458,8 @@ def main():
         return
     command = (data.get("tool_input") or {}).get("command")
     root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-    # Read the index only for a command that could be an add. The substring test cannot miss a real
-    # `git add` (both words are literally present in one), and it keeps every other Bash call --
-    # the vast majority -- from paying for a git subprocess.
-    could_add = isinstance(command, str) and "git" in command and "add" in command
-    decision, reason = classify(command, root, _staged_paths(root) if could_add else None)
+    could_be_add = isinstance(command, str) and "git" in command and "add" in command
+    decision, reason = classify(command, root, _staged_paths(root) if could_be_add else None)
     if decision == "deny":
         print(json.dumps({
             "hookSpecificOutput": {
@@ -577,176 +472,184 @@ def main():
 
 def selftest():
     TRAILER = "Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
-    cases = [
-        ("git add -- plugins/flow/hooks/guard-git-write.py", "pass"),
-        ("git add plugins/flow/hooks/guard-git-write.py", "deny"),
-        ("git add -- plugins/flow/hooks", "deny"),
-        ("git add -- ../outside.py", "deny"),
-        ("git add -- C:/outside.py", "deny"),
-        ("git add -- missing-file.py", "deny"),
-        (f"git commit -m '件名\n\n本文 $5 `literal` > text\n\n{TRAILER}'", "pass"),
-        (f"git commit -m 'it'\\''s 修正済み\n\n{TRAILER}'", "pass"),
-        (f"git commit -m 'ガード追加\n\nadd english body\n\n{TRAILER}'", "pass"),
-        (f"git commit -m 'Add CHANGELOG validation\n\n{TRAILER}'", "deny"),
-        (f"git commit -m 'English subject\n\n日本語本文\n\n{TRAILER}'", "deny"),
-        (f"git commit -m 'v0.2.0\n\n{TRAILER}'", "deny"),
-        # A drafted message re-typed with escapes so it fits on one line, and the partly flattened
-        # form that keeps a real break only where the earlier no-real-break rule looked.
-        (f"git commit -m '件名\\n\\n本文\\n\\n{TRAILER}'", "deny"),
-        (f"git commit -m '件名\\n\\n本文\n\n{TRAILER}'", "deny"),
-        (f"git commit -m '件名\n\n本文\\n\\n{TRAILER}'", "deny"),
-        # A commit issued to try out the command form: the staged work would land under a
-        # throwaway subject. A subject that merely holds one of these words is left alone.
-        (f"git commit -m 'テスト行1\n\nテスト行2\n\n{TRAILER}'", "deny"),
-        (f"git commit -m 'テスト\n\n{TRAILER}'", "deny"),
-        (f"git commit -m 'ダミー2\n\n{TRAILER}'", "deny"),
-        (f"git commit -m 'あああ\n\n{TRAILER}'", "deny"),
-        (f"git commit -m '仮\n\n{TRAILER}'", "deny"),
-        (f"git commit -m 'テストコミット\n\n{TRAILER}'", "deny"),
-        (f"git commit -m '試行\n\n{TRAILER}'", "deny"),
-        (f"git commit -m 'テストを追加\n\n{TRAILER}'", "pass"),
-        (f"git commit -m '試行コミットの禁止を追加\n\n{TRAILER}'", "pass"),
-        # The command's own front, carried into its argument while the command was assembled.
-        (f"git commit -m 'git試行コミットの禁止を追加\n\n{TRAILER}'", "deny"),
-        (f"git commit -m 'git commit 疎化の区間分割を見直す\n\n{TRAILER}'", "deny"),
-        (f"git commit -m '-m 疎化の区間分割を見直す\n\n{TRAILER}'", "deny"),
-        (f"git commit -m 'git のフック設定を見直す\n\n{TRAILER}'", "pass"),
-        (f"git commit -m 'front_stage のテスト分割を見直す\n\n{TRAILER}'", "pass"),
-        (f"git commit -m '仮引数の既定値を見直す\n\n{TRAILER}'", "pass"),
-        # The model name filled into the bracketed placeholder instead of replacing it, and the
-        # half fix that drops the address rather than the brackets.
-        ("git commit -m '件名\n\n本文\n\nCo-Authored-By: Claude <Opus 5> <noreply@anthropic.com>'", "deny"),
-        ("git commit -m '件名\n\n本文\n\nCo-Authored-By: Claude <モデル名> <noreply@anthropic.com>'", "deny"),
-        ("git commit -m '件名\n\n本文\n\nCo-Authored-By: Claude <Opus 5>'", "deny"),
-        ("git commit -m '件名\n\n本文\n\nCo-Authored-By: Opus 5 <noreply@anthropic.com>'", "deny"),
-        ("git commit -m '件名\n\n本文\n\nCo-Authored-By: Claude <noreply@anthropic.com>'", "deny"),
-        ("git commit -m '件名\n\n本文\n\nCo-Authored-By: Claude   <noreply@anthropic.com>'", "deny"),
-        ("git commit -m '件名\n\n本文\n\nCo-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>'", "pass"),
-        (f"git commit -m '件名\n\n本文\n\n{TRAILER} '", "pass"),
-        (f"git commit -m '件名 {TRAILER}'", "deny"),
-        ("git commit -m '件名'", "deny"),
-        (f"git commit -m '件名\n\n本文\n {TRAILER}'", "deny"),
-        (f"git commit -m '件名\n\n{TRAILER}\n\n追記'", "deny"),
-        (f"git commit -m '{TRAILER} 件名'", "deny"),
-        # Only the newline escape stands in for the line structure; other escapes are prose. Prose
-        # naming the newline escape is denied all the same -- it spells the sequence out in words.
-        (f"git commit -m '区切りは \\t 文字\n\n{TRAILER}'", "pass"),
-        (f"git commit -m '改行を \\n で表す\n\n{TRAILER}'", "deny"),
-        (f"git commit -m $'件名\\n\\n本文\\n\\n{TRAILER}'", "deny"),
-        ("git add", "deny"),
-        ("git add .", "deny"),
-        ("git add -A", "deny"),
-        ("git add 'src/*'", "deny"),
-        ("git add -- :/", "deny"),
-        ("git commit", "deny"),
-        ("git commit -m ''", "deny"),
-        ("git commit -m 'x' --amend", "deny"),
-        ("git commit -m 'x' -- file.py", "deny"),
-        ("git add a.py && git commit -m 'x'", "deny"),
-        ("git commit -m \"$MESSAGE\"", "deny"),
-        ("git commit -m \"$(date)\"", "deny"),
-        ("git add src/{a,b}.py", "deny"),
-        ("git add a.py > staged.txt", "deny"),
-        ("cd repo && git add a.py", "deny"),
-        ("git -C repo commit -m 'x'", "deny"),
-        ("VAR=x git commit -m 'x'", "deny"),
-        ("command git add a.py", "deny"),
-        ("time git commit --amend", "deny"),
-        ("stdbuf git add -A", "deny"),
-        ("xargs git commit -m 'x'", "deny"),
-        ("git.exe commit -m 'x'", "deny"),
-        ("/usr/bin/git commit -m 'x'", "deny"),
-        ("git reset", "deny"),
-        ("git reset --soft HEAD~1", "deny"),
-        ("git reset --hard origin/main", "deny"),
-        ("git reset -- file.py", "deny"),
-        ("git -C repo reset --hard", "deny"),
-        ("git.exe reset", "deny"),
-        ("/usr/bin/git reset --hard", "deny"),
-        ("time git reset --hard", "deny"),
-        ("VAR=x git reset", "deny"),
-        ("cd repo && git reset --hard", "deny"),
-        ("echo git reset", "pass"),
-        ("echo 'git reset --hard'", "pass"),
-        ("cd /d && git -C /d/other-repo status --short", "deny"),
-        ("git -C repo status", "pass"),
-        ("git -C. status", "pass"),
-        ("git -C ../other-clone log --oneline -5", "deny"),
-        ("git -C ../other-clone diff", "deny"),
-        ("git -C ../other-clone show HEAD", "deny"),
-        ("git --git-dir=.git --work-tree=. status", "pass"),
-        ("git --work-tree /x status", "pass"),
-        ("VAR=x git -C repo status", "pass"),
-        ("git -C repo push", "deny"),
-        ("git -C repo checkout main", "deny"),
-        ("git -C repo stash", "deny"),
-        ("git -C repo", "deny"),
-        ("git -C ../other grep --open-files-in-pager foo", "deny"),
-        ("git -C ../other grep -Ovim foo", "deny"),
-        ("git -C ../other grep --textconv foo", "deny"),
-        ("git -C ../other cat-file --filters HEAD:a.py", "deny"),
-        ("git -C ../other cat-file --textconv HEAD:a.py", "deny"),
-        ("git -C ../other cat-file --textcon HEAD:a.py", "deny"),
-        ("git -C ../other grep --filter=x foo", "deny"),
-        ("! git add a.py", "deny"),
-        ("coproc git commit -m 'x'", "deny"),
-        ("! git reset --hard", "deny"),
-        ("git -C ../other status & git -C ../other checkout main", "deny"),
-        ("git -C ../other status\ngit -C ../other checkout main", "deny"),
-        ("( git -C ../other checkout main )", "deny"),
-        ("! git -C ../other push", "deny"),
-        ("coproc git -C ../other checkout main", "deny"),
-        ("( git add a.py )", "deny"),
-        ("git status & git commit -m 'x'", "deny"),
-        ("git log -C", "pass"),
-        ("git -c user.name=x status", "pass"),
-        ("echo git -C repo status", "pass"),
-        ("git restore --staged a.py", "pass"),
-        ("git status --short", "pass"),
-        ("git diff --staged -- a.py", "pass"),
-        ("git log --oneline -10", "pass"),
-        ("git log commit", "pass"),
-        ("echo git commit", "pass"),
-        ("echo 'git commit -m x'", "pass"),
-        ("", "pass"),
-    ]
-    # The shared-index check, driven by an injected staged list so the run does not depend on what
-    # the real index happens to hold. The cases above pass no list, so only these exercise it.
+    CaseGroup = namedtuple("CaseGroup", "why cases")
+    case_groups = (
+        CaseGroup("許可する形と、件名の言語による deny", [
+            ("git add -- plugins/flow/hooks/guard-git-write.py", "pass"),
+            ("git add plugins/flow/hooks/guard-git-write.py", "deny"),
+            ("git add -- plugins/flow/hooks", "deny"),
+            ("git add -- ../outside.py", "deny"),
+            ("git add -- C:/outside.py", "deny"),
+            ("git add -- missing-file.py", "deny"),
+            (f"git commit -m '件名\n\n本文 $5 `literal` > text\n\n{TRAILER}'", "pass"),
+            (f"git commit -m 'it'\\''s 修正済み\n\n{TRAILER}'", "pass"),
+            (f"git commit -m 'ガード追加\n\nadd english body\n\n{TRAILER}'", "pass"),
+            (f"git commit -m 'Add CHANGELOG validation\n\n{TRAILER}'", "deny"),
+            (f"git commit -m 'English subject\n\n日本語本文\n\n{TRAILER}'", "deny"),
+            (f"git commit -m 'English subject、with a stray comma\n\n日本語本文\n\n{TRAILER}'", "deny"),
+            (f"git commit -m 'v0.2.0\n\n{TRAILER}'", "deny"),
+        ]),
+        CaseGroup("エスケープ表記で1行へ詰めたメッセージと、部分的に潰れた形", [
+            (f"git commit -m '件名\\n\\n本文\\n\\n{TRAILER}'", "deny"),
+            (f"git commit -m '件名\\n\\n本文\n\n{TRAILER}'", "deny"),
+            (f"git commit -m '件名\n\n本文\\n\\n{TRAILER}'", "deny"),
+        ]),
+        CaseGroup("使い捨ての語だけの件名(コマンドの形を試すコミット)", [
+            (f"git commit -m 'テスト行1\n\nテスト行2\n\n{TRAILER}'", "deny"),
+            (f"git commit -m 'テスト\n\n{TRAILER}'", "deny"),
+            (f"git commit -m 'ダミー2\n\n{TRAILER}'", "deny"),
+            (f"git commit -m 'あああ\n\n{TRAILER}'", "deny"),
+            (f"git commit -m '仮\n\n{TRAILER}'", "deny"),
+            (f"git commit -m 'テストコミット\n\n{TRAILER}'", "deny"),
+            (f"git commit -m '試行\n\n{TRAILER}'", "deny"),
+            (f"git commit -m 'テストを追加\n\n{TRAILER}'", "pass"),
+            (f"git commit -m '試行コミットの禁止を追加\n\n{TRAILER}'", "pass"),
+        ]),
+        CaseGroup("コマンド自身の先頭が引数へ紛れ込んだ件名", [
+            (f"git commit -m 'git試行コミットの禁止を追加\n\n{TRAILER}'", "deny"),
+            (f"git commit -m 'git commit 疎化の区間分割を見直す\n\n{TRAILER}'", "deny"),
+            (f"git commit -m '-m 疎化の区間分割を見直す\n\n{TRAILER}'", "deny"),
+            (f"git commit -m 'git のフック設定を見直す\n\n{TRAILER}'", "pass"),
+            (f"git commit -m 'front_stage のテスト分割を見直す\n\n{TRAILER}'", "pass"),
+            (f"git commit -m '仮引数の既定値を見直す\n\n{TRAILER}'", "pass"),
+        ]),
+        CaseGroup("トレーラの形が欠けた形", [
+            ("git commit -m '件名\n\n本文\n\nCo-Authored-By: Claude <Opus 5> <noreply@anthropic.com>'", "deny"),
+            ("git commit -m '件名\n\n本文\n\nCo-Authored-By: Claude <モデル名> <noreply@anthropic.com>'", "deny"),
+            ("git commit -m '件名\n\n本文\n\nCo-Authored-By: Claude <Opus 5>'", "deny"),
+            ("git commit -m '件名\n\n本文\n\nCo-Authored-By: Opus 5 <noreply@anthropic.com>'", "deny"),
+            ("git commit -m '件名\n\n本文\n\nCo-Authored-By: Claude <noreply@anthropic.com>'", "deny"),
+            ("git commit -m '件名\n\n本文\n\nCo-Authored-By: Claude   <noreply@anthropic.com>'", "deny"),
+            ("git commit -m '件名\n\n本文\n\nCo-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>'", "pass"),
+            (f"git commit -m '件名\n\n本文\n\n{TRAILER} '", "pass"),
+            (f"git commit -m '件名 {TRAILER}'", "deny"),
+            ("git commit -m '件名'", "deny"),
+            (f"git commit -m '件名\n\n本文\n {TRAILER}'", "deny"),
+            (f"git commit -m '件名\n\n{TRAILER}\n\n追記'", "deny"),
+            (f"git commit -m '{TRAILER} 件名'", "deny"),
+        ]),
+        CaseGroup("行構造を表す改行エスケープだけを拒む", [
+            (f"git commit -m '区切りは \\t 文字\n\n{TRAILER}'", "pass"),
+            (f"git commit -m '改行を \\n で表す\n\n{TRAILER}'", "deny"),
+            (f"git commit -m $'件名\\n\\n本文\\n\\n{TRAILER}'", "deny"),
+        ]),
+        CaseGroup("許可しない add・commit の形", [
+            ("git add", "deny"),
+            ("git add .", "deny"),
+            ("git add -A", "deny"),
+            ("git add 'src/*'", "deny"),
+            ("git add -- :/", "deny"),
+            ("git commit", "deny"),
+            ("git commit -m ''", "deny"),
+            ("git commit -m 'x' --amend", "deny"),
+            ("git commit -m 'x' -- file.py", "deny"),
+            ("git add a.py && git commit -m 'x'", "deny"),
+            ("git commit -m \"$MESSAGE\"", "deny"),
+            ("git commit -m \"$(date)\"", "deny"),
+            ("git add src/{a,b}.py", "deny"),
+            ("git add a.py > staged.txt", "deny"),
+            ("cd repo && git add a.py", "deny"),
+            ("git -C repo commit -m 'x'", "deny"),
+            ("VAR=x git commit -m 'x'", "deny"),
+            ("command git add a.py", "deny"),
+            ("time git commit --amend", "deny"),
+            ("stdbuf git add -A", "deny"),
+            ("xargs git commit -m 'x'", "deny"),
+            ("git.exe commit -m 'x'", "deny"),
+            ("/usr/bin/git commit -m 'x'", "deny"),
+        ]),
+        CaseGroup("git reset はどの形も deny する", [
+            ("git reset", "deny"),
+            ("git reset --soft HEAD~1", "deny"),
+            ("git reset --hard origin/main", "deny"),
+            ("git reset -- file.py", "deny"),
+            ("git -C repo reset --hard", "deny"),
+            ("git.exe reset", "deny"),
+            ("/usr/bin/git reset --hard", "deny"),
+            ("time git reset --hard", "deny"),
+            ("VAR=x git reset", "deny"),
+            ("cd repo && git reset --hard", "deny"),
+            ("echo git reset", "pass"),
+            ("echo 'git reset --hard'", "pass"),
+        ]),
+        CaseGroup("別のリポジトリへ移した git の読み取り除外と、その境界", [
+            ("cd /d && git -C /d/other-repo status --short", "deny"),
+            ("git -C repo status", "pass"),
+            ("git -C. status", "pass"),
+            ("git -C ../other-clone log --oneline -5", "deny"),
+            ("git -C ../other-clone diff", "deny"),
+            ("git -C ../other-clone show HEAD", "deny"),
+            ("git --git-dir=.git --work-tree=. status", "pass"),
+            ("git --work-tree /x status", "pass"),
+            ("VAR=x git -C repo status", "pass"),
+            ("git -C repo push", "deny"),
+            ("git -C repo checkout main", "deny"),
+            ("git -C repo stash", "deny"),
+            ("git -C repo", "deny"),
+            ("git -C ../other grep --open-files-in-pager foo", "deny"),
+            ("git -C ../other grep -Ovim foo", "deny"),
+            ("git -C ../other grep --textconv foo", "deny"),
+            ("git -C ../other cat-file --filters HEAD:a.py", "deny"),
+            ("git -C ../other cat-file --textconv HEAD:a.py", "deny"),
+            ("git -C ../other cat-file --textcon HEAD:a.py", "deny"),
+            ("git -C ../other grep --filter=x foo", "deny"),
+        ]),
+        CaseGroup("シェルのキーワードと制御演算子の後ろに置いた呼び出し", [
+            ("! git add a.py", "deny"),
+            ("coproc git commit -m 'x'", "deny"),
+            ("! git reset --hard", "deny"),
+            ("git -C ../other status & git -C ../other checkout main", "deny"),
+            ("git -C ../other status\ngit -C ../other checkout main", "deny"),
+            ("( git -C ../other checkout main )", "deny"),
+            ("! git -C ../other push", "deny"),
+            ("coproc git -C ../other checkout main", "deny"),
+            ("( git add a.py )", "deny"),
+            ("git status & git commit -m 'x'", "deny"),
+        ]),
+        CaseGroup("ガードの対象外として素通りする形", [
+            ("git log -C", "pass"),
+            ("git -c user.name=x status", "pass"),
+            ("echo git -C repo status", "pass"),
+            ("git restore --staged a.py", "pass"),
+            ("git status --short", "pass"),
+            ("git diff --staged -- a.py", "pass"),
+            ("git log --oneline -10", "pass"),
+            ("git log commit", "pass"),
+            ("echo git commit", "pass"),
+            ("echo 'git commit -m x'", "pass"),
+            ("", "pass"),
+        ]),
+    )
+    IndexCase = namedtuple("IndexCase", "why command staged expected")
     index_cases = [
-        ("git add -- README.md", [], "pass"),
-        # Re-adding a file that is already staged names it, so nothing is unexpected.
-        ("git add -- README.md", ["README.md"], "pass"),
-        ("git add -- README.md CLAUDE.md", ["CLAUDE.md"], "pass"),
-        # An entry staged by someone else -- the collision this check exists for.
-        ("git add -- README.md", ["CLAUDE.md"], "deny"),
-        ("git add -- README.md", ["README.md", "plugins/flow/.claude-plugin/plugin.json"], "deny"),
-        # A rejected form stays rejected whatever the index holds.
-        ("git add -- missing-file.py", ["CLAUDE.md"], "deny"),
-        # commit is not this check's subject: it takes the whole index by definition.
-        (f"git commit -m '件名\n\n本文\n\n{TRAILER}'", ["CLAUDE.md"], "pass"),
+        IndexCase("ステージが空なら通る", "git add -- README.md", [], "pass"),
+        IndexCase("既にステージ済みのファイルの再 add", "git add -- README.md", ["README.md"], "pass"),
+        IndexCase("既にステージ済みのファイルの再 add", "git add -- README.md CLAUDE.md", ["CLAUDE.md"], "pass"),
+        IndexCase("別のセッションがステージした項目との衝突", "git add -- README.md", ["CLAUDE.md"], "deny"),
+        IndexCase("別のセッションがステージした項目との衝突", "git add -- README.md", ["README.md", "plugins/flow/.claude-plugin/plugin.json"], "deny"),
+        IndexCase("拒む形はインデックスの中身によらず拒む", "git add -- missing-file.py", ["CLAUDE.md"], "deny"),
+        IndexCase("commit はインデックス全体を取るので対象外", f"git commit -m '件名\n\n本文\n\n{TRAILER}'", ["CLAUDE.md"], "pass"),
     ]
-    # hooks -> flow -> plugins -> リポジトリルート。
     repo = Path(__file__).resolve().parents[3]
     failures = []
-    for command, expected in cases:
-        actual, _ = classify(command, repo)
-        if actual != expected:
-            failures.append((command, expected, actual))
-    for command, staged, expected in index_cases:
-        actual, _ = classify(command, repo, staged)
-        if actual != expected:
-            failures.append((f"{command} [staged={staged}]", expected, actual))
+    for group in case_groups:
+        for command, expected in group.cases:
+            actual, _ = classify(command, repo)
+            if actual != expected:
+                failures.append((f"{group.why}: {command}", expected, actual))
+    for case in index_cases:
+        actual, _ = classify(case.command, repo, case.staged)
+        if actual != case.expected:
+            failures.append((f"{case.why}: {case.command} [staged={case.staged}]",
+                             case.expected, actual))
     if failures:
         for command, expected, actual in failures:
             print(f"FAIL expected={expected} actual={actual}: {command!r}")
         raise SystemExit(1)
-    # Regression for the tracked-deletion byte comparison: git emits paths as UTF-8, so a
-    # tracked non-ASCII name must compare equal (decoding via the locale codec, e.g. cp932,
-    # used to corrupt or raise). The fixture below is tracked for exactly this check.
     if not _tracked_file(repo, repo / "plugins/flow/tests/fixtures/日本語パス検査.txt"):
-        print("FAIL _tracked_file rejected a tracked non-ASCII path")
+        print("FAIL 追跡下の非ASCIIパスがバイト比較で一致しない")
         raise SystemExit(1)
-    print(f"ALL PASS ({len(cases) + len(index_cases)} cases + non-ASCII tracked-path check)")
+    print(f"ALL PASS ({sum(len(group.cases) for group in case_groups) + len(index_cases)} cases + non-ASCII tracked-path check)")
 
 
 if __name__ == "__main__":
