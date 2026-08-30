@@ -34,7 +34,7 @@ marketplace の登録先はリポジトリではなくマシン側の状態な�
 
 ### 4. permissions と sandbox
 
-同梱の [required-settings.json](../contract/required-settings.json) が持つ `permissions.allow` と
+同梱の [required-settings.json](../../contract/required-settings.json) が持つ `permissions.allow` と
 `sandbox.excludedCommands` の全エントリを登録する。プラグインは permissions を配布できないため、
 各リポジトリ側に置く必要がある。
 
@@ -66,7 +66,7 @@ marketplace の登録先はリポジトリではなくマシン側の状態な�
 1. **条項1**: 検証手順書 `docs/conventions/verification.md` を作る。そのリポジトリで通す検査の
    一覧と合格条件を書く。
 2. **条項2**: 除外設定に `.scratch/` を加える。
-3. **条項4**: [required-settings.json](../contract/required-settings.json) を読み、その
+3. **条項4**: [required-settings.json](../../contract/required-settings.json) を読み、その
    `permissions.allow` と `sandbox.excludedCommands` の各エントリを `.claude/settings.json` の
    同じキーへ加える。**既存のエントリを消さず、足りないものだけを足す**(そのリポジトリが独自に
    登録した許可を失わせないため)。ファイルが無ければ作り、`git add` で追跡下に入れる。

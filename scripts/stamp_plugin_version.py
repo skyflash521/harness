@@ -349,7 +349,7 @@ def _selftest():
             print(f"FAIL parse_version {text!r}: want={want} got={got}")
 
     touched_cases = [
-        (["plugins/flow/docs/adoption.md", "scripts/x.py", "plugins/guard/hooks/a.py"], ["flow", "guard"]),
+        (["plugins/flow/docs/rules/adoption.md", "scripts/x.py", "plugins/guard/hooks/a.py"], ["flow", "guard"]),
         (["scripts/x.py", "README.md"], []),
         (["plugins"], []),
     ]

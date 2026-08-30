@@ -28,7 +28,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REQUIRED_SETTINGS = HERE / "required-settings.json"
-ADOPTION_DOC = HERE.parent / "docs" / "adoption.md"
+ADOPTION_DOC = HERE.parent / "docs" / "rules" / "adoption.md"
 
 VERIFICATION_DOC = "docs/conventions/verification.md"
 SETTINGS_FILE = ".claude/settings.json"

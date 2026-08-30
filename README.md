@@ -5,7 +5,7 @@
 - **guard**: 言語非依存の安全装置。取り返しのつかない操作と暴走する操作を拒否し、可逆で
   安全な代替へ誘導する。
 - **flow**: 開発ワークフロー。実装・レビュー・コミットの進め方を規律づける。
-  [導入契約](plugins/flow/docs/adoption.md)を満たすリポジトリで有効化する。
+  [導入契約](plugins/flow/docs/rules/adoption.md)を満たすリポジトリで有効化する。
 
 ## 対応環境
 
@@ -15,7 +15,7 @@
 利用者から見た挙動を揃える。
 
 Windows では bash を Git Bash が提供する。プラグインを使うマシンが満たす前提は
-[導入契約の前提環境](plugins/flow/docs/adoption.md#前提環境)が定める。
+[導入契約の前提環境](plugins/flow/docs/rules/adoption.md#前提環境)が定める。
 
 ## プラグインの利用
 
@@ -65,7 +65,7 @@ claude plugin disable flow@harness --scope user
 `disable` を省くと全リポジトリでフックが発火する。導入済みの状態で `install` を再実行すると有効化が
 戻るため、繰り返す場合も `disable` まで通す。
 
-**flow を有効化するリポジトリは[導入契約](plugins/flow/docs/adoption.md)の条項も満たす。**
+**flow を有効化するリポジトリは[導入契約](plugins/flow/docs/rules/adoption.md)の条項も満たす。**
 満たしていないと flow のスキルは起動時に停止する。guard だけなら契約は要らない。満たしているかを
 確かめる手順は、その文書が定める。
 
