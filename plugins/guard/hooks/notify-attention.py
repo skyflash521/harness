@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Best-effort attention sound for Windows, macOS, and Linux.
 
-Used when Claude needs the user: a permission prompt appeared.
-
 Sound playback is deliberately non-critical: missing commands, missing sound files,
 unavailable audio devices, and all other failures are silently ignored. Players are
 launched fire-and-forget so the caller is never delayed by playback.
@@ -23,8 +21,8 @@ DEVNULL = subprocess.DEVNULL
 def _spawn(command: list[str]) -> bool:
     """Launch one player fire-and-forget, returning whether it was spawned.
 
-    The notification must not delay the permission prompt, so we never wait for
-    the player to finish. Short notification sounds exit on their own.
+    The caller must not be delayed, so we never wait for the player to finish.
+    Short notification sounds exit on their own.
     """
     try:
         subprocess.Popen(
