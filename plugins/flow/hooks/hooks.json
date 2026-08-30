@@ -11,7 +11,17 @@
           },
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-approve-watchdog.py\" \"${CLAUDE_PLUGIN_ROOT}\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-approve-scripts.py\" \"${CLAUDE_PLUGIN_ROOT}\"",
+            "shell": "bash"
+          }
+        ]
+      },
+      {
+        "matcher": "ScheduleWakeup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-schedule-wakeup.py\" \"${CLAUDE_PLUGIN_ROOT}\"",
             "shell": "bash"
           }
         ]
@@ -33,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-idle-stop.py\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-idle-stop.py\" \"${CLAUDE_PLUGIN_ROOT}\"",
             "shell": "bash"
           }
         ]
@@ -45,7 +55,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/announce-stop-protocol.py\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/announce-stop-protocol.py\" \"${CLAUDE_PLUGIN_ROOT}\"",
             "shell": "bash"
           }
         ]

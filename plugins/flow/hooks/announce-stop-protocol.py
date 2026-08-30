@@ -8,7 +8,8 @@
 のに弾かれる」形になる。説明文はここが正本(deny メッセージとは長さの制約が違うので、同じ文言に
 ならない)。
 
-Usage: configured as a SessionStart hook. Run with --selftest.
+Usage: configured as a SessionStart hook with the plugin root as first argument.
+Run with --selftest.
 """
 import importlib.util
 import json
@@ -33,8 +34,10 @@ def build_context():
         "手番を返すときは理由を宣言する。末尾行を次のいずれかだけにする。\n"
         f"- {guard.DONE} — 作業が終わった\n"
         f"- {guard.DECISION} — ユーザーの判断が要る\n"
-        f"- {guard.WAIT} — 完了を待つ(背景処理か予約済み起床が在るときのみ)\n"
+        f"- {guard.WAIT} — 完了を待つ(登録された背景処理が在るときのみ)\n"
         "完了と要判断は、宣言の前に PushNotification を送る。"
+        f"時間で待つときは {guard.wait_script()} を run_in_background の Bash で起動し、"
+        "用が済んだら TaskStop で止めてから手番を返す(ScheduleWakeup は使えない)。"
     )
 
 
@@ -74,11 +77,12 @@ def selftest():
         if f"`{marker}`" in context:
             ok = False
             print(f"FAIL 宣言を囲み記号で包んで提示している: {marker}")
-    for phrase in ("PushNotification", "完了と要判断", "宣言の前"):
+    for phrase in ("PushNotification", "完了と要判断", "宣言の前",
+                   load_guard().WAIT_SCRIPT, "TaskStop", "ScheduleWakeup"):
         cases += 1
         if phrase not in context:
             ok = False
-            print(f"FAIL 通知の指示が文脈に無い: {phrase}")
+            print(f"FAIL 手順の要点が文脈に無い: {phrase}")
     cases += 1
     if "末尾行" not in context:
         ok = False

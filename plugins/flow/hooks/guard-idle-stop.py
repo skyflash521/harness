@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Stop hook: 停止を既定で禁じ、末尾行が停止宣言のものだけを許可する。
 
-宣言は3種。`待機` は `background_tasks` か `session_crons` が在るときだけ通す——手番が戻る経路の
-無いまま止まるのを防ぐ。`完了` と `要判断` は音を鳴らす。
+宣言は3種。`待機` は終端でない `background_tasks` が在るときだけ通す——手番が戻る経路の無いまま止まるのを
+防ぐ。`完了` と `要判断` は音を鳴らす。
+
+併せて実行中の `wait.py` を数え、`完了`・`要判断` では1つでも、`待機` では2つ以上を
+ブロックする。
 
 判定は末尾行の等値比較。応答本文を渡さないハーネスでは判定せず通す——判定できないことを不許可の
 理由にすると、何を書いても抜けられない恒久ブロックになる。
 
-Usage: configured as a Stop hook. Run with --selftest.
+Usage: configured as a Stop hook with the plugin root as first argument.
+Run with --selftest.
 """
 import json
 import platform
@@ -20,6 +24,19 @@ DECISION = "[停止: 要判断]"
 WAIT = "[停止: 待機]"
 MARKERS = (DONE, DECISION, WAIT)
 HANDOVER = (DONE, DECISION)
+
+WAIT_SCRIPT = "wait.py"
+RUNNING = "running"
+ENDED = ("completed", "failed", "killed", "cancelled", "canceled", "timeout")
+
+
+def wait_script():
+    """誘導先 wait.py の絶対パス。第1引数(プラグインルート)から組み立てる。"""
+    roots = [arg for arg in sys.argv[1:] if arg != "--selftest"]
+    if not roots:
+        return f"<flow プラグイン同梱の scripts/{WAIT_SCRIPT}>"
+    return Path(roots[0], "scripts", WAIT_SCRIPT).as_posix()
+
 
 # 等値比較の前に畳む表記の揺れ。前後に添えた文や囲み記号は畳まない。
 FOLD = {"：": ":", "［": "[", "］": "]", " ": "", "　": "", "\t": ""}
@@ -41,9 +58,7 @@ _HOW = (
     f"{DONE} — 依頼された作業が終わり、手番を返す。"
     f"{DECISION} — ユーザーの判断が要り、それ無しでは進めない。"
     "何を選ぶのかを確定的に書いたうえで付ける。"
-    f"{WAIT} — 何かの完了を待つ。手番が戻る経路として、"
-    "登録された背景処理か予約済みの起床のどちらかが在るときだけ使える"
-    "(完了通知は取りこぼされうるので、確実にするなら起床を併せて張る)。"
+    f"{WAIT} — 何かの完了を待つ。手番が戻る経路として、登録された背景処理が在るときだけ使える。"
 )
 
 REASON_NO_MARKER = (
@@ -53,14 +68,24 @@ REASON_NO_MARKER = (
     "宣言を文中で言及しただけ・囲み記号で包んだだけでは許可されない。" + _HOW
 )
 REASON_WAIT_UNSUBSTANTIATED = (
-    f"{WAIT} と宣言しているが、登録された背景処理も予約済みの起床も無い。"
+    f"{WAIT} と宣言しているが、手番が戻る経路になる背景処理が無い(終わった処理は経路にならない)。"
     "このまま止まると再開する手立てが無く、ユーザーが促すまで止まり続けることになる。"
-    "取るべき行動は、待つ対象を実際に起動するか、自分の側から発火できる起床を張るか、"
-    "待たずにその作業を自分で済ませること。"
+    f"取るべき行動は、待つ対象を実際に起動するか、時間で待つなら {wait_script()} を"
+    "run_in_background の Bash で起動するか、待たずにその作業を自分で済ませること。"
     f"作業が終わっているなら {DONE}、ユーザーの判断が要るなら {DECISION} を使う。"
 )
 REASON_MULTIPLE = (
     "末尾行に停止宣言が複数ある。どの理由で止まるのかが決まらない。1つだけにすること。" + _HOW
+)
+REASON_WAIT_LEFT_RUNNING = (
+    f"{WAIT_SCRIPT} が実行中のまま手番を返そうとしている。"
+    "止め忘れた待機は、手番を返した後で目標時刻に発火し、確認するものが無いターンを1つ作る。"
+    "TaskStop で止めてから宣言し直すこと(対象のIDは起動時の戻り値が示す)。"
+    f"まだ待つのであれば、止めずに {WAIT} を使う。"
+)
+REASON_WAIT_DUPLICATED = (
+    f"{WAIT_SCRIPT} が2つ以上動いている。待つ対象は1つなので、先に用が済んだ後も残りが発火し、"
+    "確認するものが無いターンを作る。TaskStop で余分な方を止めてから宣言し直すこと。"
 )
 
 
@@ -91,6 +116,25 @@ def play_sound():
         pass
 
 
+def tasks_of(data):
+    tasks = data.get("background_tasks")
+    return [t for t in tasks if isinstance(t, dict)] if isinstance(tasks, list) else []
+
+
+def live_tasks(data):
+    """手番が戻る経路になりうる背景処理。終端と分かるものだけを除く。"""
+    return [t for t in tasks_of(data) if t.get("status") not in ENDED]
+
+
+def running_waits(data):
+    """実行中と分かる wait.py の件数。状態を読めないものは数えない——不明を実行中とみなすと、
+    終わった待機を止めようがないまま停止が塞がり続ける。"""
+    def is_wait(task):
+        fields = " ".join(str(task.get(key, "")) for key in ("command", "description"))
+        return f"/{WAIT_SCRIPT}" in fields.replace("\\", "/")
+    return sum(1 for t in tasks_of(data) if t.get("status") == RUNNING and is_wait(t))
+
+
 def decide(data):
     """`(通した宣言, block する理由)` を返す。両方 None なら判定しない入力。"""
     message = data.get("last_assistant_message")
@@ -102,9 +146,14 @@ def decide(data):
         return None, REASON_MULTIPLE
     if len(found) != 1 or line != fold(found[0]):
         return None, REASON_NO_MARKER
+    waits = running_waits(data)
     if found[0] == WAIT:
-        if not (data.get("background_tasks") or data.get("session_crons")):
+        if not live_tasks(data):
             return None, REASON_WAIT_UNSUBSTANTIATED
+        if waits > 1:
+            return None, REASON_WAIT_DUPLICATED
+    elif waits:
+        return None, REASON_WAIT_LEFT_RUNNING
     return found[0], None
 
 
@@ -138,38 +187,54 @@ def selftest():
 
     task = {"id": "b1", "type": "shell", "status": "running", "description": "検査"}
     cron = {"id": "c1"}
+    waiting = {
+        "id": "b2", "type": "shell", "status": "running", "description": "上限明けまで待つ",
+        "command": 'python3 "/p/flow/scripts/wait.py" "2026-08-30 21:00"',
+    }
+    waiting_seconds = dict(waiting, id="b3", command="python3 /p/flow/scripts/wait.py 300")
+    waiting_ended = dict(waiting, id="b4", status="completed")
+    other_test = dict(waiting, id="b5", description="回帰検査",
+                      command="python3 -m pytest tests/test_wait.py")
     block_cases = [
         (stop("コミットしました。ハッシュは 90d8326 です。"), REASON_NO_MARKER),
         (stop("次はレビューを回します。"), REASON_NO_MARKER),
         (stop("お任せいただけるなら、このまま実装します。"), REASON_NO_MARKER),
         (stop("どちらで進めますか。1. フックを作る 2. 文書だけにする"), REASON_NO_MARKER),
         (stop(""), REASON_NO_MARKER),
-        # 宣言が末尾行でない
         (stop("[停止: 完了]\n\n続けて別の作業もあります。"), REASON_NO_MARKER),
-        # 宣言に文を添えた・囲み記号で包んだ末尾行(等値でない)
         (stop("末尾に [停止: 完了] と書く決まりにしました。"), REASON_NO_MARKER),
         (stop("作業は終わりました。\n\n`[停止: 完了]`"), REASON_NO_MARKER),
         (stop("作業は終わりました。\n\n[停止: 完了] 以上です。"), REASON_NO_MARKER),
         (stop("レビューの完了を待ちます。\n\n[停止: 待機]"), REASON_WAIT_UNSUBSTANTIATED),
+        (stop("外部の CI の完了を待ちます。\n\n[停止: 待機]", crons=[cron]),
+         REASON_WAIT_UNSUBSTANTIATED),
+        (stop("外部の CI の完了を待ちます。\n\n[停止: 待機]", tasks=[waiting_ended]),
+         REASON_WAIT_UNSUBSTANTIATED),
+        (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[waiting]), REASON_WAIT_LEFT_RUNNING),
+        (stop("どちらで進めますか。\n\n[停止: 要判断]", tasks=[waiting_seconds]),
+         REASON_WAIT_LEFT_RUNNING),
+        (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting, waiting_seconds]),
+         REASON_WAIT_DUPLICATED),
         (stop("作業は終わりました。\n\n[停止: 完了] [停止: 要判断]"), REASON_MULTIPLE),
-        # 一度ブロックした後も素通ししない
         (stop("これからフックを書きます。", active=True), REASON_NO_MARKER),
     ]
     pass_cases = [
         (stop("コミットしました。ハッシュは 90d8326 です。\n\n[停止: 完了]"), "[停止: 完了]"),
         (stop("どちらで進めますか。1. フックを作る 2. 文書だけにする\n\n[停止: 要判断]"),
          "[停止: 要判断]"),
-        # 表記の揺れ
         (stop("作業は終わりました。\n\n[停止：完了]"), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止:完了]"), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n［停止：完了］"), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止：　完了]"), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止:\t完了]"), "[停止: 完了]"),
-        # 本文を渡さないハーネス
         ({"hook_event_name": "Stop", "last_assistant_message": None}, None),
         ({"hook_event_name": "Stop", "stop_hook_active": False}, None),
         (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[task]), "[停止: 待機]"),
-        (stop("外部の CI の完了を待ちます。\n\n[停止: 待機]", crons=[cron]), "[停止: 待機]"),
+        (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting]), "[停止: 待機]"),
+        (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting, task]), "[停止: 待機]"),
+        (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[task]), "[停止: 完了]"),
+        (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[waiting_ended]), "[停止: 完了]"),
+        (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[other_test]), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止: 完了]", active=True), "[停止: 完了]"),
     ]
     ok = True

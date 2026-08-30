@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: auto-approve the codex-watchdog skill's bundled script launches.
+"""PreToolUse hook: auto-approve flow's bundled read-only script launches.
 
-codex-watchdog は同梱の読み取り専用スクリプトを2つ持つ。watchdog.sh(codex のジョブ状態
-ディレクトリに対する find/stat/grep/sleep)と wait_until.py(指定時刻まで待つだけ)で、
-codex:codex-rescue を起動するどのスキルからも共有される。どちらも許可リストに載る形ではなく、
+flow は読み取り専用のスクリプトを2つ同梱する。skills/codex-watchdog/watchdog.sh(codex のジョブ
+状態ディレクトリに対する find/stat/grep/sleep)と scripts/wait.py(指定時刻か秒数まで待つだけ)で、
+どちらもフックの誘導を受けて起動される。どちらも許可リストに載る形ではなく、
 無害な読み取りでも呼び出し側にプロンプトが出る(Claude Code は `bash <script>` 形のコマンドを
 許可パイプライン内で上書き不能な "ask" へ降格させることがある)。PreToolUse の allow 判定は
 behavior:allow として直接返るのでこれを上書きできる。よってこのフックは、単一で連結の無い
@@ -38,7 +38,7 @@ def _norm(path):
 # 承認する「インタプリタ, 同梱スクリプトの位置」の組。これ以外は承認しない。
 APPROVED_LAUNCHES = (
     ("bash", ("skills", "codex-watchdog", "watchdog.sh")),
-    ("python3", ("skills", "codex-watchdog", "wait_until.py")),
+    ("python3", ("scripts", "wait.py")),
 )
 
 
@@ -94,7 +94,7 @@ def _selftest():
     # スラッシュ区切り(bash ではバックスラッシュがエスケープ文字として食われる)。
     win_root = root.replace("/", chr(92))
     launch = "bash " + root + "/skills/codex-watchdog/watchdog.sh"
-    wait = "python3 " + root + "/skills/codex-watchdog/wait_until.py"
+    wait = "python3 " + root + "/scripts/wait.py"
     spaced = "C:/Program Files/user/.claude/plugins/cache/harness/flow/1.0.0"
     cases = [
         (launch + ' 420 1200 "" 240 vprv0test9m2', root, True),
@@ -111,6 +111,7 @@ def _selftest():
         ('bash "' + spaced + '/skills/codex-watchdog/watchdog.sh" 420 1200 "" 240 tok',
          spaced, True),
         (wait + ' "2026-08-29 01:47"', root, True),
+        (wait + " 300", root, True),
         (wait + " --selftest", root, True),
         # インタプリタとスクリプトの組が入れ替わった形は承認しない
         (wait.replace("python3 ", "bash "), root, False),
