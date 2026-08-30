@@ -1,7 +1,5 @@
-# 改行コードは作業ツリーも含めて LF に統一する(.editorconfig の end_of_line と揃える)
 * text=auto eol=lf
 
-# git フックとシェルスクリプトは必ず LF でチェックアウトする(CRLF だと shebang が
-# python3\r 等の解決失敗となり、フックが無言で起動しなくなる)
+# CRLF でチェックアウトすると shebang の末尾に復帰文字が付き、フックが無言で起動しなくなる。
 .githooks/** text eol=lf
 *.sh text eol=lf

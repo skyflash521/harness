@@ -198,27 +198,21 @@ def cmd_stamp():
                 continue
             print(f"エラー: {rel} が存在しない。プラグインには plugin.json が必要")
             return 1
-        # (1) ステージ境界の保護(スキップ判定より先に評価する)
         if run_git("diff", "--name-only", "--", rel).stdout.strip():
             print(
                 f"エラー: {rel} に未ステージの差分がある。刻印はステージを書き換えるため、"
                 "その差分をステージするか退避してから刻印し直すこと"
             )
             return 1
-        # (2) 冪等スキップ
         baseline = head_baseline(name, head)
         staged = version_of(f":{rel}")
         if is_increased(staged, baseline):
-            # スキップは「誰かが既に刻印してステージした」状態を告げている。自分の刻印の再実行なら
-            # 冪等で正しいが、身に覚えが無ければ同じ作業ツリーで別のセッションが動いている兆候で、
-            # そのままコミットへ進むと相手のステージ分を巻き込む。ここで気付けるように書き添える。
             print(
                 f"{name}: 刻印済み({format_version(staged)})のためスキップ"
                 "(この刻印に身に覚えが無いなら、同じ作業ツリーで別のセッションが動いている疑い。"
                 "進める前に git status でステージの内容を確かめること)"
             )
             continue
-        # (3) 刻印してステージ
         version = stamp_and_stage(name, now, head)
         print(f"{name}: version {format_version(version)} を刻印してステージした")
     return 0
@@ -231,7 +225,7 @@ def cmd_verify_staged():
         rel = plugin_json_path(name)
         if not run_git("ls-files", "--cached", "--", rel).stdout.strip():
             if head and blob_exists("HEAD", rel):
-                continue  # プラグイン削除はコミットしてよい
+                continue
             violations.append(name)
             continue
         if not is_increased(version_of(f":{rel}"), head_baseline(name, head)):

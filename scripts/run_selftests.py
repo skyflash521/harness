@@ -8,8 +8,8 @@
 判定は「ファイル本文に `--selftest` の文字列があること」で行う。自己テストを持たないスクリプトは
 その旨を出力に並べるので、持つべきものが漏れていれば一覧を見て気付ける。
 
-Usage: python3 scripts/run_selftests.py
-Exit code: 実行した自己テストがすべて成功なら 0、1つでも失敗すれば 1。
+使い方: python3 scripts/run_selftests.py
+終了コード: 実行した自己テストがすべて成功なら 0、1つでも失敗すれば 1。
 """
 import subprocess
 import sys

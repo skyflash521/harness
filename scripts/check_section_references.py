@@ -12,11 +12,16 @@ Markdownリンクとして書かれた参照は lychee がリンク切れを検�
 バッククォートのインラインコード内は検査対象外とする(消費リポジトリのファイル名と同名を
 harness 自身も追跡しているケースを本文中で言及できるようにするため。リンク先の実在は lychee が
 別途担保する)。
+
+使い方: python3 scripts/check_section_references.py
+自己テスト: python3 scripts/check_section_references.py --selftest
+終了コード: 平文参照が無ければ 0、1件でもあれば 1。
 """
 import posixpath
 import re
 import subprocess
 import sys
+from collections import namedtuple
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -76,11 +81,11 @@ def check_section_tokens(rel_path: str, text: str) -> list[str]:
     for m in SECTION_TOKEN_RE.finditer(text):
         start = m.start()
         if covering(start, 2) is not None:
-            continue  # URL内は対象外(既存リンクとして正当)
+            continue
         text_link = covering(start, 1)
         if text_link is not None:
             if '#' in text_link.group(2):
-                continue  # 表示テキスト内・アンカー付きは正当
+                continue
             violations.append(
                 f'{rel_path}:{line_of(text, start)}: 節参照 {m.group(0)!r} を含むリンクにアンカー(#)が無い'
             )
@@ -95,7 +100,7 @@ def resolves_to_tracked(candidate: str, rel_path: str, tracked: set[str]) -> boo
     for path in {candidate, posixpath.join(base, candidate) if base else candidate}:
         normalized = posixpath.normpath(path)
         if normalized == '..' or normalized.startswith('../'):
-            continue  # リポジトリ外へ抜ける相対パスは追跡ファイルに解決されない
+            continue
         if normalized in tracked:
             return True
     return False
@@ -126,14 +131,41 @@ def check_bare_md(rel_path: str, text: str, tracked: set[str]) -> list[str]:
         prefix = text[line_start:start]
         if '<' in prefix and prefix.count('<') > prefix.count('>'):
             continue
-        # `<ツール>/x.md` の `>` 直後、`*/SKILL.md` の `*` 直後はプレースホルダー・globパターンの
-        # 断片であり実ファイルではないため対象外とする
         if start > 0 and text[start - 1] in ('>', '*'):
             continue
         if not resolves_to_tracked(m.group(0), rel_path, tracked):
             continue
         violations.append(f'{rel_path}:{line_of(text, start)}: 裸の.md参照 {m.group(0)!r} がリンク化されていない')
     return violations
+
+
+def selftest() -> int:
+    Case = namedtuple("Case", "why path text expect_violation")
+    tracked = {"docs/module.md", "plugins/flow/skills/sample/SKILL.md"}
+    cases = [
+        Case("リンク化されていない裸の参照は違反",
+             "docs/a.md", "詳細は docs/module.md を見る。\n", True),
+        Case("同じ位置の裸の参照は違反",
+             "plugins/flow/skills/sample/x.md", "各スキルの SKILL.md を見る。\n", True),
+        Case("プレースホルダー表記の直後は対象外",
+             "plugins/flow/skills/sample/x.md", "各ツールの <ツール>SKILL.md を見る。\n", False),
+        Case("glob パターンの直後は対象外",
+             "plugins/flow/skills/sample/x.md", "各スキルの *SKILL.md を見る。\n", False),
+        Case("リンクの中は対象外", "docs/a.md", "[表示](docs/module.md)\n", False),
+        Case("追跡ファイルへ解決しない参照は対象外", "docs/a.md", "外部の other.md を指す。\n", False),
+    ]
+    failures = []
+    for case in cases:
+        got = bool(check_bare_md(case.path, case.text, tracked))
+        if got != case.expect_violation:
+            failures.append(f"FAIL {case.why}: expect={case.expect_violation} got={got}")
+    if not check_section_tokens("docs/a.md", "詳細は §2 を見る。\n"):
+        failures.append("FAIL 平文の節参照が検出されない")
+    if failures:
+        print("\n".join(failures))
+        return 1
+    print(f"ALL PASS ({len(cases)} cases + 平文の節参照 1 件)")
+    return 0
 
 
 def main() -> None:
@@ -154,4 +186,6 @@ def main() -> None:
 
 
 if __name__ == '__main__':
+    if '--selftest' in sys.argv:
+        sys.exit(selftest())
     main()
