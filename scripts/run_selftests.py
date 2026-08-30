@@ -60,7 +60,7 @@ def main():
         result = subprocess.run(
             [launcher(path), str(path), MARKER],
             cwd=REPO_ROOT, capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
+            encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL,
         )
         status = "OK" if result.returncode == 0 else f"FAIL (exit {result.returncode})"
         print(f"{status}: {rel}")
