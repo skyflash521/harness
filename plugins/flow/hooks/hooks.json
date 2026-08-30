@@ -38,6 +38,18 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/announce-stop-protocol.py\"",
+            "shell": "bash"
+          }
+        ]
+      }
     ]
   }
 }
