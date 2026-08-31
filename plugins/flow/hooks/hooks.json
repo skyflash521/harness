@@ -11,6 +11,11 @@
           },
           {
             "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-codex-launch.py\"",
+            "shell": "bash"
+          },
+          {
+            "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-approve-scripts.py\" \"${CLAUDE_PLUGIN_ROOT}\"",
             "shell": "bash"
           }
