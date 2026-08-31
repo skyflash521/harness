@@ -4,7 +4,7 @@
 秘密情報・読み手の理解を変えない記述(自明な内容、コードや外部仕様の書き写し、採らなかった案の
 比較検討など)を混入させないための規約。本書は**混入を禁じる対象と、正しい置き換え方の正本**と
 する。
-コード内のコメント・docstring を書いてよい場合は [code-comments.md](code-comments.md)、
+コード内のコメント・docstring を書いてよい場合は [code-authoring.md](code-authoring.md)、
 参照の書き方・整合確認は [cross-references.md](cross-references.md)、文書種別ごとの記述範囲・粒度
 (恒久仕様書は到達状態のみ、実装計画書は確定粒度)は [document-authoring.md](document-authoring.md)
 を正本とし、本書はそれらへ委譲する。用語の正記法は、リポジトリが用語規約を持つ場合はその文書を
