@@ -8,10 +8,7 @@ user-invocable: false
 
 `flow:codex-review-loop`・`flow:fable-review-loop`・`flow:opus-review-loop` など、反復レビュー・ループを実装する
 各スキルが共有する判断ロジックの正本。**レビュアーの正体(Codex・Fable・Opus等)に依存しない
-判断ロジックのみを定める**。レビュアーの起動契約(呼び出し方・記号規約・タイムアウト制御・
-失敗時のリトライ等)は
-[flow:codex-review-loop](../codex-review-loop/SKILL.md)・[flow:fable-review-loop](../fable-review-loop/SKILL.md)・[flow:opus-review-loop](../opus-review-loop/SKILL.md)
-それぞれが持つ(後二者は共通部分を [flow:review-loop-subagent](../review-loop-subagent/SKILL.md) に置く)。
+判断ロジックのみを定める**。
 
 呼び出し元スキルは、レビュー実行(各スキルが自分で定めるレビュー実行の段)の前後でこのスキルを起動し、
 以下の手順・大前提に従う。以下「レビュアー」は起動したレビュー担当(Codex・Fable・Opus等)を指す。
@@ -122,10 +119,7 @@ user-invocable: false
 
 ## レビュー依頼に含めるべき内容(レビュアーに依らない共通要件)
 
-各スキルはレビュー実行でレビュアーを起動する際、以下を必ずレビュー指示文に含める(起動作法・記号規約等の
-レビュアー固有の契約は
-[flow:codex-review-loop](../codex-review-loop/SKILL.md)・[flow:fable-review-loop](../fable-review-loop/SKILL.md)・[flow:opus-review-loop](../opus-review-loop/SKILL.md)
-それぞれに別途ある(後二者は共通部分を [flow:review-loop-subagent](../review-loop-subagent/SKILL.md) に置く))。
+各スキルはレビュー実行でレビュアーを起動する際、以下を必ずレビュー指示文に含める。
 **依頼文が満たすべき要件は[レビュー依頼の規約](../../docs/rules/review-request.md)に従う**:
 
 - **【最優先】この変更の要件と目的(品質基準)、および枠——作業ディレクトリ(リポジトリルート絶対パス)・
