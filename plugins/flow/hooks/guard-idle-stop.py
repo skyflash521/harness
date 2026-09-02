@@ -7,15 +7,22 @@
 併せてこのセッションが起動した背景処理を数え、生存しているものが残ったままの `完了`・`要判断` と、
 生存している `wait.py` が2つ以上ある `待機` をブロックする。
 
+codex のジョブ記録も同じように見る。進行の実体を失ったまま実行中として残った記録はどの宣言でも
+ブロックする——残せば以後そのスレッドを継ぐ起動が拒否され続ける。進行中と分かる記録は
+`完了`・`要判断` だけをブロックし、`待機` は通す。どちらとも決められない記録はブロックしない。
+
 判定は末尾行の等値比較。応答本文を渡さないハーネスでは判定せず通す——判定できないことを不許可の
 理由にすると、何を書いても抜けられない恒久ブロックになる。
 
 使い方: プラグインルートを第1引数に渡す Stop フックとして登録する。--selftest で自己テスト。
 """
+import importlib.util
 import json
+import os
 import platform
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 DONE = "[停止: 完了]"
@@ -25,16 +32,31 @@ MARKERS = (DONE, DECISION, WAIT)
 HANDOVER = (DONE, DECISION)
 
 WAIT_SCRIPT = "wait.py"
+CODEX_REAPER = "reap_codex_jobs.py"
+ENDED_RUN = ("gone", "stalled")
 LIVE = ("running", "pending", "backgrounded")
 ENDED = ("completed", "failed", "killed", "cancelled", "canceled", "timeout")
 
 
-def wait_script():
-    """誘導先 wait.py の絶対パス。"""
+def plugin_root():
     roots = [arg for arg in sys.argv[1:] if arg != "--selftest"]
-    if not roots:
-        return f"<flow プラグイン同梱の scripts/{WAIT_SCRIPT}>"
-    return Path(roots[0], "scripts", WAIT_SCRIPT).as_posix()
+    return roots[0] if roots else ""
+
+
+def plugin_script(name):
+    """誘導先スクリプトの絶対パス。プラグインルートを渡されない起動では名前だけを返す。"""
+    root = plugin_root()
+    if not root:
+        return f"<flow プラグイン同梱の scripts/{name}>"
+    return Path(root, "scripts", name).as_posix()
+
+
+def wait_script():
+    return plugin_script(WAIT_SCRIPT)
+
+
+def reaper_script():
+    return plugin_script(CODEX_REAPER)
 
 
 FOLD = {"：": ":", "［": "[", "］": "]", " ": "", "　": "", "\t": ""}
@@ -84,6 +106,18 @@ REASON_TASK_LEFT_RUNNING = (
 REASON_WAIT_DUPLICATED = (
     f"{WAIT_SCRIPT} が2つ以上動いている。待つ対象は1つなので、先に用が済んだ後も残りが発火し、"
     "確認するものが無いターンを作る。TaskStop で余分な方を止めてから宣言し直すこと。"
+)
+REASON_CODEX_STALE = (
+    "このセッションが起こした codex のジョブが、進行の実体を失ったまま実行中として記録に"
+    "残っている: {jobs}。残したままにすると、以後このスレッドを継ぐ起動が同じ記録に当たって拒否され"
+    "続け、前ラウンドの文脈を持たない新規スレッドへ縮退する。"
+    'python3 "{reaper}" {session} で終局させてから宣言し直すこと。'
+)
+REASON_CODEX_RUNNING = (
+    "このセッションが起こした codex が実行中のまま手番を返そうとしている: {jobs}。"
+    "途中で止めた実行は成果ゼロで費用だけが残るので、殺して片付けない。結果を受け取るまで待つこと"
+    f"——待つなら背景処理を起こして {WAIT} を使う。"
+    'プロセスが終わったのに記録が実行中のままなら python3 "{reaper}" {session} で終局させる。'
 )
 
 
@@ -145,7 +179,24 @@ def live_waits(data):
     return sum(1 for t in live_now(data) if is_wait(t))
 
 
-def decide(data):
+def codex_jobs(data):
+    """このセッションが起こした、記録上まだ終局していない codex ジョブ。判定できない環境では空。"""
+    session = data.get("session_id")
+    root = plugin_root()
+    if not isinstance(session, str) or not session or not root:
+        return []
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_reap_codex_jobs", Path(root, "scripts", CODEX_REAPER),
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.active_jobs(session)
+    except Exception:
+        return []
+
+
+def decide(data, codex=()):
     """`(通した宣言, block する理由)` を返す。両方 None なら判定しない入力。"""
     message = data.get("last_assistant_message")
     if message is None:
@@ -163,6 +214,14 @@ def decide(data):
             return None, REASON_WAIT_DUPLICATED
     elif live_now(data):
         return None, REASON_TASK_LEFT_RUNNING.format(tasks=label(live_now(data)))
+    stale = [job for job in codex if job.get("state") in ENDED_RUN]
+    live = [job for job in codex if job.get("state") == "live"]
+    blocked = stale or (live if found[0] != WAIT else [])
+    if blocked:
+        reason = REASON_CODEX_STALE if stale else REASON_CODEX_RUNNING
+        return None, reason.format(
+            jobs=label(blocked), reaper=reaper_script(), session=data.get("session_id"),
+        )
     return found[0], None
 
 
@@ -176,7 +235,7 @@ def main():
         return
     if not isinstance(data, dict):
         return
-    marker, reason = decide(data)
+    marker, reason = decide(data, codex_jobs(data))
     if reason:
         print(json.dumps({"decision": "block", "reason": f"{TAG} {reason}"}))
         return
@@ -192,7 +251,14 @@ def selftest():
             "last_assistant_message": message,
             "background_tasks": list(tasks),
             "session_crons": list(crons),
+            "session_id": "S1",
         }
+
+    def codex_stale(jobs):
+        return REASON_CODEX_STALE.format(jobs=jobs, reaper=reaper_script(), session="S1")
+
+    def codex_running(jobs):
+        return REASON_CODEX_RUNNING.format(jobs=jobs, reaper=reaper_script(), session="S1")
 
     task = {"id": "b1", "type": "shell", "status": "running", "description": "検査"}
     cron = {"id": "c1"}
@@ -205,6 +271,10 @@ def selftest():
     other_test = dict(waiting, id="b5", description="回帰検査",
                       command="python3 -m pytest tests/test_wait.py")
     unknown = dict(task, id="b6", status="mystery")
+    codex_alive = {"id": "j1", "status": "running", "pid": 111, "state": "live"}
+    codex_ghost = {"id": "j2", "status": "running", "pid": 222, "state": "gone"}
+    codex_stalled = {"id": "j4", "status": "running", "pid": 444, "state": "stalled"}
+    codex_unknown = {"id": "j3", "status": "running", "pid": 333, "state": "unknown"}
     pending = dict(task, id="b7", status="pending")
     crowd = [dict(task, id=f"c{n}") for n in range(6)]
     block_cases = [
@@ -237,6 +307,14 @@ def selftest():
          REASON_WAIT_DUPLICATED),
         (stop("作業は終わりました。\n\n[停止: 完了] [停止: 要判断]"), REASON_MULTIPLE),
         (stop("これからフックを書きます。", active=True), REASON_NO_MARKER),
+        (stop("コミットしました。ハッシュは 90d8326 です。"), REASON_NO_MARKER, [codex_ghost]),
+        (stop("作業は終わりました。\n\n[停止: 完了]"), codex_stale("j2"), [codex_ghost]),
+        (stop("どちらで進めますか。\n\n[停止: 要判断]"), codex_stale("j2"), [codex_ghost]),
+        (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[task]), codex_stale("j2"), [codex_ghost]),
+        (stop("作業は終わりました。\n\n[停止: 完了]"), codex_stale("j2"), [codex_alive, codex_ghost]),
+        (stop("作業は終わりました。\n\n[停止: 完了]"), codex_running("j1"), [codex_alive]),
+        (stop("どちらで進めますか。\n\n[停止: 要判断]"), codex_running("j1"), [codex_alive]),
+        (stop("作業は終わりました。\n\n[停止: 完了]"), codex_stale("j4"), [codex_stalled]),
     ]
     pass_cases = [
         (stop("コミットしました。ハッシュは 90d8326 です。\n\n[停止: 完了]"), "[停止: 完了]"),
@@ -256,23 +334,69 @@ def selftest():
         (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[waiting_ended]), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[unknown]), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止: 完了]", active=True), "[停止: 完了]"),
+        (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[task]), "[停止: 待機]", [codex_alive]),
+        (stop("作業は終わりました。\n\n[停止: 完了]"), "[停止: 完了]", [codex_unknown]),
     ]
+    def unpack(case):
+        return case if len(case) == 3 else (case[0], case[1], ())
+
     ok = True
-    for data, expected in block_cases:
-        actual = decide(data)
+    for case in block_cases:
+        data, expected, codex = unpack(case)
+        actual = decide(data, codex)
         if actual != (None, expected):
             ok = False
             print(f"FAIL expected block: {data.get('last_assistant_message')!r} -> {actual!r}")
-    for data, expected in pass_cases:
-        actual = decide(data)
+    for case in pass_cases:
+        data, expected, codex = unpack(case)
+        actual = decide(data, codex)
         if actual != (expected, None):
             ok = False
             print(f"FAIL expected pass: {data.get('last_assistant_message')!r} -> {actual!r}")
     if not _roundtrip_ok(block_cases[0][0], block_cases[0][1]):
         ok = False
-    total = len(block_cases) + len(pass_cases) + 1
+    if not _codex_lookup_ok():
+        ok = False
+    total = len(block_cases) + len(pass_cases) + 2
     print("ALL PASS" if ok else "SOME FAILED", f"({total} cases)")
     sys.exit(0 if ok else 1)
+
+
+def _codex_lookup_ok():
+    """同梱スクリプトを実際に取り込ませ、残骸1件で block が出るところまでを通す。判定関数へ
+    直接リストを渡す検査は取り込み経路を通らないので、そこが壊れていても合格してしまう。"""
+    plugin_root_dir = Path(__file__).resolve().parents[1]
+    session = "selftest-session"
+    job = {
+        "id": "task-selftest", "status": "running", "phase": "running", "pid": 0,
+        "sessionId": session, "updatedAt": "2000-01-01T00:00:00.000Z",
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp, "plugins", "data", "codex", "state", "repo-0123456789abcdef")
+        workspace.mkdir(parents=True)
+        (workspace / "state.json").write_text(
+            json.dumps({"version": 1, "jobs": [job]}, ensure_ascii=False), encoding="utf-8",
+        )
+        payload = json.dumps({
+            "hook_event_name": "Stop",
+            "last_assistant_message": f"作業は終わりました。\n\n{DONE}",
+            "background_tasks": [],
+            "session_id": session,
+        }, ensure_ascii=False).encode("utf-8")
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve()), str(plugin_root_dir)],
+            input=payload, capture_output=True, check=False,
+            env={**os.environ, "CLAUDE_CONFIG_DIR": tmp, "TMPDIR": tmp, "TEMP": tmp, "TMP": tmp},
+        )
+    try:
+        out = json.loads(result.stdout.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        print(f"FAIL codex lookup: 出力が JSON でない: {result.stdout[:200]!r}")
+        return False
+    if out.get("decision") != "block" or "task-selftest" not in out.get("reason", ""):
+        print(f"FAIL codex lookup: 残骸を名指しする block が出ない: {out!r}")
+        return False
+    return True
 
 
 def _roundtrip_ok(data, expected):
