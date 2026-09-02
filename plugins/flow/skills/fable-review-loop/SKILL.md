@@ -21,7 +21,6 @@ python3 <check_adoption.py の絶対パス>
 ```
 
 **非0で終わったら、その出力をそのまま示して停止し、[導入契約](../../docs/rules/adoption.md)へ案内する。**
-確認する条項とその内容はスクリプトが持つので、ここには書かない。
 
 レビュアーの起動契約と、1ラウンドを回して結末を出すまでの手順は
 [flow:review-loop-subagent](../review-loop-subagent/SKILL.md) スキル、レビュアーの正体に依らない
