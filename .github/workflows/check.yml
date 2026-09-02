@@ -31,6 +31,9 @@ jobs:
       - name: check section references
         run: python3 scripts/check_section_references.py
 
+      - name: check reference cycles
+        run: python3 scripts/check_reference_cycles.py
+
       - name: check adoption
         run: python3 plugins/flow/contract/check_adoption.py .
 
