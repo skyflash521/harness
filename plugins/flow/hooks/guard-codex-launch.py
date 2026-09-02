@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """PreToolUse フック: 規約の形から外れた codex companion の起動を deny する。
 
-起動の作法は codex-watchdog スキルが定めるが、定めを読むのは起動する側の判断に委ねられていた。
-外れた起動は EPERM・MODULE_NOT_FOUND・オプションの誤認識になり、ラウンドを1つ捨てて初めて
-分かる。判定に要るものは起動コマンドの文字列にすべて出ているので、呼ぶその場で弾ける。
+起動の作法は codex-watchdog スキルが定めるが、守られるかは起動する側の読解に依存していた。
+外れた起動は、失敗してラウンドを1つ捨てるか、そのまま完走してリポジトリの外へ副作用を残す。判定に
+要るのは起動コマンドの文字列と、サンドボックス無効化を示すツールの引数だけなので、呼ぶその場で弾ける。
 
 見るのは `codex-companion.mjs` を含むコマンドだけで、他は何も出力せず通す。判定できない形
 (引用が閉じていない等)も通す——読み取れないことを不許可の理由にすると、正しい起動まで巻き込む。
+実行モード(`--write`)は呼び出し元スキルが場面ごとに決めるので判定しない。
 
 使い方: Bash の PreToolUse フックとして登録する。--selftest で自己テスト。
 """
@@ -31,7 +32,12 @@ def is_absolute(path):
     return path.startswith("/") or bool(re.match(r"^[A-Za-z]:[/\\]", path))
 
 
-def problem(command):
+def is_enabled(token, name):
+    """companion の真偽オプションが有効か。`--name` と `--name=<false 以外>` の両方を受け取る。"""
+    return token == name or (token.startswith(name + "=") and token[len(name) + 1:] != "false")
+
+
+def problem(command, disable_sandbox=False):
     """規約から外れていれば理由を返す。適合または判定対象外なら None。"""
     if not isinstance(command, str) or COMPANION not in command:
         return None
@@ -69,6 +75,17 @@ def problem(command):
         )
     head = rest[:rest.index("--")]
     task_args = rest[rest.index("--") + 1:]
+
+    if disable_sandbox:
+        return (
+            "サンドボックスを無効化して起動している。codex はサンドボックス内で動かす。"
+            "無効化するとリポジトリの外へ副作用が出うる。"
+        )
+    if any(is_enabled(token, "--background") for token in head):
+        return (
+            "--background が付いている。companion がジョブIDだけを返して即座に戻るため、"
+            "結果を受け取らないまま先へ進む。フォアグラウンドで実行して結果を受け取ること。"
+        )
 
     if "--cwd" in head:
         return (
@@ -129,7 +146,8 @@ def main():
     tool_input = data.get("tool_input")
     if not isinstance(tool_input, dict):
         return
-    reason = problem(tool_input.get("command"))
+    reason = problem(tool_input.get("command"),
+                     disable_sandbox=bool(tool_input.get("dangerouslyDisableSandbox")))
     if reason:
         print(json.dumps({
             "hookSpecificOutput": {
@@ -150,6 +168,9 @@ def selftest():
     passes = (
         ("標準形", GOOD),
         ("--json を挟む形", GOOD.replace("task --cwd", "task --json --cwd")),
+        ("--write を挟む形(実行モードは呼び出し元が決める)",
+         GOOD.replace("task --cwd", "task --write --cwd")),
+        ("--background=false の形", GOOD.replace("task --cwd", "task --background=false --cwd")),
         ("ドライブ文字付きの絶対パス",
          'node "C:/plugins/scripts/' + COMPANION + '" task --cwd="D:/repo" -- "TASK-RUNID: r1\nx"'),
         ("companion を含まないコマンド", "node other.mjs task -- x"),
@@ -190,6 +211,14 @@ def selftest():
          'node "' + COMPANION_PATH + '" task --cwd="/repo" -- " TASK-RUNID: r1 \nx"', "TASK-RUNID"),
         ("タスク指示文が複数の引数に割れている",
          'node "' + COMPANION_PATH + '" task --cwd="/repo" -- "TASK-RUNID: r1" "本文"', "複数の引数"),
+        ("--background が付いている",
+         GOOD.replace("task --cwd", "task --background --cwd"), "--background"),
+        ("--background=true の形",
+         GOOD.replace("task --cwd", "task --background=true --cwd"), "--background"),
+    )
+    sandbox = (
+        ("無効化して起動", GOOD, True, "サンドボックス"),
+        ("無効化せず起動", GOOD, False, None),
     )
     failures = []
     for label, command in passes:
@@ -202,11 +231,20 @@ def selftest():
             failures.append("deny するはずが通した: " + label)
         elif needle not in reason:
             failures.append("理由が想定と違う: {} :: {}".format(label, reason))
+    for label, command, disabled, needle in sandbox:
+        reason = problem(command, disable_sandbox=disabled)
+        if needle is None:
+            if reason is not None:
+                failures.append("通すはずが deny: {} :: {}".format(label, reason))
+        elif reason is None:
+            failures.append("deny するはずが通した: " + label)
+        elif needle not in reason:
+            failures.append("理由が想定と違う: {} :: {}".format(label, reason))
     if failures:
         for line in failures:
             print("FAIL:", line)
         sys.exit(1)
-    print("ALL PASS ({} 件)".format(len(passes) + len(denies)))
+    print("ALL PASS ({} 件)".format(len(passes) + len(denies) + len(sandbox)))
 
 
 if __name__ == "__main__":
