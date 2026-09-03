@@ -22,6 +22,16 @@
         ]
       },
       {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-reviewer-launch.py\"",
+            "shell": "bash"
+          }
+        ]
+      },
+      {
         "matcher": "ScheduleWakeup",
         "hooks": [
           {
