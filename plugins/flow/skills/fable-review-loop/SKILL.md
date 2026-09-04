@@ -11,17 +11,6 @@ description: flow:fable-reviewer(Fableモデル、read-only)にレビューさ�
 このループを使ってよい条件(ユーザーの指定と、指定が無いときの既定)は
 [flow:review-loop-judgement のレビュアーの選定](../review-loop-judgement/SKILL.md#レビュアーの選定どのループを使うか) が正本。
 
-## 導入契約の確認(最初に行う)
-
-本スキルの実行を開始したら、他の何よりも先に[導入契約の確認スクリプト](../../contract/check_adoption.py)を
-絶対パスで実行する。**このスキルファイルから見て `../../contract/check_adoption.py` にある**。
-
-```sh
-python3 <check_adoption.py の絶対パス>
-```
-
-**非0で終わったら、その出力をそのまま示して停止し、[導入契約](../../docs/rules/adoption.md)へ案内する。**
-
 レビュアーの起動契約と、1ラウンドを回して結末を出すまでの手順は
 [flow:review-loop-subagent](../review-loop-subagent/SKILL.md) スキル、レビュアーの正体に依らない
 判断ロジックは [flow:review-loop-judgement](../review-loop-judgement/SKILL.md) スキルを見よ。

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """導入契約の必須条項を機械確認する。
 
-flow のスキルは実行開始時にこれを起動し、欠けた条項があれば停止して adoption.md へ案内する。
+flow スキルの起動を受けるフックがこれを起動し、欠けた条項があれば起動を deny して adoption.md へ案内する。
 確認をスクリプトへ寄せるのは、各スキルが個別に手順を書くと判定が食い違い、条項が増えたときに
 追随漏れが出るため。
 
@@ -32,7 +32,7 @@ ADOPTION_DOC = HERE.parent / "docs" / "rules" / "adoption.md"
 
 VERIFICATION_DOC = "docs/conventions/verification.md"
 SETTINGS_FILE = ".claude/settings.json"
-SCRATCH_DIRS = (".scratch", "docs/.scratch")
+SCRATCH_DIR = ".scratch"
 PLUGIN_KEY = "flow@harness"
 
 
@@ -80,7 +80,7 @@ def missing_registration(settings):
     """共有される設定に有効化が無ければ、その説明を並べて返す。
 
     marketplace の登録先はマシン側の状態でリポジトリからは読めないので、ここでは扱わない。
-    登録が済んでいなければ flow のスキルが現れず、スキル経由でこの確認が走ることもない
+    登録が済んでいなければ flow のスキルが現れず、その起動を受けるフック経由でこの確認が走ることもない
     (手動で実行すれば走るが、そのときも登録の有無は見ない)。
     """
     settings = settings or {}
@@ -97,9 +97,8 @@ def check(root):
     if not (root / VERIFICATION_DOC).is_file():
         problems.append(f"条項1: 検証手順書 {VERIFICATION_DOC} が無い")
 
-    not_ignored = [d for d in SCRATCH_DIRS if not ignored(root, d)]
-    if not_ignored:
-        problems.append("条項2: 除外設定に入っていないスクラッチ置き場: " + "、".join(not_ignored))
+    if not ignored(root, SCRATCH_DIR):
+        problems.append(f"条項2: スクラッチ置き場 {SCRATCH_DIR}/ が除外設定に入っていない")
 
     settings = load_json(root / SETTINGS_FILE)
     if settings is None:

@@ -2,6 +2,16 @@
   "hooks": {
     "PreToolUse": [
       {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-adoption.py\"",
+            "shell": "bash"
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {

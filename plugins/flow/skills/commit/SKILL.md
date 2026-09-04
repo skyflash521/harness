@@ -11,17 +11,6 @@ description: gitコミットをflow:commit-workerエージェントに委譲し�
 [`flow:commit-worker` エージェント自身の定義](../../agents/commit-worker.md)に組み込まれており、
 **メインモデルは本文を再掲しない**。
 
-## 導入契約の確認(最初に行う)
-
-本スキルの実行を開始したら、他の何よりも先に[導入契約の確認スクリプト](../../contract/check_adoption.py)を
-絶対パスで実行する。**このスキルファイルから見て `../../contract/check_adoption.py` にある**。
-
-```sh
-python3 <check_adoption.py の絶対パス>
-```
-
-**非0で終わったら、その出力をそのまま示して停止し、[導入契約](../../docs/rules/adoption.md)へ案内する。**
-
 ## メインモデルの責務
 
 メインモデルが行うのは、リポジトリ全体の文脈が要る2つの判断だけ。
