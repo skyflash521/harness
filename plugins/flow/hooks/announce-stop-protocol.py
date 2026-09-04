@@ -35,12 +35,14 @@ def build_context():
     guard = load_guard()
     return (
         "手番を返すときは理由を宣言する。末尾行を次のいずれかだけにする。\n"
-        f"- {guard.DONE} — 作業が終わった\n"
+        f"- {guard.DONE} — このセッションで受けた指示の全部が済んだ\n"
         f"- {guard.DECISION} — ユーザーの判断が要る。末尾行の前に"
         f"「{guard.DECISION_FIELD}: <区分>」の1行を置く"
         f"(区分は {'・'.join(guard.DECISION_KINDS)} のいずれか)\n"
         f"- {guard.WAIT} — 完了を待つ\n"
-        "完了と要判断は、宣言の前に PushNotification を送る。"
+        f"- {guard.RESPOND} — 直近の指示に答えたが、まだ済んでいない指示が残っている。"
+        f"末尾行の前に「{guard.RESPOND_FIELD}: <何が残っているか>」の1行を置く\n"
+        "完了・要判断・応答は、宣言の前に PushNotification を送る。"
     )
 
 
@@ -68,7 +70,7 @@ def selftest():
     if missing:
         ok = False
         print(f"FAIL 正本の宣言が文脈に無い: {missing}")
-    markers = ("[停止: 完了]", "[停止: 要判断]", "[停止: 待機]")
+    markers = ("[停止: 完了]", "[停止: 要判断]", "[停止: 待機]", "[停止: 応答]")
     for marker in markers:
         cases += 1
         if marker not in context:
@@ -79,12 +81,12 @@ def selftest():
             ok = False
             print(f"FAIL 宣言を囲み記号で包んで提示している: {marker}")
     guard = load_guard()
-    for phrase in (guard.DECISION_FIELD, *guard.DECISION_KINDS):
+    for phrase in (guard.DECISION_FIELD, guard.RESPOND_FIELD, *guard.DECISION_KINDS):
         cases += 1
         if phrase not in context:
             ok = False
             print(f"FAIL 区分の宣言の形が文脈に無い: {phrase}")
-    for phrase in ("PushNotification", "完了と要判断", "宣言の前"):
+    for phrase in ("PushNotification", "完了・要判断・応答", "宣言の前", "指示の全部", "残っている"):
         cases += 1
         if phrase not in context:
             ok = False

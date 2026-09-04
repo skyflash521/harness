@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """Stop フック: 停止を既定で禁じ、末尾行が停止宣言のものだけを許可する。
 
-宣言は3種。`待機` は終端でない `background_tasks` が在るときだけ通す——手番が戻る経路の無いまま止まるのを
-防ぐ。`完了` と `要判断` は音を鳴らす。
+宣言は4種。`待機` は終端でない `background_tasks` が在るときだけ通す——手番が戻る経路の無いまま止まるのを
+防ぐ。`応答` は、直近の指示に答えて手番を返すが指示が残っている場合に使う——完了を主張しないので
+完了の判定は掛からない。`要判断` と `応答` は音を鳴らす。
 
-併せてこのセッションが起動した背景処理を数え、生存しているものが残ったままの `完了`・`要判断` と、
+併せてこのセッションが起動した背景処理を数え、生存しているものが残ったままの `待機` 以外の宣言と、
 生存している `wait.py` が2つ以上ある `待機` をブロックする。
 
 codex のジョブ記録も同じように見る。進行の実体を失ったまま実行中として残った記録はどの宣言でも
 ブロックする——残せば以後そのスレッドを継ぐ起動が拒否され続ける。進行中と分かる記録は
-`完了`・`要判断` だけをブロックし、`待機` は通す。どちらとも決められない記録はブロックしない。
+`待機` 以外の宣言をブロックする。どちらとも決められない記録はブロックしない。
 
-`要判断` はさらに、区分の申告行と、区分外に当たらないことを確かめた旨の1行を要求する。区分名の
-真偽は検査できないので、確かめさせること自体を条件にする——確認の1行は常時の文脈に載らないため、
-初めて要判断で止まろうとした停止は必ずここで弾かれ、この deny が区分外の列挙を渡す。要判断は1手番を
+`要判断` は区分の申告行と、区分外に当たらないことを確かめた旨の1行を、`応答` は残っている指示を
+名指しする1行を要求する。書かれた内容の真偽は検査できないので、書かせること自体を条件にする——
+残りを名指しできない `応答` は完了の突き合わせを避ける経路になり、区分を当てられない `要判断` は
+ユーザーが手を入れるまで作業が進まない停止になる。区分外の確認の1行は常時の文脈に載らないため、
+初めて要判断で止まろうとした停止は必ずここで弾かれ、この deny が区分外の列挙を渡す。1手番を
 費やすが、止まるべきでない停止はその1手番で消える。
 
 判定は末尾行の等値比較。応答本文を渡さないハーネスでは判定せず通す——判定できないことを不許可の
@@ -35,8 +38,9 @@ from pathlib import Path
 DONE = "[停止: 完了]"
 DECISION = "[停止: 要判断]"
 WAIT = "[停止: 待機]"
-MARKERS = (DONE, DECISION, WAIT)
-HANDOVER = (DONE, DECISION)
+RESPOND = "[停止: 応答]"
+MARKERS = (DONE, DECISION, WAIT, RESPOND)
+CHIME = (DECISION, RESPOND)
 
 WAIT_SCRIPT = "wait.py"
 CODEX_REAPER = "reap_codex_jobs.py"
@@ -45,11 +49,21 @@ STOP_DOC = "defect-followthrough.md"
 DECISION_FIELD = "要判断の区分"
 DECISION_CONFIRM = "区分外に当たらないことを確かめた"
 DECISION_KINDS = ("要求仕様", "指示不明", "停止規定", "操作承認")
+RESPOND_FIELD = "残っている指示"
+RESPOND_EMPTY = frozenset((
+    "なし", "無し", "無い", "ない", "特になし", "特に無し", "特にない", "該当なし", "該当無し",
+    "ありません", "特にありません", "ございません", "残っていません", "残りなし", "0件", "0",
+    "すべて完了", "全て完了", "完了", "完了済み", "済み", "none", "n/a", "na", "nothing",
+))
+RESPOND_TRIM = "*_`「」()()。．.、,-・ 　"
 DECISION_CONFIRM_LINE = re.compile(
     rf"^\s*[>*_\-\s]*{re.escape(DECISION_CONFIRM)}[*_\s。．.]*$"
 )
 DECISION_KIND_LINE = re.compile(
     rf"^\s*[>*_\-\s]*{re.escape(DECISION_FIELD)}[*_\s]*(?:は)?[*_\s]*[::]?[*_\s]*(.+?)\s*$"
+)
+RESPOND_LINE = re.compile(
+    rf"^\s*[>*_\-\s]*{re.escape(RESPOND_FIELD)}[*_\s]*(?:は)?[*_\s]*[::]?[*_\s]*(.+?)\s*$"
 )
 KIND_LEAD = "*_`「(("
 DECISION_EXCLUDED = (
@@ -110,6 +124,7 @@ _HOW = (
     f"{DECISION} — ユーザーの判断が要り、それ無しでは進めない。"
     "何を選ぶのかを確定的に書いたうえで付ける。"
     f"{WAIT} — 何かの完了を待つ。手番が戻る経路として、登録された背景処理が在るときだけ使える。"
+    f"{RESPOND} — 直近の指示に答えたので手番を返す。まだ済んでいない指示が残っている。"
 )
 
 REASON_NO_MARKER = (
@@ -123,7 +138,8 @@ REASON_WAIT_UNSUBSTANTIATED = (
     "このまま止まると再開する手立てが無く、ユーザーが促すまで止まり続けることになる。"
     f"取るべき行動は、待つ対象を実際に起動するか、時間で待つなら {wait_script()} を"
     "run_in_background の Bash で起動するか、待たずにその作業を自分で済ませること。"
-    f"作業が終わっているなら {DONE}、ユーザーの判断が要るなら {DECISION} を使う。"
+    f"作業が終わっているなら {DONE}、ユーザーの判断が要るなら {DECISION}、"
+    f"直近の指示に答えただけで指示が残っているなら {RESPOND} を使う。"
 )
 REASON_MULTIPLE = (
     "末尾行に停止宣言が複数ある。どの理由で止まるのかが決まらない。1つだけにすること。" + _HOW
@@ -155,7 +171,8 @@ REASON_DECISION_UNCLASSIFIED = (
     f"{'・'.join(DECISION_EXCLUDED)}は、"
     f"いずれも区分に当たらない(判定は {{doc}} が正本)。"
     f"当たる区分が在るなら、末尾行の前に「{DECISION_FIELD}: <区分名>」の1行を置いて宣言し直す。"
-    f"当たらないなら止まらずに自分で決めて進み、決めた理由を報告に残す。作業が終わっているなら {DONE}。"
+    f"当たらないなら止まらずに自分で決めて進み、決めた理由を報告に残す。作業が終わっているなら {DONE}、"
+    f"直近の指示に答えただけで指示が残っているなら {RESPOND}。"
 )
 REASON_DECISION_UNCONFIRMED = (
     f"{DECISION} と区分「{{kind}}」が申告されているが、区分外に当たらないことを確かめた旨が無い。"
@@ -163,6 +180,15 @@ REASON_DECISION_UNCONFIRMED = (
     f"{'・'.join(DECISION_EXCLUDED)}。"
     "どれかに当たるなら止まる場面ではない——自分で決めて進み、決めた理由を報告に残す。"
     f"どれにも当たらないと確かめたなら、区分の行に続けて「{DECISION_CONFIRM}」の1行を置いて宣言し直す。"
+)
+REASON_RESPOND_UNSUBSTANTIATED = (
+    f"{RESPOND} と宣言しているが、何が残っているのかの申告が無い。"
+    f"{RESPOND} は「直近の指示には答えたが、まだ済んでいない指示が残っている」ことを述べる宣言で、"
+    "残りが無いのにこれを書くと、済んでいるものを未了と偽って伝えたうえ、完了に掛かる突き合わせを"
+    "受けずに手番を返すことになる。"
+    f"残っているものが在るなら、末尾行の前に「{RESPOND_FIELD}: <何が残っているか>」の1行を置いて"
+    f"宣言し直す。書くのは**ユーザーの指示のうち済んでいないもの**で、自分で足した作業は書かない。"
+    f"「なし」のように残りが無いと述べる申告は名指しに当たらない。残っていないなら {DONE} を使う。"
 )
 REASON_CODEX_RUNNING = (
     "このセッションが起こした codex が実行中のまま手番を返そうとしている: {jobs}。"
@@ -210,6 +236,19 @@ def declared_kind(message):
             if declared.startswith(kind):
                 return kind
     return None
+
+
+def remaining(message):
+    """残っている指示が名指しされているか。文中の言及と区別するため行単位で見る。無いと述べた申告は
+    名指しではないので数えない。"""
+    for line in message.splitlines():
+        matched = RESPOND_LINE.match(line)
+        if not matched:
+            continue
+        named = matched.group(1).strip().strip(RESPOND_TRIM).lower()
+        if named and named not in RESPOND_EMPTY:
+            return True
+    return False
 
 
 def confirmed(message):
@@ -291,6 +330,8 @@ def decide(data, codex=()):
         return None, reason.format(
             jobs=label(blocked), reaper=reaper_script(), session=data.get("session_id"),
         )
+    if found[0] == RESPOND and not remaining(message):
+        return None, REASON_RESPOND_UNSUBSTANTIATED
     if found[0] == DECISION:
         kind = declared_kind(message)
         if not kind:
@@ -314,7 +355,7 @@ def main():
     if reason:
         print(json.dumps({"decision": "block", "reason": f"{TAG} {reason}"}))
         return
-    if marker in HANDOVER:
+    if marker in CHIME:
         play_sound()
 
 
@@ -387,6 +428,16 @@ def selftest():
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting, waiting_seconds]),
          REASON_WAIT_DUPLICATED),
         (stop("作業は終わりました。\n\n[停止: 完了] [停止: 要判断]"), REASON_MULTIPLE),
+        (stop("回答しました。\n残っている指示: プッシュ\n\n[停止: 応答]", tasks=[task]),
+         REASON_TASK_LEFT_RUNNING.format(tasks="b1")),
+        (stop("回答しました。\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
+        (stop("回答しました。\n残っている指示: なし\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
+        (stop("回答しました。\n残っている指示は無い\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
+        (stop("回答しました。\n**残っている指示**: 特になし。\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
+        (stop("回答しました。\n残っている指示: 特にありません\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
+        (stop("回答しました。\n残っている指示: すべて完了\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
+        (stop("回答しました。残っている指示は無い。\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
+        (stop("回答しました。\n残っている指示: プッシュ\n\n[停止: 応答]"), codex_running("j1"), [codex_alive]),
         (stop("どちらで進めますか。1. フックを作る 2. 文書だけにする\n\n[停止: 要判断]"),
          unclassified()),
         (stop("諮ります。\n\n要判断の区分: 実装方針\n\n[停止: 要判断]"), unclassified()),
@@ -431,6 +482,10 @@ def selftest():
         (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[waiting_ended]), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[unknown]), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止: 完了]", active=True), "[停止: 完了]"),
+        (stop("ご質問への回答です。\n残っている指示: 実装ステップ2以降\n\n[停止: 応答]"), "[停止: 応答]"),
+        (stop("回答です。\n残っている指示: None を渡したときの分岐の修正\n\n[停止: 応答]"), "[停止: 応答]"),
+        (stop("回答です。\n残っている指示: - プッシュ\n\n[停止: 応答]"), "[停止: 応答]"),
+        (stop("回答しました。\n**残っている指示**: プッシュ\n\n[停止: 応答]", tasks=[waiting_ended]), "[停止: 応答]"),
         (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[task]), "[停止: 待機]", [codex_alive]),
         (stop("作業は終わりました。\n\n[停止: 完了]"), "[停止: 完了]", [codex_unknown]),
     ]

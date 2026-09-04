@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """PreToolUse フック: flow 同梱のフック誘導先スクリプトの起動を無プロンプトで承認する。
 
-flow はフックの誘導を受けて起動されるスクリプトを3つ同梱する。skills/codex-watchdog/watchdog.sh
-(codex のジョブ状態ディレクトリに対する find/stat/grep/sleep)と scripts/wait.py(指定時刻か秒数まで
-待つだけ)は読み取り専用で、scripts/reap_codex_jobs.py は自セッションの codex ジョブ記録だけを終局
+flow はフックの誘導を受けて起動されるスクリプトを4つ同梱する。skills/codex-watchdog/watchdog.sh
+(codex のジョブ状態ディレクトリに対する find/stat/grep/sleep)・scripts/wait.py(指定時刻か秒数まで
+待つだけ)・scripts/goal_material.py(転写を読んで印字するだけ)は読み取り専用で、
+scripts/reap_codex_jobs.py は自セッションの codex ジョブ記録だけを終局
 させる(対象の限定はスクリプト側が機械で保証し、リポジトリの作業ツリーには書かない)。どれも許可
 リストに載る形ではなく、呼び出し側にプロンプトが出る(Claude Code は `bash <script>` 形のコマンドを
 許可パイプライン内で上書き不能な "ask" へ降格させることがある)。**reap_codex_jobs.py は Stop フックが
 手番を返す経路として要求するので、プロンプトが出ると無人運転がそこで止まる。** PreToolUse の allow
 判定は behavior:allow として直接返るのでこれを上書きできる。よってこのフックは、単一で連結の無い
-この3つの起動だけを承認し、それ以外は何も出力せず通常の許可フローへ渡す(deny はしない)。
+この4つの起動だけを承認し、それ以外は何も出力せず通常の許可フローへ渡す(deny はしない)。
 
 対象は第1引数で受け取ったプラグインルートから組み立てた絶対パスで特定する。大文字小文字だけが
 異なる同名スクリプトは、それを区別する環境では別ファイルとして扱い承認しない。
@@ -38,6 +39,7 @@ APPROVED_LAUNCHES = (
     ("bash", ("skills", "codex-watchdog", "watchdog.sh")),
     ("python3", ("scripts", "wait.py")),
     ("python3", ("scripts", "reap_codex_jobs.py")),
+    ("python3", ("scripts", "goal_material.py")),
 )
 
 
@@ -93,6 +95,7 @@ def _selftest():
     launch = "bash " + root + "/skills/codex-watchdog/watchdog.sh"
     wait = "python3 " + root + "/scripts/wait.py"
     reap = "python3 " + root + "/scripts/reap_codex_jobs.py"
+    material = "python3 " + root + "/scripts/goal_material.py"
     spaced = "C:/Program Files/user/.claude/plugins/cache/harness/flow/1.0.0"
     Case = namedtuple("Case", "why cmd root want")
     cases = [
@@ -119,6 +122,11 @@ def _selftest():
         Case("reap を bash で起動", reap.replace("python3 ", "bash "), root, False),
         Case("reap のセミコロン連結", reap + " ; rm -rf x", root, False),
         Case("別の場所にある同名の reap", "python3 c:/elsewhere/reap_codex_jobs.py", root, False),
+        Case("材料取り出しを転写パス付きで起動",
+             material + ' "C:/Users/user/.claude/projects/repo/S1.jsonl"', root, True),
+        Case("材料取り出しをパイプ付きで起動", material + " x.jsonl | tee out", root, False),
+        Case("別の場所にある同名の材料取り出し",
+             "python3 c:/elsewhere/goal_material.py x.jsonl", root, False),
         Case("wait を bash で起動", wait.replace("python3 ", "bash "), root, False),
         Case("watchdog を python3 で起動", launch.replace("bash ", "python3 "), root, False),
         Case("wait のセミコロン連結", wait + " ; rm -rf x", root, False),
