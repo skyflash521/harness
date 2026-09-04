@@ -11,6 +11,10 @@ codex のジョブ記録も同じように見る。進行の実体を失った�
 ブロックする——残せば以後そのスレッドを継ぐ起動が拒否され続ける。進行中と分かる記録は
 `完了`・`要判断` だけをブロックし、`待機` は通す。どちらとも決められない記録はブロックしない。
 
+`要判断` はさらに、区分の申告行を要求する。停止してよい場面は閉じた4区分に限られるので、その
+どれに当たるかを言えないことが、止まってはならない停止の印になる。申告の真偽は検査できない
+——防げるのは、区分に当てないまま要判断へ倒す経路である。
+
 判定は末尾行の等値比較。応答本文を渡さないハーネスでは判定せず通す——判定できないことを不許可の
 理由にすると、何を書いても抜けられない恒久ブロックになる。
 
@@ -20,6 +24,7 @@ import importlib.util
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import tempfile
@@ -33,6 +38,18 @@ HANDOVER = (DONE, DECISION)
 
 WAIT_SCRIPT = "wait.py"
 CODEX_REAPER = "reap_codex_jobs.py"
+STOP_DOC = "defect-followthrough.md"
+
+DECISION_FIELD = "要判断の区分"
+DECISION_KINDS = ("要求仕様", "指示不明", "停止規定", "操作承認")
+DECISION_KIND_LINE = re.compile(
+    r"^\s*[>*_\-\s]*要判断の区分[*_\s]*(?:は)?[*_\s]*[::]?[*_\s]*(.+?)\s*$"
+)
+KIND_LEAD = "*_`「(("
+DECISION_EXCLUDED = (
+    "実装の設計", "段取り", "作業量", "レビュアーが諮れと述べたこと", "既定や選択肢を書けること",
+    "裏取りを用意できないこと",
+)
 ENDED_RUN = ("gone", "stalled")
 LIVE = ("running", "pending", "backgrounded")
 ENDED = ("completed", "failed", "killed", "cancelled", "canceled", "timeout")
@@ -57,6 +74,14 @@ def wait_script():
 
 def reaper_script():
     return plugin_script(CODEX_REAPER)
+
+
+def stop_doc():
+    """諮ってよい場面を定める規約の絶対パス。プラグインルートを渡されない起動では名前だけを返す。"""
+    root = plugin_root()
+    if not root:
+        return f"<flow プラグイン同梱の docs/guidance/{STOP_DOC}>"
+    return Path(root, "docs", "guidance", STOP_DOC).as_posix()
 
 
 FOLD = {"：": ":", "［": "[", "］": "]", " ": "", "　": "", "\t": ""}
@@ -113,6 +138,19 @@ REASON_CODEX_STALE = (
     "続け、前ラウンドの文脈を持たない新規スレッドへ縮退する。"
     'python3 "{reaper}" {session} で終局させてから宣言し直すこと。'
 )
+REASON_DECISION_UNCLASSIFIED = (
+    f"{DECISION} と宣言しているが、どの区分の判断を求めるのかの申告が無い。"
+    "止まってよいのは次の4区分だけで、どれにも当てられない停止は、ユーザーが手を入れるまで作業が"
+    "進まない状態を作る。"
+    "**要求仕様**(ユーザーの決めた値・方針・スコープ・受入条件が変わる。守れなくなった明示指定を"
+    "含む)・**指示不明**(対象・入力がユーザーにしか無く、推測では別のものを作る)・"
+    "**停止規定**(規約またはスキルが命じる停止が実際に発火した)・"
+    "**操作承認**(取り消せない操作・外部へ及ぶ操作の承認が要る)。"
+    f"{'・'.join(DECISION_EXCLUDED)}は、"
+    f"いずれも区分に当たらない(判定は {{doc}} が正本)。"
+    f"当たる区分が在るなら、末尾行の前に「{DECISION_FIELD}: <区分名>」の1行を置いて宣言し直す。"
+    f"当たらないなら止まらずに自分で決めて進み、決めた理由を報告に残す。作業が終わっているなら {DONE}。"
+)
 REASON_CODEX_RUNNING = (
     "このセッションが起こした codex が実行中のまま手番を返そうとしている: {jobs}。"
     "途中で止めた実行は成果ゼロで費用だけが残るので、殺して片付けない。結果を受け取るまで待つこと"
@@ -146,6 +184,19 @@ def play_sound():
         )
     except OSError:
         pass
+
+
+def declared_kind(message):
+    """申告された区分。申告が無い・語彙に無い語であれば None。"""
+    for line in message.splitlines():
+        matched = DECISION_KIND_LINE.match(line)
+        if not matched:
+            continue
+        declared = matched.group(1).lstrip(KIND_LEAD)
+        for kind in DECISION_KINDS:
+            if declared.startswith(kind):
+                return kind
+    return None
 
 
 def tasks_of(data):
@@ -222,6 +273,8 @@ def decide(data, codex=()):
         return None, reason.format(
             jobs=label(blocked), reaper=reaper_script(), session=data.get("session_id"),
         )
+    if found[0] == DECISION and not declared_kind(message):
+        return None, REASON_DECISION_UNCLASSIFIED.format(doc=stop_doc())
     return found[0], None
 
 
@@ -253,6 +306,9 @@ def selftest():
             "session_crons": list(crons),
             "session_id": "S1",
         }
+
+    def unclassified():
+        return REASON_DECISION_UNCLASSIFIED.format(doc=stop_doc())
 
     def codex_stale(jobs):
         return REASON_CODEX_STALE.format(jobs=jobs, reaper=reaper_script(), session="S1")
@@ -306,6 +362,10 @@ def selftest():
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting, waiting_seconds]),
          REASON_WAIT_DUPLICATED),
         (stop("作業は終わりました。\n\n[停止: 完了] [停止: 要判断]"), REASON_MULTIPLE),
+        (stop("どちらで進めますか。1. フックを作る 2. 文書だけにする\n\n[停止: 要判断]"),
+         unclassified()),
+        (stop("諮ります。\n\n要判断の区分: 実装方針\n\n[停止: 要判断]"), unclassified()),
+        (stop("諮ります。区分は要求仕様です。\n\n[停止: 要判断]"), unclassified()),
         (stop("これからフックを書きます。", active=True), REASON_NO_MARKER),
         (stop("コミットしました。ハッシュは 90d8326 です。"), REASON_NO_MARKER, [codex_ghost]),
         (stop("作業は終わりました。\n\n[停止: 完了]"), codex_stale("j2"), [codex_ghost]),
@@ -318,7 +378,15 @@ def selftest():
     ]
     pass_cases = [
         (stop("コミットしました。ハッシュは 90d8326 です。\n\n[停止: 完了]"), "[停止: 完了]"),
-        (stop("どちらで進めますか。1. フックを作る 2. 文書だけにする\n\n[停止: 要判断]"),
+        (stop("受入条件が変わります。\n\n要判断の区分: 要求仕様\n\n[停止: 要判断]"),
+         "[停止: 要判断]"),
+        (stop("受入条件が変わります。\n\n要判断の区分: 要求仕様(受入条件が変わる)\n\n[停止: 要判断]"),
+         "[停止: 要判断]"),
+        (stop("対象のファイルが分かりません。\n\n**要判断の区分**: 指示不明\n\n[停止: 要判断]"),
+         "[停止: 要判断]"),
+        (stop("千日手で終わりました。\n\n- 要判断の区分:停止規定\n\n[停止: 要判断]"),
+         "[停止: 要判断]"),
+        (stop("プッシュしてよいか確かめます。\n\n要判断の区分:操作承認\n\n[停止: 要判断]"),
          "[停止: 要判断]"),
         (stop("作業は終わりました。\n\n[停止：完了]"), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止:完了]"), "[停止: 完了]"),

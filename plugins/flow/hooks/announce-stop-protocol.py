@@ -32,7 +32,10 @@ def build_context():
     return (
         "手番を返すときは理由を宣言する。末尾行を次のいずれかだけにする。\n"
         f"- {guard.DONE} — 作業が終わった\n"
-        f"- {guard.DECISION} — ユーザーの判断が要る\n"
+        f"- {guard.DECISION} — ユーザーの判断が要る。末尾行の前に"
+        f"「{guard.DECISION_FIELD}: <区分>」の1行を置く"
+        f"(区分は {'・'.join(guard.DECISION_KINDS)} のいずれか。"
+        f"{'・'.join(guard.DECISION_EXCLUDED)}では止まらない)\n"
         f"- {guard.WAIT} — 完了を待つ(登録された背景処理が在るときのみ)\n"
         "完了と要判断は、宣言の前に PushNotification を送る。"
         f"時間で待つときは {guard.wait_script()} を run_in_background の Bash で起動し、"
@@ -74,6 +77,12 @@ def selftest():
         if f"`{marker}`" in context:
             ok = False
             print(f"FAIL 宣言を囲み記号で包んで提示している: {marker}")
+    guard = load_guard()
+    for phrase in (guard.DECISION_FIELD, *guard.DECISION_KINDS, *guard.DECISION_EXCLUDED):
+        cases += 1
+        if phrase not in context:
+            ok = False
+            print(f"FAIL 区分の要求が文脈に無い: {phrase}")
     for phrase in ("PushNotification", "完了と要判断", "宣言の前",
                    load_guard().WAIT_SCRIPT, "TaskStop", "ScheduleWakeup"):
         cases += 1
