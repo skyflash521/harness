@@ -126,6 +126,38 @@ def read_transcript(path):
     return instructions, actions, says
 
 
+def calls_since_last_instruction(rows):
+    """直近のユーザー発言より後の道具の呼び出し。発言が1件も無ければ None。"""
+    latest = None
+    for index, row in enumerate(rows):
+        if row.get("isSidechain"):
+            continue
+        kind = row.get("type")
+        if kind == "attachment":
+            attachment = row.get("attachment")
+            origin = (attachment or {}).get("origin")
+            if (isinstance(attachment, dict) and attachment.get("type") == "queued_command"
+                    and isinstance(origin, dict) and origin.get("kind") == "human"
+                    and spoken(text_blocks(attachment.get("prompt")))):
+                latest = index
+            continue
+        content = (row.get("message") or {}).get("content")
+        if kind == "user" and not row.get("isMeta") and not row.get("isCompactSummary"):
+            if spoken(text_blocks(content)):
+                latest = index
+    if latest is None:
+        return None
+    found = []
+    for row in rows[latest + 1:]:
+        if row.get("isSidechain") or row.get("type") != "assistant":
+            continue
+        content = (row.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        found.extend(b for b in content if isinstance(b, dict) and b.get("type") == "tool_use")
+    return found
+
+
 def resumed_after(rows, start):
     """その位置より後に新しい指示が来て、さらに道具を使ったか。"""
     asked = False

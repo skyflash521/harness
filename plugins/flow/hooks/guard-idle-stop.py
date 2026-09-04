@@ -2,7 +2,7 @@
 """Stop フック: 停止を既定で禁じ、末尾行が停止宣言のものだけを許可する。
 
 宣言は4種。`待機` は終端でない `background_tasks` が在るときだけ通す——手番が戻る経路の無いまま止まるのを
-防ぐ。`応答` は、直近の指示に答えて手番を返すが指示が残っている場合に使う——完了を主張しないので
+防ぐ。`応答` は、問われたことに答えた回答を届けるために手番を返す場合に使う——完了を主張しないので
 完了の判定は掛からない。`要判断` と `応答` は音を鳴らす。
 
 併せてこのセッションが起動した背景処理を数え、生存しているものが残ったままの `待機` 以外の宣言と、
@@ -18,6 +18,13 @@ codex のジョブ記録も同じように見る。進行の実体を失った�
 ユーザーが手を入れるまで作業が進まない停止になる。区分外の確認の1行は常時の文脈に載らないため、
 初めて要判断で止まろうとした停止は必ずここで弾かれ、この deny が区分外の列挙を渡す。1手番を
 費やすが、止まるべきでない停止はその1手番で消える。
+
+`応答` はさらに、**直近のユーザー発言より後に成果物へ手を出していないこと**を転写で確かめる。
+調べるための読み取りは答えるうちだが、編集・サブエージェントへの委譲と継続・書き換えるコマンドが
+入っていれば、その手番は作業の途中である。コマンドは語の位置で見るので、引用の中の言及・捨て場への
+リダイレクト・空振りの指定(`--dry-run` 等)は当たらない。残りを名指しできたことは、それをいま実行できることを
+意味する——申告行だけを条件にすると、この宣言が作業を先送りする口実になる。手を出した事実は
+取り消せないので、この条件で弾かれた手番は宣言を書き直しても通らない。
 
 判定は末尾行の等値比較。応答本文を渡さないハーネスでは判定せず通す——判定できないことを不許可の
 理由にすると、何を書いても抜けられない恒久ブロックになる。
@@ -56,6 +63,25 @@ RESPOND_EMPTY = frozenset((
     "すべて完了", "全て完了", "完了", "完了済み", "済み", "none", "n/a", "na", "nothing",
 ))
 RESPOND_TRIM = "*_`「」()()。．.、,-・ 　"
+MATERIAL = ("scripts", "goal_material.py")
+GIT_WRITE_HOOK = "guard-git-write.py"
+WORK_TOOLS = ("Edit", "Write", "NotebookEdit", "Agent", "Task", "SendMessage")
+WORK_COMMANDS = ("tee", "cp", "mv", "rm", "mkdir", "touch", "truncate", "patch", "dd", "install")
+GIT_WRITE = (
+    "commit", "push", "pull", "merge", "rebase", "reset", "restore", "checkout", "switch",
+    "add", "rm", "mv", "revert", "cherry-pick", "am", "apply", "clean",
+)
+WRITE_SCRIPTS = ("stamp_plugin_version.py", "trash.py")
+INTERPRETERS = ("python", "python3", "py", "node", "bash", "sh", "pwsh", "powershell", "perl")
+REDIRECTS = (">", ">>")
+DISCARDS = ("/dev/null", "nul", "$null")
+SEPARATORS = (";", "&&", "||", "|", "&", "(", ")")
+ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+DRY_RUN = {
+    "apply": ("--check", "--stat", "--numstat", "--summary"),
+    "clean": ("-n", "--dry-run"), "add": ("-n", "--dry-run"), "rm": ("-n", "--dry-run"),
+    "mv": ("-n", "--dry-run"), "push": ("-n", "--dry-run"), "commit": ("--dry-run",),
+}
 DECISION_CONFIRM_LINE = re.compile(
     rf"^\s*[>*_\-\s]*{re.escape(DECISION_CONFIRM)}[*_\s。．.]*$"
 )
@@ -124,7 +150,7 @@ _HOW = (
     f"{DECISION} — ユーザーの判断が要り、それ無しでは進めない。"
     "何を選ぶのかを確定的に書いたうえで付ける。"
     f"{WAIT} — 何かの完了を待つ。手番が戻る経路として、登録された背景処理が在るときだけ使える。"
-    f"{RESPOND} — 直近の指示に答えたので手番を返す。まだ済んでいない指示が残っている。"
+    f"{RESPOND} — 問われたことに答えたので手番を返す。まだ済んでいない指示が残っている。"
 )
 
 REASON_NO_MARKER = (
@@ -139,7 +165,7 @@ REASON_WAIT_UNSUBSTANTIATED = (
     f"取るべき行動は、待つ対象を実際に起動するか、時間で待つなら {wait_script()} を"
     "run_in_background の Bash で起動するか、待たずにその作業を自分で済ませること。"
     f"作業が終わっているなら {DONE}、ユーザーの判断が要るなら {DECISION}、"
-    f"直近の指示に答えただけで指示が残っているなら {RESPOND} を使う。"
+    f"問われたことに答えただけで指示が残っているなら {RESPOND} を使う。"
 )
 REASON_MULTIPLE = (
     "末尾行に停止宣言が複数ある。どの理由で止まるのかが決まらない。1つだけにすること。" + _HOW
@@ -172,7 +198,7 @@ REASON_DECISION_UNCLASSIFIED = (
     f"いずれも区分に当たらない(判定は {{doc}} が正本)。"
     f"当たる区分が在るなら、末尾行の前に「{DECISION_FIELD}: <区分名>」の1行を置いて宣言し直す。"
     f"当たらないなら止まらずに自分で決めて進み、決めた理由を報告に残す。作業が終わっているなら {DONE}、"
-    f"直近の指示に答えただけで指示が残っているなら {RESPOND}。"
+    f"問われたことに答えただけで指示が残っているなら {RESPOND}。"
 )
 REASON_DECISION_UNCONFIRMED = (
     f"{DECISION} と区分「{{kind}}」が申告されているが、区分外に当たらないことを確かめた旨が無い。"
@@ -183,12 +209,24 @@ REASON_DECISION_UNCONFIRMED = (
 )
 REASON_RESPOND_UNSUBSTANTIATED = (
     f"{RESPOND} と宣言しているが、何が残っているのかの申告が無い。"
-    f"{RESPOND} は「直近の指示には答えたが、まだ済んでいない指示が残っている」ことを述べる宣言で、"
+    f"{RESPOND} は「問われたことに答えたが、まだ済んでいない指示が残っている」ことを述べる宣言で、"
     "残りが無いのにこれを書くと、済んでいるものを未了と偽って伝えたうえ、完了に掛かる突き合わせを"
     "受けずに手番を返すことになる。"
     f"残っているものが在るなら、末尾行の前に「{RESPOND_FIELD}: <何が残っているか>」の1行を置いて"
     f"宣言し直す。書くのは**ユーザーの指示のうち済んでいないもの**で、自分で足した作業は書かない。"
     f"「なし」のように残りが無いと述べる申告は名指しに当たらない。残っていないなら {DONE} を使う。"
+)
+REASON_RESPOND_AFTER_WORK = (
+    f"{RESPOND} と宣言しているが、直近のユーザー発言より後に成果物へ手を出している"
+    "(編集・サブエージェントへの委譲と継続・書き換えるコマンドのいずれか)。"
+    f"{RESPOND} は**問われたことに答えたので、回答を届けるために手番を返す**宣言である——"
+    "調べるための読み取りは答えるうちだが、手を出したならそれは作業であって、その手番はまだ"
+    "作業の途中である。"
+    "**残っている指示を書き出せたということは、それをいま実行できるということである**"
+    "——実行できない理由が無いなら、止まらずにその指示へ進む。"
+    "順序の指定(「まず」「先に」)は、済んだところで止まってよいという意味ではない。"
+    f"手番を返してよいのは、残っている指示が無くなったとき({DONE})、ブロックされたとき({DECISION})、"
+    f"待ちが発生したとき({WAIT})である。"
 )
 REASON_CODEX_RUNNING = (
     "このセッションが起こした codex が実行中のまま手番を返そうとしている: {jobs}。"
@@ -249,6 +287,120 @@ def remaining(message):
         if named and named not in RESPOND_EMPTY:
             return True
     return False
+
+
+def git_write_hook():
+    """語彙とトークナイザを持つ側を取り込む。読めなければ None。"""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_guard_git_write", Path(__file__).resolve().parent / GIT_WRITE_HOOK,
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
+
+
+def discarded(tokens, index):
+    """リダイレクト先が捨て場か。記述子の複製と数字は行き先ではないので読み飛ばす。"""
+    for token in tokens[index + 1:index + 3]:
+        if token == "&" or token.isdigit():
+            continue
+        return token.lower() in DISCARDS
+    return True
+
+
+def git_verb(module, tokens, index):
+    """`git` の直後に来るサブコマンド。値を取るオプションは値ごと読み飛ばす。"""
+    pos = index + 1
+    while pos < len(tokens) and tokens[pos].startswith("-"):
+        option = tokens[pos].split("=", 1)[0]
+        pos += 1
+        if option in module.GIT_VALUE_OPTIONS and "=" not in tokens[pos - 1]:
+            pos += 1
+    return tokens[pos] if pos < len(tokens) else ""
+
+
+def segments(module, tokens):
+    """区切りで節へ割る。1つの呼び出しの判定に、別の呼び出しの語を混ぜないため。"""
+    found, current = [], []
+    for token in tokens:
+        if token in SEPARATORS or token in module.CONTROL_OR_WRAPPER:
+            if current:
+                found.append(current)
+            current = []
+            continue
+        current.append(token)
+    if current:
+        found.append(current)
+    return found
+
+
+def segment_writes(module, tokens):
+    """1つの呼び出しが成果物を書き換えうるか。"""
+    for index, token in enumerate(tokens):
+        if token in REDIRECTS and not discarded(tokens, index):
+            return True
+        if token.startswith("<<"):
+            return True
+    head = 0
+    while head < len(tokens) and (
+        tokens[head] in module.WRAPPERS or ASSIGNMENT.match(tokens[head])
+        or tokens[head].startswith("-") or tokens[head].isdigit()
+    ):
+        head += 1
+    if head >= len(tokens):
+        return False
+    rest = tokens[head + 1:]
+    name = tokens[head].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if name in WORK_COMMANDS:
+        return True
+    if name == "sed" and any(t.startswith("-i") or t == "--in-place" for t in rest):
+        return True
+    if name in INTERPRETERS and any(
+        t.replace("\\", "/").rsplit("/", 1)[-1] in WRITE_SCRIPTS for t in rest
+    ):
+        return True
+    if name not in ("git", "git.exe"):
+        return False
+    verb = git_verb(module, tokens, head)
+    return verb in GIT_WRITE and not any(t in DRY_RUN.get(verb, ()) for t in rest)
+
+
+def writes(command):
+    """成果物を書き換えうるコマンドか。語として現れる位置で見るので、引用の中の言及は当たらない。
+    判定できない入力は False——判定できないことを不許可の理由にしない。"""
+    module = git_write_hook()
+    if module is None:
+        return False
+    try:
+        tokens = module._tokens(command.replace("\n", " ; "))
+    except ValueError:
+        return False
+    return any(segment_writes(module, part) for part in segments(module, tokens))
+
+
+def is_work(block):
+    """調べるためでなく手を出すための呼び出しか。編集・委譲と、書き換えるコマンドを見る。"""
+    if block.get("name") in WORK_TOOLS:
+        return True
+    command = (block.get("input") or {}).get("command")
+    return isinstance(command, str) and writes(command)
+
+
+def worked_since_instruction(data):
+    """直近のユーザー発言より後に手を出したか。転写から判定できなければ None。"""
+    root = Path(__file__).resolve().parent.parent
+    try:
+        spec = importlib.util.spec_from_file_location("_goal_material", Path(root, *MATERIAL))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        rows = module.rows_of(data.get("transcript_path"))
+        calls = None if rows is None else module.calls_since_last_instruction(rows)
+    except Exception:
+        return None
+    return None if calls is None else any(is_work(block) for block in calls)
 
 
 def confirmed(message):
@@ -330,8 +482,11 @@ def decide(data, codex=()):
         return None, reason.format(
             jobs=label(blocked), reaper=reaper_script(), session=data.get("session_id"),
         )
-    if found[0] == RESPOND and not remaining(message):
-        return None, REASON_RESPOND_UNSUBSTANTIATED
+    if found[0] == RESPOND:
+        if not remaining(message):
+            return None, REASON_RESPOND_UNSUBSTANTIATED
+        if worked_since_instruction(data):
+            return None, REASON_RESPOND_AFTER_WORK
     if found[0] == DECISION:
         kind = declared_kind(message)
         if not kind:
@@ -509,7 +664,9 @@ def selftest():
         ok = False
     if not _codex_lookup_ok():
         ok = False
-    total = len(block_cases) + len(pass_cases) + 2
+    if not _respond_gate_ok():
+        ok = False
+    total = len(block_cases) + len(pass_cases) + 3
     print("ALL PASS" if ok else "SOME FAILED", f"({total} cases)")
     sys.exit(0 if ok else 1)
 
@@ -549,6 +706,71 @@ def _codex_lookup_ok():
         print(f"FAIL codex lookup: 残骸を名指しする block が出ない: {out!r}")
         return False
     return True
+
+
+def _respond_gate_ok():
+    """転写を実際に読ませて、道具を呼んだ後の `応答` が弾かれるところまでを通す。転写を渡さない
+    検査はこの経路を通らないので、そこが壊れていても合格してしまう。"""
+    def row(kind, block):
+        return {"type": kind, "isSidechain": False,
+                "message": {"role": kind, "content": [block]}}
+
+    asked = row("user", {"type": "text", "text": "不要なエントリは消せ"})
+    acted = row("assistant", {"type": "tool_use", "id": "t1", "name": "Agent", "input": {}})
+    edited = row("assistant", {"type": "tool_use", "id": "t2", "name": "Edit", "input": {}})
+    committed = row("assistant", {"type": "tool_use", "id": "t3", "name": "Bash",
+                                  "input": {"command": "git commit -m x"}})
+    scripted = row("assistant", {"type": "tool_use", "id": "t6", "name": "Bash",
+                                 "input": {"command": "python3 - <<PY"}})
+    sent = row("assistant", {"type": "tool_use", "id": "t7", "name": "SendMessage",
+                             "input": {"to": "reviewer"}})
+    looked = row("assistant", {"type": "tool_use", "id": "t4", "name": "Bash",
+                               "input": {"command": 'grep -n "git commit -m" x.py | tail -8'}})
+    listed = row("assistant", {"type": "tool_use", "id": "t8", "name": "Bash",
+                               "input": {"command": "git stash list && git tag"}})
+    discarded = row("assistant", {"type": "tool_use", "id": "t9", "name": "Bash",
+                                  "input": {"command": "strings -n 6 x 2>/dev/null | grep -n a"}})
+    unparsed = row("assistant", {"type": "tool_use", "id": "ta", "name": "Bash",
+                                 "input": {"command": 'ls "C:' + chr(92) + '"'}})
+    wrapped = row("assistant", {"type": "tool_use", "id": "tb", "name": "Bash",
+                                "input": {"command": "timeout 180 git push origin main"}})
+    stamped = row("assistant", {"type": "tool_use", "id": "tc", "name": "Bash",
+                                "input": {"command": "python3 scripts/stamp_plugin_version.py"}})
+    staged = row("assistant", {"type": "tool_use", "id": "td", "name": "Bash",
+                               "input": {"command": "git add -A && git diff --staged --stat"}})
+    ranged = row("assistant", {"type": "tool_use", "id": "te", "name": "Bash",
+                               "input": {"command": 'sed -n 1,9p x.md && grep -n -i "更新" y.md'}})
+    read = row("assistant", {"type": "tool_use", "id": "t5", "name": "Read", "input": {}})
+    said = row("assistant", {"type": "text", "text": "お答えします。"})
+    message = ("回答しました。\n残っている指示: 規約2本のレビュー\n\n" + RESPOND)
+    ok = True
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp, "transcript.jsonl")
+        for rows, expected, label in (
+            ([asked, acted], REASON_RESPOND_AFTER_WORK, "委譲した後の応答は弾く"),
+            ([asked, edited], REASON_RESPOND_AFTER_WORK, "編集した後の応答は弾く"),
+            ([asked, committed], REASON_RESPOND_AFTER_WORK, "コミットした後の応答は弾く"),
+            ([asked, scripted], REASON_RESPOND_AFTER_WORK, "スクリプトを流した後の応答は弾く"),
+            ([asked, sent], REASON_RESPOND_AFTER_WORK, "委譲を継いだ後の応答は弾く"),
+            ([asked, wrapped], REASON_RESPOND_AFTER_WORK, "前置語ごしのプッシュも弾く"),
+            ([asked, stamped], REASON_RESPOND_AFTER_WORK, "同梱の書き込みスクリプトも弾く"),
+            ([asked, staged], REASON_RESPOND_AFTER_WORK, "後続の節の空振り指定で打ち消されない"),
+            ([asked, said], RESPOND, "答えただけの応答は通す"),
+            ([asked, looked, listed, read, said], RESPOND, "調べてから答えた応答は通す"),
+            ([asked, discarded, unparsed, ranged, said], RESPOND,
+             "捨て場へのリダイレクト・読めないコマンド・別の節の -i は通す"),
+        ):
+            body = "\n".join(json.dumps(r, ensure_ascii=False) for r in rows)
+            path.write_text(body + "\n", encoding="utf-8")
+            marker, reason = decide({
+                "hook_event_name": "Stop", "last_assistant_message": message,
+                "transcript_path": path.as_posix(), "background_tasks": [], "session_id": "S1",
+            })
+            actual = reason if reason else marker
+            if actual != expected:
+                ok = False
+                print(f"FAIL {label}: {actual!r}")
+    return ok
 
 
 def _roundtrip_ok(data, expected):

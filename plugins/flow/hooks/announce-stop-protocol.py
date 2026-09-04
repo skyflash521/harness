@@ -40,7 +40,7 @@ def build_context():
         f"「{guard.DECISION_FIELD}: <区分>」の1行を置く"
         f"(区分は {'・'.join(guard.DECISION_KINDS)} のいずれか)\n"
         f"- {guard.WAIT} — 完了を待つ\n"
-        f"- {guard.RESPOND} — 直近の指示に答えたが、まだ済んでいない指示が残っている。"
+        f"- {guard.RESPOND} — 問われたことに答えたが、まだ済んでいない指示が残っている。"
         f"末尾行の前に「{guard.RESPOND_FIELD}: <何が残っているか>」の1行を置く\n"
         "完了・要判断・応答は、宣言の前に PushNotification を送る。"
     )
