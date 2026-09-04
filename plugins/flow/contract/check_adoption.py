@@ -9,12 +9,7 @@ flow スキルの起動を受けるフックがこれを起動し、欠けた条
 
     1. 検証手順書が存在すること
     2. スクラッチ置き場が除外設定に入っていること
-    3. 有効化が、共有される設定に入っていること
-    4. 必要な permissions・sandbox エントリが設定に登録されていること
-
-条項3で見るのは登録先である。スキルが起動できていれば有効化されてはいるが、それが共有される設定に
-書かれているかは起動から分からない。ユーザースコープや共有しない設定に入っていると、clone した
-環境で有効化が失われる。
+    3. 必須エントリの定義が持つエントリが設定に登録されていること
 
 使い方: python3 <このスクリプトの絶対パス> [対象リポジトリのルート]
        ルートを省いた場合は CLAUDE_PROJECT_DIR、それも無ければカレントディレクトリを使う。
@@ -31,9 +26,9 @@ REQUIRED_SETTINGS = HERE / "required-settings.json"
 ADOPTION_DOC = HERE.parent / "docs" / "rules" / "adoption.md"
 
 VERIFICATION_DOC = "docs/conventions/verification.md"
-SETTINGS_FILE = ".claude/settings.json"
+SETTINGS_FILES = (".claude/settings.json", ".claude/settings.local.json")
+USER_SETTINGS = Path.home() / ".claude" / "settings.json"
 SCRATCH_DIR = ".scratch"
-PLUGIN_KEY = "flow@harness"
 
 
 def load_json(path):
@@ -68,25 +63,22 @@ def ignored(root, relative):
     return result.returncode == 0
 
 
-def tracked(root, relative):
-    result = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", relative],
-        capture_output=True, check=False,
-    )
-    return result.returncode == 0
-
-
-def missing_registration(settings):
-    """共有される設定に有効化が無ければ、その説明を並べて返す。
-
-    marketplace の登録先はマシン側の状態でリポジトリからは読めないので、ここでは扱わない。
-    登録が済んでいなければ flow のスキルが現れず、その起動を受けるフック経由でこの確認が走ることもない
-    (手動で実行すれば走るが、そのときも登録の有無は見ない)。
-    """
-    settings = settings or {}
-    if not (settings.get("enabledPlugins") or {}).get(PLUGIN_KEY):
-        return [f"enabledPlugins の {PLUGIN_KEY} が真でない"]
-    return []
+def registered_entries(root, user_settings=None):
+    """リポジトリとユーザーの設定が持つエントリを合算した辞書と、在るのに読めなかった設定の一覧を返す。"""
+    merged = {}
+    unreadable = []
+    paths = [root / relative for relative in SETTINGS_FILES]
+    paths.append(Path(user_settings) if user_settings else USER_SETTINGS)
+    for path in paths:
+        settings = load_json(path)
+        if settings is None:
+            if path.is_file():
+                unreadable.append(path)
+            continue
+        for outer, inner in (("permissions", "allow"), ("sandbox", "excludedCommands")):
+            have = ((settings.get(outer) or {}).get(inner)) or []
+            merged.setdefault(outer, {}).setdefault(inner, []).extend(have)
+    return merged, unreadable
 
 
 def check(root):
@@ -100,24 +92,18 @@ def check(root):
     if not ignored(root, SCRATCH_DIR):
         problems.append(f"条項2: スクラッチ置き場 {SCRATCH_DIR}/ が除外設定に入っていない")
 
-    settings = load_json(root / SETTINGS_FILE)
-    if settings is None:
-        problems.append(f"条項3・4: {SETTINGS_FILE} が無い、または JSON として読めない")
-        return problems
-
-    if not tracked(root, SETTINGS_FILE):
-        problems.append(f"条項3・4: {SETTINGS_FILE} が追跡されていない(clone した環境へ共有されない)")
-
-    for lacking in missing_registration(settings):
-        problems.append(f"条項3: {lacking}")
+    registered, unreadable = registered_entries(root)
+    note = ""
+    if unreadable:
+        note = "\n      JSON として読めず数えられなかった設定: " + "、".join(str(p) for p in unreadable)
 
     required = load_json(REQUIRED_SETTINGS)
     if required is None:
-        problems.append(f"条項4: 必須エントリの定義 {REQUIRED_SETTINGS} を読めない")
+        problems.append(f"条項3: 必須エントリの定義 {REQUIRED_SETTINGS} を読めない")
     else:
-        for label, lacking in missing_entries(settings, required).items():
+        for label, lacking in missing_entries(registered, required).items():
             listed = "\n      ".join(lacking)
-            problems.append(f"条項4: {label} に不足がある\n      {listed}")
+            problems.append(f"条項3: {label} に不足がある\n      {listed}{note}")
     return problems
 
 
@@ -132,11 +118,13 @@ def main(argv):
             print(f"  - {problem}")
         print(f"\n満たし方は {ADOPTION_DOC} を参照。")
         return 1
-    print("導入契約 OK(条項1・2・3・4)")
+    print("導入契約 OK(条項1・2・3)")
     return 0
 
 
 def _selftest():
+    import tempfile
+
     required = {
         "permissions": {"allow": ["Bash(git add *)", "Bash(git commit *)"]},
         "sandbox": {"excludedCommands": ["node \"*x.mjs\"*"]},
@@ -161,18 +149,26 @@ def _selftest():
             ok = False
             print(f"FAIL {name}: want={want} got={got}")
 
-    registration_cases = [
-        ("有効化あり", {"enabledPlugins": {PLUGIN_KEY: True}}, 0),
-        ("有効化が偽", {"enabledPlugins": {PLUGIN_KEY: False}}, 1),
-        ("別プラグインのみ", {"enabledPlugins": {"other@harness": True}}, 1),
-        ("空の設定", {}, 1),
-        ("None", None, 1),
-    ]
-    for name, settings, want in registration_cases:
-        got = len(missing_registration(settings))
-        if got != want:
+    with tempfile.TemporaryDirectory() as root:
+        root = Path(root)
+        (root / ".claude").mkdir()
+        first, second = required["permissions"]["allow"]
+        (root / SETTINGS_FILES[0]).write_text(
+            json.dumps({"permissions": {"allow": [first]}}), encoding="utf-8")
+        user = root / "user-settings.json"
+        user.write_text(json.dumps({"sandbox": required["sandbox"]}), encoding="utf-8")
+
+        registered, unreadable = registered_entries(root, user_settings=user)
+        got = missing_entries(registered, required)
+        if got != {"permissions.allow": [second]} or unreadable:
             ok = False
-            print(f"FAIL {name}: want={want} got={got}")
+            print(f"FAIL 設定の合算: got={got} unreadable={unreadable}")
+
+        (root / SETTINGS_FILES[1]).write_text("{壊れた JSON", encoding="utf-8")
+        _, unreadable = registered_entries(root, user_settings=user)
+        if [path.name for path in unreadable] != [Path(SETTINGS_FILES[1]).name]:
+            ok = False
+            print(f"FAIL 読めない設定の報告: {unreadable}")
 
     if load_json(REQUIRED_SETTINGS) is None:
         ok = False

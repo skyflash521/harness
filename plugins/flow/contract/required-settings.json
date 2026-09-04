@@ -1,21 +1,4 @@
 {
-  "permissions": {
-    "allow": [
-      "Bash(git add *)",
-      "Bash(git commit *)",
-      "Bash(git diff --staged -- *)",
-      "Bash(git diff --stat)",
-      "Bash(git diff)",
-      "Bash(git log --oneline -1)",
-      "Bash(git log -1 --format=%B)",
-      "Bash(git show)",
-      "Bash(git status *)",
-      "Bash(node \"/*codex-companion.mjs*)",
-      "Bash(node \"C:/*codex-companion.mjs*)",
-      "Bash(node /*codex-companion.mjs*)",
-      "Bash(node C:/*codex-companion.mjs*)"
-    ]
-  },
   "sandbox": {
     "excludedCommands": [
       "node \"*codex-companion.mjs\"*"
