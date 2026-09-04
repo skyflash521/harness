@@ -14,8 +14,8 @@ guard プラグインはこの契約を課さない(有効化だけを各リポ�
 ### 1. 検証手順書
 
 そのリポジトリで変更を確定させる前に通す検査の一覧と合格条件を定める文書を
-`docs/conventions/verification.md` に置く。言語・検査器は問わない。flow のスキルはこの文書を
-「リポジトリの検証手順書」として参照し、内容そのものは規定しない。
+`docs/conventions/verification.md` に置く。言語・検査器は各リポジトリが選ぶ。flow のスキルはこの文書を
+「リポジトリの検証手順書」として参照する。
 
 ### 2. スクラッチ置き場
 
@@ -27,7 +27,7 @@ guard プラグインはこの契約を課さない(有効化だけを各リポ�
 
 `enabledPlugins` のキー `flow@harness` を真にする。
 
-marketplace の登録先はリポジトリではなくマシン側の状態なので、この条項では扱わない。登録は
+marketplace の登録先はリポジトリではなくマシン側の状態なので、登録は
 [導入手順](#導入手順)で行い、済んでいなければプラグインが読み込まれず flow のスキルも現れない。
 
 ### 4. permissions と sandbox
@@ -65,8 +65,7 @@ marketplace の登録先はリポジトリではなくマシン側の状態な�
    `permissions.allow` と `sandbox.excludedCommands` の各エントリを `.claude/settings.json` の
    同じキーへ加える。**既存のエントリを消さず、足りないものだけを足す。** ファイルが無ければ作り、`git add` で追跡下に入れる。
 4. **条項3**: marketplace を登録して flow を導入する。この操作が `enabledPlugins` を書き込む。
-   harness の所在(リポジトリの URL)はこの文書では定めない。エージェントは所在をユーザーに
-   尋ねて依頼文へ入れる。経路は2つある。
+   harness の所在(リポジトリの URL)は、エージェントがユーザーに尋ねて依頼文へ入れる。経路は2つある。
    - `/plugin marketplace add <harness の所在>` と `/plugin install`。**ユーザー操作なので、
      エージェントは依頼して待つ。** 環境によっては `/plugin` が使えない。
    - `claude plugin marketplace add <harness の所在>` と

@@ -11,9 +11,10 @@ codex のジョブ記録も同じように見る。進行の実体を失った�
 ブロックする——残せば以後そのスレッドを継ぐ起動が拒否され続ける。進行中と分かる記録は
 `完了`・`要判断` だけをブロックし、`待機` は通す。どちらとも決められない記録はブロックしない。
 
-`要判断` はさらに、区分の申告行を要求する。停止してよい場面は閉じた4区分に限られるので、その
-どれに当たるかを言えないことが、止まってはならない停止の印になる。申告の真偽は検査できない
-——防げるのは、区分に当てないまま要判断へ倒す経路である。
+`要判断` はさらに、区分の申告行と、区分外に当たらないことを確かめた旨の1行を要求する。区分名の
+真偽は検査できないので、確かめさせること自体を条件にする——確認の1行は常時の文脈に載らないため、
+初めて要判断で止まろうとした停止は必ずここで弾かれ、この deny が区分外の列挙を渡す。要判断は1手番を
+費やすが、止まるべきでない停止はその1手番で消える。
 
 判定は末尾行の等値比較。応答本文を渡さないハーネスでは判定せず通す——判定できないことを不許可の
 理由にすると、何を書いても抜けられない恒久ブロックになる。
@@ -41,9 +42,13 @@ CODEX_REAPER = "reap_codex_jobs.py"
 STOP_DOC = "defect-followthrough.md"
 
 DECISION_FIELD = "要判断の区分"
+DECISION_CONFIRM = "区分外に当たらないことを確かめた"
 DECISION_KINDS = ("要求仕様", "指示不明", "停止規定", "操作承認")
+DECISION_CONFIRM_LINE = re.compile(
+    rf"^\s*[>*_\-\s]*{re.escape(DECISION_CONFIRM)}[*_\s。．.]*$"
+)
 DECISION_KIND_LINE = re.compile(
-    r"^\s*[>*_\-\s]*要判断の区分[*_\s]*(?:は)?[*_\s]*[::]?[*_\s]*(.+?)\s*$"
+    rf"^\s*[>*_\-\s]*{re.escape(DECISION_FIELD)}[*_\s]*(?:は)?[*_\s]*[::]?[*_\s]*(.+?)\s*$"
 )
 KIND_LEAD = "*_`「(("
 DECISION_EXCLUDED = (
@@ -151,6 +156,13 @@ REASON_DECISION_UNCLASSIFIED = (
     f"当たる区分が在るなら、末尾行の前に「{DECISION_FIELD}: <区分名>」の1行を置いて宣言し直す。"
     f"当たらないなら止まらずに自分で決めて進み、決めた理由を報告に残す。作業が終わっているなら {DONE}。"
 )
+REASON_DECISION_UNCONFIRMED = (
+    f"{DECISION} と区分「{{kind}}」が申告されているが、区分外に当たらないことを確かめた旨が無い。"
+    "**次のどれかに当たらないかを確かめること**: "
+    f"{'・'.join(DECISION_EXCLUDED)}。"
+    "どれかに当たるなら止まる場面ではない——自分で決めて進み、決めた理由を報告に残す。"
+    f"どれにも当たらないと確かめたなら、区分の行に続けて「{DECISION_CONFIRM}」の1行を置いて宣言し直す。"
+)
 REASON_CODEX_RUNNING = (
     "このセッションが起こした codex が実行中のまま手番を返そうとしている: {jobs}。"
     "途中で止めた実行は成果ゼロで費用だけが残るので、殺して片付けない。結果を受け取るまで待つこと"
@@ -197,6 +209,11 @@ def declared_kind(message):
             if declared.startswith(kind):
                 return kind
     return None
+
+
+def confirmed(message):
+    """区分外の確認が申告されているか。文中の言及と区別するため行単位で見る。"""
+    return any(DECISION_CONFIRM_LINE.match(line) for line in message.splitlines())
 
 
 def tasks_of(data):
@@ -273,8 +290,12 @@ def decide(data, codex=()):
         return None, reason.format(
             jobs=label(blocked), reaper=reaper_script(), session=data.get("session_id"),
         )
-    if found[0] == DECISION and not declared_kind(message):
-        return None, REASON_DECISION_UNCLASSIFIED.format(doc=stop_doc())
+    if found[0] == DECISION:
+        kind = declared_kind(message)
+        if not kind:
+            return None, REASON_DECISION_UNCLASSIFIED.format(doc=stop_doc())
+        if not confirmed(message):
+            return None, REASON_DECISION_UNCONFIRMED.format(kind=kind)
     return found[0], None
 
 
@@ -309,6 +330,9 @@ def selftest():
 
     def unclassified():
         return REASON_DECISION_UNCLASSIFIED.format(doc=stop_doc())
+
+    def unconfirmed(kind):
+        return REASON_DECISION_UNCONFIRMED.format(kind=kind)
 
     def codex_stale(jobs):
         return REASON_CODEX_STALE.format(jobs=jobs, reaper=reaper_script(), session="S1")
@@ -366,6 +390,10 @@ def selftest():
          unclassified()),
         (stop("諮ります。\n\n要判断の区分: 実装方針\n\n[停止: 要判断]"), unclassified()),
         (stop("諮ります。区分は要求仕様です。\n\n[停止: 要判断]"), unclassified()),
+        (stop("受入条件が変わります。\n\n要判断の区分: 要求仕様\n\n[停止: 要判断]"),
+         unconfirmed("要求仕様")),
+        (stop("要判断の区分: 要求仕様\n区分外に当たらないことを確かめたわけではない。\n\n[停止: 要判断]"),
+         unconfirmed("要求仕様")),
         (stop("これからフックを書きます。", active=True), REASON_NO_MARKER),
         (stop("コミットしました。ハッシュは 90d8326 です。"), REASON_NO_MARKER, [codex_ghost]),
         (stop("作業は終わりました。\n\n[停止: 完了]"), codex_stale("j2"), [codex_ghost]),
@@ -378,16 +406,16 @@ def selftest():
     ]
     pass_cases = [
         (stop("コミットしました。ハッシュは 90d8326 です。\n\n[停止: 完了]"), "[停止: 完了]"),
-        (stop("受入条件が変わります。\n\n要判断の区分: 要求仕様\n\n[停止: 要判断]"),
-         "[停止: 要判断]"),
-        (stop("受入条件が変わります。\n\n要判断の区分: 要求仕様(受入条件が変わる)\n\n[停止: 要判断]"),
-         "[停止: 要判断]"),
-        (stop("対象のファイルが分かりません。\n\n**要判断の区分**: 指示不明\n\n[停止: 要判断]"),
-         "[停止: 要判断]"),
-        (stop("千日手で終わりました。\n\n- 要判断の区分:停止規定\n\n[停止: 要判断]"),
-         "[停止: 要判断]"),
-        (stop("プッシュしてよいか確かめます。\n\n要判断の区分:操作承認\n\n[停止: 要判断]"),
-         "[停止: 要判断]"),
+        (stop("受入条件が変わります。\n\n要判断の区分: 要求仕様\n区分外に当たらないことを確かめた"
+              "\n\n[停止: 要判断]"), "[停止: 要判断]"),
+        (stop("受入条件が変わります。\n\n要判断の区分: 要求仕様(受入条件が変わる)\n"
+              "区分外に当たらないことを確かめた\n\n[停止: 要判断]"), "[停止: 要判断]"),
+        (stop("対象のファイルが分かりません。\n\n**要判断の区分**: 指示不明\n"
+              "**区分外に当たらないことを確かめた**\n\n[停止: 要判断]"), "[停止: 要判断]"),
+        (stop("千日手で終わりました。\n\n- 要判断の区分:停止規定\n- 区分外に当たらないことを確かめた"
+              "\n\n[停止: 要判断]"), "[停止: 要判断]"),
+        (stop("プッシュしてよいか確かめます。\n\n要判断の区分:操作承認\n"
+              "区分外に当たらないことを確かめた\n\n[停止: 要判断]"), "[停止: 要判断]"),
         (stop("作業は終わりました。\n\n[停止：完了]"), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止:完了]"), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n［停止：完了］"), "[停止: 完了]"),

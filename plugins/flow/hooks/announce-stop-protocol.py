@@ -4,6 +4,10 @@
 知らせなければ、エージェントは必ず初回の停止で `guard-idle-stop.py` にブロックされる。deny
 メッセージが規約を教えるので回復はするが、教わるために1ターンを確実に失う。
 
+知らせるのは、**宣言の形、選べる値の名前、選び分けるのに要る一行の説明、宣言に先立つ必須の動作**に
+限る。その値を選んでよいかの基準——区分外に当たらないか、待機を裏取りできているか——と、それを
+確かめた旨の申告、失敗したときの手立て(時間待ちの手段)は、その停止を弾く deny が渡す。
+
 宣言の文字列はあちらから読み込む——別々に持つと、片方が古くなったときに「教わったとおりに書いた
 のに弾かれる」形になる。説明文はここが正本(deny メッセージとは長さの制約が違うので、同じ文言に
 ならない)。
@@ -34,12 +38,9 @@ def build_context():
         f"- {guard.DONE} — 作業が終わった\n"
         f"- {guard.DECISION} — ユーザーの判断が要る。末尾行の前に"
         f"「{guard.DECISION_FIELD}: <区分>」の1行を置く"
-        f"(区分は {'・'.join(guard.DECISION_KINDS)} のいずれか。"
-        f"{'・'.join(guard.DECISION_EXCLUDED)}では止まらない)\n"
-        f"- {guard.WAIT} — 完了を待つ(登録された背景処理が在るときのみ)\n"
+        f"(区分は {'・'.join(guard.DECISION_KINDS)} のいずれか)\n"
+        f"- {guard.WAIT} — 完了を待つ\n"
         "完了と要判断は、宣言の前に PushNotification を送る。"
-        f"時間で待つときは {guard.wait_script()} を run_in_background の Bash で起動し、"
-        "用が済んだら TaskStop で止めてから手番を返す(ScheduleWakeup は使えない)。"
     )
 
 
@@ -78,13 +79,12 @@ def selftest():
             ok = False
             print(f"FAIL 宣言を囲み記号で包んで提示している: {marker}")
     guard = load_guard()
-    for phrase in (guard.DECISION_FIELD, *guard.DECISION_KINDS, *guard.DECISION_EXCLUDED):
+    for phrase in (guard.DECISION_FIELD, *guard.DECISION_KINDS):
         cases += 1
         if phrase not in context:
             ok = False
-            print(f"FAIL 区分の要求が文脈に無い: {phrase}")
-    for phrase in ("PushNotification", "完了と要判断", "宣言の前",
-                   load_guard().WAIT_SCRIPT, "TaskStop", "ScheduleWakeup"):
+            print(f"FAIL 区分の宣言の形が文脈に無い: {phrase}")
+    for phrase in ("PushNotification", "完了と要判断", "宣言の前"):
         cases += 1
         if phrase not in context:
             ok = False
