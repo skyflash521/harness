@@ -93,9 +93,9 @@ def launch(subagent_type, prompt):
     }}
 
 
-def rules_dir(root):
-    """<root>/docs/rules に規約ファイルを作り、その絶対パスの置き場を返す。"""
-    made = Path(root) / "docs" / "rules"
+def criteria_dir(root):
+    """<root>/docs/criteria に規約ファイルを作り、その絶対パスの置き場を返す。"""
+    made = Path(root) / "docs" / "criteria"
     made.mkdir(parents=True, exist_ok=True)
     for name in REQUIRED_FILES:
         (made / name).write_text("", encoding="utf-8")
@@ -110,30 +110,30 @@ def prompt_with(directory, *names, separator="/", template="正本: {}\n"):
 
 
 def selftest():
-    plugin_rules = Path(__file__).resolve().parents[1] / "docs" / "rules"
+    plugin_criteria = Path(__file__).resolve().parents[1] / "docs" / "criteria"
     with tempfile.TemporaryDirectory() as tmp:
-        spaced = rules_dir(Path(tmp) / "John Doe")
-        japanese = rules_dir(Path(tmp) / "ユーザー")
-        existing = str(plugin_rules).replace("\\", "/")
+        spaced = criteria_dir(Path(tmp) / "John Doe")
+        japanese = criteria_dir(Path(tmp) / "ユーザー")
+        existing = str(plugin_criteria).replace("\\", "/")
         # バックスラッシュ区切りのパスが実在するのは Windows だけなので、その環境でだけ通す側に置く。
         native = (
             ("バックスラッシュ区切り",
              launch("flow:fable-reviewer",
-                    prompt_with(plugin_rules, *REQUIRED_FILES, separator="\\"))),
+                    prompt_with(plugin_criteria, *REQUIRED_FILES, separator="\\"))),
             ("日本語のユーザー名を含むパス(バックスラッシュ区切り)",
              launch("flow:opus-reviewer",
                     prompt_with(japanese, *REQUIRED_FILES, separator="\\"))),
         ) if os.sep == "\\" else ()
         passes = native + (
             ("導入済みプラグインの絶対パス3件",
-             launch("flow:opus-reviewer", prompt_with(plugin_rules, *REQUIRED_FILES))),
+             launch("flow:opus-reviewer", prompt_with(plugin_criteria, *REQUIRED_FILES))),
             ("ホームディレクトリに空白を含む環境",
              launch("flow:opus-reviewer", prompt_with(spaced, *REQUIRED_FILES))),
             ("日本語のユーザー名を含むパス",
              launch("flow:fable-reviewer", prompt_with(japanese, *REQUIRED_FILES))),
             ("日本語の記号で囲んだ絶対パス",
              launch("flow:fable-reviewer",
-                    prompt_with(plugin_rules, *REQUIRED_FILES, template="「{}」\n"))),
+                    prompt_with(plugin_criteria, *REQUIRED_FILES, template="「{}」\n"))),
             ("レビュー専用でないエージェント", launch("codex:codex-rescue", "レビューさせよ")),
             ("探索エージェント", launch("Explore", "呼び出し元を探せ")),
             ("継続ラウンドの送信", {"tool_name": "SendMessage", "tool_input": {"to": "reviewer"}}),
@@ -146,26 +146,26 @@ def selftest():
             ("絶対パスが1件も無い", launch("flow:opus-reviewer", "この変更をレビューせよ"),
              REQUIRED_FILES),
             ("相対パスで示している",
-             launch("flow:fable-reviewer", "正本は ../docs/rules/review-viewpoints.md にある"),
+             launch("flow:fable-reviewer", "正本は ../docs/criteria/review-viewpoints.md にある"),
              REQUIRED_FILES),
             ("常設観点の正本だけ渡している",
-             launch("flow:opus-reviewer", prompt_with(plugin_rules, "review-viewpoints.md")),
+             launch("flow:opus-reviewer", prompt_with(plugin_criteria, "review-viewpoints.md")),
              ("review-response.md", "review-request.md")),
             ("同じ行に絶対パスと日本語を挟んだリポジトリ相対パスが並ぶ",
              launch("flow:opus-reviewer",
-                    "正本の置き場: {}。対象: plugins/flow/docs/rules/review-viewpoints.md".format(existing)),
+                    "正本の置き場: {}。対象: plugins/flow/docs/criteria/review-viewpoints.md".format(existing)),
              REQUIRED_FILES),
             ("同じ行に絶対パスと助詞で繋いだリポジトリ相対パスが並ぶ",
              launch("flow:fable-reviewer",
-                    "{} の plugins/flow/docs/rules/review-viewpoints.md".format(existing)),
+                    "{} の plugins/flow/docs/criteria/review-viewpoints.md".format(existing)),
              REQUIRED_FILES),
             ("同じ行に絶対パスと全角括弧で括ったリポジトリ相対パスが並ぶ",
              launch("flow:opus-reviewer",
-                    "{}(plugins/flow/docs/rules/review-viewpoints.md)".format(existing)),
+                    "{}(plugins/flow/docs/criteria/review-viewpoints.md)".format(existing)),
              REQUIRED_FILES),
             ("実在しない絶対パスを渡している",
              launch("flow:fable-reviewer",
-                    prompt_with(Path(tmp) / "無い場所" / "docs" / "rules", *REQUIRED_FILES)),
+                    prompt_with(Path(tmp) / "無い場所" / "docs" / "criteria", *REQUIRED_FILES)),
              REQUIRED_FILES),
             ("プラグイン名を伴わないエージェント名", launch("opus-reviewer", ""), REQUIRED_FILES),
             ("prompt が無い",
