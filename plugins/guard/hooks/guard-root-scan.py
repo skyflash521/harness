@@ -14,7 +14,10 @@ CPU を1コア占有し続けた(所要時間がそこまで伸びた理由は�
 浅い深さで区切れば走査量が小さく収まり実用的な時間で終わるため、`find` に浅い `-maxdepth` が
 あるときは通す。これが明示的な迂回手段であり、ルート直下を確かめたいだけの正当な用途はこれで足りる。
 
-使い方: Bash の PreToolUse フックとして登録する。--selftest で自己テスト。
+PowerShell ツールの発行も同じく見る。見るのは上に挙げた走査コマンドの呼び出しだけで、PowerShell 固有の
+再帰列挙(`Get-ChildItem -Recurse`)は対象にしない。
+
+使い方: Bash・PowerShell の PreToolUse フックとして登録する。--selftest で自己テスト。
 """
 import json
 import re
@@ -157,7 +160,7 @@ def main():
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, EOFError, UnicodeDecodeError):
         return
-    if data.get("tool_name") != "Bash":
+    if data.get("tool_name") not in ("Bash", "PowerShell"):
         return
     command = (data.get("tool_input") or {}).get("command") or ""
     if scans_root(command):

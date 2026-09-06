@@ -5,7 +5,11 @@
   * 時計を変える形(-s/--set、および位置引数による日時指定)-> deny
   * 複合コマンド・展開・置換・リダイレクトを含む形 -> 何も出力せず通し、通常の許可フローに委ねる
 
-使い方: Bash の PreToolUse フックとして登録する。--selftest で自己テスト。
+PowerShell ツールの発行では、Set-Date と w32tm を deny する。w32tm は引数を読まないので、状態を見る
+だけの形も巻き込む。それ以外は無プロンプトの承認へ回さず通常の許可フローに委ねる——判定が POSIX の
+`date` に合わせてあり、別方言の読み取りを同じ確からしさで見分けられないため。
+
+使い方: Bash・PowerShell の PreToolUse フックとして登録する。--selftest で自己テスト。
 """
 import json
 import re
@@ -14,6 +18,7 @@ import sys
 
 # 次のトークンを引数として食う date のフラグ。いずれも読み取り専用。
 TAKES_ARG = {"-d", "--date", "-r", "--reference", "-f", "--file"}
+PS_CLOCK_SETTERS = ("set-date", "w32tm", "w32tm.exe")
 NOT_STANDALONE_STATIC = re.compile(r"[$`<>;&|\n(]")
 
 
@@ -48,6 +53,27 @@ def decide(cmd):
     return "allow"
 
 
+def decide_powershell(cmd):
+    """PowerShell の発行が時計を変えるなら "deny"。それ以外は None(通す)。"""
+    if not isinstance(cmd, str) or not cmd.strip():
+        return None
+    lexer = shlex.shlex(cmd.replace("\n", "\n;"), posix=True, punctuation_chars=";()<>|&")
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    at_head = True
+    for token in tokens:
+        if token[:1] in ";|&<>(){}":
+            at_head = True
+            continue
+        if at_head and token.replace("\\", "/").rsplit("/", 1)[-1].lower() in PS_CLOCK_SETTERS:
+            return "deny"
+        at_head = False
+    return None
+
+
 def main():
     # ハーネスが渡す JSON は UTF-8。既定の符号化で読むと非ASCII が化けて素通りする。
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -56,18 +82,21 @@ def main():
         data = json.load(sys.stdin)
     except Exception:
         sys.exit(0)
-    if data.get("tool_name") != "Bash":
+    tool = data.get("tool_name")
+    if tool not in ("Bash", "PowerShell"):
         sys.exit(0)
 
     command = (data.get("tool_input") or {}).get("command")
-    decision = decide(command)
+    decision = decide_powershell(command) if tool == "PowerShell" else decide(command)
     if decision is None:
         sys.exit(0)
 
     out = {"hookEventName": "PreToolUse", "permissionDecision": decision}
     if decision == "deny":
+        reader = "Get-Date" if tool == "PowerShell" else "date"
+        breadth = "w32tm は状態を見るだけの形も deny する。" if tool == "PowerShell" else ""
         out["permissionDecisionReason"] = (
-            "date による時計変更は不可。現在時刻は読み取り専用の date を使う。"
+            f"時計の変更は不可。現在時刻は読み取り専用の {reader} を使う。{breadth}"
             "PowerShellのSet-Date・w32tm・pythonのos/time経由での時刻変更等、"
             "別の手段で同じ変更を回避して実行しないこと。"
         )
@@ -96,13 +125,26 @@ def selftest():
         ("date でないコマンド", "ls", None),
         ("空のコマンド", "", None),
     ]
+    ps_cases = [
+        ("時計を設定するコマンドレット", "Set-Date -Date '2030-01-01'", "deny"),
+        ("パイプラインの後ろに置いた設定", "Get-Date | Set-Date", "deny"),
+        ("時刻同期ツール", "w32tm /resync", "deny"),
+        ("読み取りは通常の許可フローへ", "Get-Date", None),
+        ("設定を言及しただけの形", "Write-Output 'Set-Date'", None),
+        ("空のコマンド", "", None),
+    ]
     ok = True
     for why, cmd, want in cases:
         got = decide(cmd)
         if got != want:
             ok = False
             print(f"FAIL {why}: want={want} got={got} :: {cmd!r}")
-    print("ALL PASS" if ok else "SOME FAILED", f"({len(cases)} cases)")
+    for why, cmd, want in ps_cases:
+        got = decide_powershell(cmd)
+        if got != want:
+            ok = False
+            print(f"FAIL PowerShell {why}: want={want} got={got} :: {cmd!r}")
+    print("ALL PASS" if ok else "SOME FAILED", f"({len(cases) + len(ps_cases)} cases)")
     sys.exit(0 if ok else 1)
 
 

@@ -4,7 +4,10 @@
 Edit/Grep で代替できる sed のインプレース編集を Bash で打つと、書き込みのため許可プロンプトが
 出る。それを deny して Edit ツールへ誘導する。
 
-使い方: Bash の PreToolUse フックとして登録する。--selftest で自己テスト。
+PowerShell ツールの発行も同じく見る。見るのは sed の呼び出しだけで、PowerShell 固有のインプレース編集
+(Get-Content と Set-Content の組み合わせ等)は対象にしない。
+
+使い方: Bash・PowerShell の PreToolUse フックとして登録する。--selftest で自己テスト。
 """
 import json
 import re
@@ -52,7 +55,7 @@ def main():
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, EOFError, UnicodeDecodeError):
         return
-    if data.get("tool_name") != "Bash":
+    if data.get("tool_name") not in ("Bash", "PowerShell"):
         return
     command = (data.get("tool_input") or {}).get("command") or ""
     if has_sed_inplace(command):

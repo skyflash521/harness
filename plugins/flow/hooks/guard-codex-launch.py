@@ -9,7 +9,12 @@
 (引用が閉じていない等)も通す——読み取れないことを不許可の理由にすると、正しい起動まで巻き込む。
 実行モード(`--write`)は呼び出し元スキルが場面ごとに決めるので判定しない。
 
-使い方: Bash の PreToolUse フックとして登録する。--selftest で自己テスト。
+PowerShell ツールの発行は、companion に触れる形をすべて deny する。起動でない言及——ジョブログの
+検索や companion 自体の読み取り——も巻き込む安全側の線引きで、Bash 側が通す読み取りもこの方言では
+止まる。作法は Bash での起動を前提に定まっており、判定も POSIX のトークン化に合わせてあるため、
+別方言の形を同じ確からしさでは読めない。巻き込まれた読み取りは Bash ツールで出し直せる。
+
+使い方: Bash・PowerShell の PreToolUse フックとして登録する。--selftest で自己テスト。
 """
 import json
 import re
@@ -20,6 +25,11 @@ COMPANION = "codex-companion.mjs"
 # 中間変数・コマンド置換・ヒアドキュメントは値が argv まで届かない原因になる。
 FORBIDDEN_CHARS = (("$", "ドル記号"), ("`", "バッククォート"), ("<<", "ヒアドキュメント演算子"))
 RUNID_LINE = re.compile(r"^TASK-RUNID: [A-Za-z0-9_-]+$")
+POWERSHELL_REASON = (
+    "companion に触れる PowerShell の発行は、起動でない言及(ログの検索など)も含めて deny する"
+    "(作法も判定も Bash での起動を前提にしており、この方言の形は同じ確からしさで読めない)。"
+    "起動も読み取りも Bash ツールで出し直すこと。"
+)
 
 STANDARD_FORM = (
     "標準形: node \"<companion の絶対パス>\" task --cwd=\"<対象リポジトリの絶対パス。"
@@ -141,13 +151,16 @@ def main():
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, EOFError, UnicodeDecodeError):
         return
-    if not isinstance(data, dict) or data.get("tool_name") != "Bash":
+    if not isinstance(data, dict) or data.get("tool_name") not in ("Bash", "PowerShell"):
         return
     tool_input = data.get("tool_input")
     if not isinstance(tool_input, dict):
         return
-    reason = problem(tool_input.get("command"),
-                     disable_sandbox=bool(tool_input.get("dangerouslyDisableSandbox")))
+    command = tool_input.get("command")
+    if data["tool_name"] == "PowerShell":
+        reason = POWERSHELL_REASON if isinstance(command, str) and COMPANION in command else None
+    else:
+        reason = problem(command, disable_sandbox=bool(tool_input.get("dangerouslyDisableSandbox")))
     if reason:
         print(json.dumps({
             "hookSpecificOutput": {

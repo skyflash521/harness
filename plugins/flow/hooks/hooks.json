@@ -32,6 +32,21 @@
         ]
       },
       {
+        "matcher": "PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-git-write.py\"",
+            "shell": "bash"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-codex-launch.py\"",
+            "shell": "bash"
+          }
+        ]
+      },
+      {
         "matcher": "Agent",
         "hooks": [
           {

@@ -11,9 +11,15 @@ deny する——使い捨ての語だけの件名と、コマンド自身の先
 検査する。
 
 これら以外の add/commit は deny するので、エージェントはユーザーへ許可を求めず通常の形で出し直す。
-add/commit と認識できない形(フックが起動子として知らない語や bash -c の中の git)はここを素通りするが、
-git add・git commit で始まらないので設定の許可 glob にも一致せず、許可プロンプトが出るだけで自動
-実行はされない。無関係なコマンドは通る。
+add/commit と認識できない形(フックが起動子として知らない語や bash -c の中の git)はここを素通りする。
+**素通りは安全の判定ではない**——導入契約は許可リストを要求せず、前提の許可モード `auto` は許可 glob に
+依らず分類器の判断で自動実行しうるので、素通りした形が止まる保証は無い。止めているのは、素の形だけを
+使うというコミットワーカー側の規律である。無関係なコマンドは通る。
+
+PowerShell ツールの発行は、git と add・commit・reset が同居する形を deny する。読み取り専用の呼び出しが
+これらの語を含む場合も巻き込む安全側の線引きで、書き込みかどうかの見分けはしない——トークン化が POSIX
+前提で PowerShell の引用・エスケープを同じには読めず、コミットワーカーには Bash ツールでの発行だけを
+許しているので、この方言で形を選り分ける理由が無い。巻き込まれた読み取りは Bash ツールで出し直せる。
 
 git reset はどの形も deny する。インデックスと HEAD を書き換え、安全に許せる変種が無いため。
 
@@ -23,7 +29,7 @@ git reset はどの形も deny する。インデックスと HEAD を書き換�
 行かれる——書いた側からは見えない。コミットが取るステージ集合は、意図して名指ししたものだけでなければ
 ならない。
 
-使い方: Bash の PreToolUse フックとして登録する。--selftest で自己テスト——追跡下のファイルを
+使い方: Bash と PowerShell の PreToolUse フックとして登録する。--selftest で自己テスト——追跡下のファイルを
 検査に使うので、フィクスチャをステージするかコミットしてから実行する。
 """
 
@@ -53,7 +59,8 @@ PLACEHOLDER_SUBJECT = re.compile(
 SUBJECT_FILLER = re.compile(r"[\s\d\W_]+")
 LEAKED_COMMAND_PREFIX = re.compile(r"^(?:git\s*commit\b|git(?=[^\x00-\x7f])|-m\b)", re.IGNORECASE)
 # Claude Code は許可リスト照合の前にこれらの一部(2.1.x では env・time・timeout・nice・nohup・stdbuf)を剥がす。
-# 剥がされる語がこの集合から漏れると、内側の add/commit が許可 glob に一致して自動実行される。
+# 許可リストに add/commit の glob を置いたリポジトリでは、剥がされる語がこの集合から漏れると、内側の
+# add/commit がその glob に一致して自動実行される。
 WRAPPERS = {
     "command", "builtin", "env", "exec", "time", "timeout", "nice", "ionice",
     "nohup", "setsid", "stdbuf", "xargs", "sudo", "doas", "taskset", "chrt",
@@ -73,6 +80,15 @@ REPOSITION_READONLY = {
 }
 # grep・cat-file の --textconv と --filters は外部ドライバを起動する。git は一意な短縮形も受け付ける。
 REPOSITION_UNSAFE_LONG = ("--open-files-in-pager", "--filters", "--textconv")
+PS_GIT_WORD = re.compile(r"(?<![\w.-])git(?:\.exe)?(?![\w-])", re.IGNORECASE)
+PS_WRITE_WORD = re.compile(r"(?<![\w-])(?:add|commit|reset)(?![\w-])", re.IGNORECASE)
+PS_DENY_REASON = (
+    "A PowerShell command that mentions git together with add, commit or reset is denied, "
+    "read-only invocations included: this guard tokenizes POSIX shell syntax, so it cannot tell "
+    "the two apart in PowerShell quoting, and the commit worker is allowed to issue git writes "
+    "only through the Bash tool. Re-issue the plain command with the Bash tool; do not route it "
+    "through PowerShell, a child shell, or any other indirection."
+)
 
 
 def _is_unsafe_reposition_arg(arg):
@@ -444,6 +460,19 @@ def classify(command, root=None, staged=None):
     return "pass", None
 
 
+def classify_powershell(command):
+    """PowerShell ツールの発行に対する ("deny", 理由) か ("pass", None)。
+
+    Bash 用の許可形はここでは通さない。整った形かを判定できないうえ、通す必要も無い。
+    書き込みかどうかも見分けず、巻き込んだ読み取りは Bash ツールでの出し直しに任せる。
+    """
+    if not isinstance(command, str) or not command.strip():
+        return "pass", None
+    if PS_GIT_WORD.search(command) and PS_WRITE_WORD.search(command):
+        return "deny", PS_DENY_REASON
+    return "pass", None
+
+
 def main():
     if "--selftest" in sys.argv:
         selftest()
@@ -455,12 +484,16 @@ def main():
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, EOFError, UnicodeDecodeError):
         return
-    if data.get("tool_name") != "Bash":
+    tool = data.get("tool_name")
+    if tool not in {"Bash", "PowerShell"}:
         return
     command = (data.get("tool_input") or {}).get("command")
-    root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-    could_be_add = isinstance(command, str) and "git" in command and "add" in command
-    decision, reason = classify(command, root, _staged_paths(root) if could_be_add else None)
+    if tool == "PowerShell":
+        decision, reason = classify_powershell(command)
+    else:
+        root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+        could_be_add = isinstance(command, str) and "git" in command and "add" in command
+        decision, reason = classify(command, root, _staged_paths(root) if could_be_add else None)
     if decision == "deny":
         print(json.dumps({
             "hookSpecificOutput": {
@@ -621,6 +654,24 @@ def selftest():
             ("", "pass"),
         ]),
     )
+    powershell_cases = (
+        CaseGroup("PowerShell ツール: git と add/commit/reset が同居する形(言及だけでも deny)", [
+            ("git add -- a.py", "deny"),
+            ("git commit -m '件名'", "deny"),
+            ("git reset --hard", "deny"),
+            ("git.exe reset", "deny"),
+            ("& \"C:/Program Files/Git/bin/git.exe\" commit -m '件名'", "deny"),
+            ("Write-Output 'git commit'", "deny"),
+        ]),
+        CaseGroup("PowerShell ツール: git と add/commit/reset が同居しない形", [
+            ("git status --short", "pass"),
+            ("git log --oneline -10", "pass"),
+            ("git diff --stat", "pass"),
+            ("Get-Date", "pass"),
+            ("Get-ChildItem -Recurse", "pass"),
+            ("", "pass"),
+        ]),
+    )
     IndexCase = namedtuple("IndexCase", "why command staged expected")
     index_cases = [
         IndexCase("ステージが空なら通る", "git add -- README.md", [], "pass"),
@@ -638,6 +689,11 @@ def selftest():
             actual, _ = classify(command, repo)
             if actual != expected:
                 failures.append((f"{group.why}: {command}", expected, actual))
+    for group in powershell_cases:
+        for command, expected in group.cases:
+            actual, _ = classify_powershell(command)
+            if actual != expected:
+                failures.append((f"{group.why}: {command}", expected, actual))
     for case in index_cases:
         actual, _ = classify(case.command, repo, case.staged)
         if actual != case.expected:
@@ -650,7 +706,8 @@ def selftest():
     if not _tracked_file(repo, repo / "plugins/flow/tests/fixtures/日本語パス検査.txt"):
         print("FAIL 追跡下の非ASCIIパスがバイト比較で一致しない")
         raise SystemExit(1)
-    print(f"ALL PASS ({sum(len(group.cases) for group in case_groups) + len(index_cases)} cases + non-ASCII tracked-path check)")
+    total = sum(len(group.cases) for group in case_groups + powershell_cases) + len(index_cases)
+    print(f"ALL PASS ({total} cases + non-ASCII tracked-path check)")
 
 
 if __name__ == "__main__":

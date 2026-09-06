@@ -36,7 +36,7 @@ guard プラグインはこの契約を課さない。
 契約条項ではなく実行環境の前提。[起動時の契約確認](#起動時の契約確認)の対象には含めない。
 
 - guard・flow が動作するOSは Windows・macOS・Linux とする。
-- 許可モードは、Bash の実行を自動承認する `auto` を前提とする。
+- 許可モードは `auto` を前提とする。auto は Bash の実行を無条件に通すわけではなく、分類器が危険と判断した形は止まる。
 - guard・flow の全フックと補助スクリプトは bash シェル経由で python3 を起動するため、各マシンに
   python3 と(Windows では)Git Bash が必要。
 - codex 系スキルを使う場合は Node.js・Codex CLI・Codex プラグインの導入が別途必要。セットアップ
