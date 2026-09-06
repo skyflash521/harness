@@ -1,77 +1,64 @@
 #!/usr/bin/env python3
-"""Stop フック: 完了判定エージェントの達成判定を伴わない `[停止: 完了]` を block する。
+"""自律進行の完了を、宣言でも他モデルの判定でもなく、自分が登録した作業一覧の状態で裏づけさせる。
 
-`guard-idle-stop.py` は宣言の形しか見ないので、**完了が本当かは検査できない**。ここはその穴だけを
-埋める。埋め方は「フックが判定する」ではなく「**作業した本人とは別のモデルに判定させ、その判定が
-在ることをフックが確かめる**」——判定の材料(ユーザーの指示の原文とこのセッションの行動)は転写に
-在り、それを読むのは同梱の完了判定エージェントである。
+`guard-idle-stop.py` は宣言の形しか見ないので、**完了が本当かは検査できない**。ここはその穴を埋める。
+埋め方は「読んで判定する」ではなく「**自律進行が手順として登録させる `TodoWrite` の中身を見る**」。
 
-確かめるのは3点。**このセッションの転写パスを渡して完了判定エージェントを起動したこと**(渡して
-いなければ、判定は材料でなく呼び出し元の説明を読んだことになる)、**その判定が達成であること**、
-**その判定より後に新しい指示を受けて作業していないこと**(していれば判定はその作業を見ていない)。
-
-判定を求めるのは**自律進行のスキルが起動され、その走行がまだ達成と判定されていない間**だけ。
-1回の走行につき判定は1回で足りる。単発の指示や会話にまで掛ければ、判定は自明に達成を返し、
-サブエージェントの費用だけが残る。走行の途中で受けた質問に答えて手番を返すのは完了の主張ではない
-ので、その停止はここを通らない。
-
-判定の実体を持たないので、判定を偽ることはできても**偽った判定は転写に残る**。転写を読めない・
-宣言が完了でない場合は何もせず通す——判定できないことを不許可の理由にすると、何を書いても
-抜けられない恒久ブロックになる。
+見るのは3点。**走行の中で作業一覧が登録されていること**(自律進行は一覧を作る手順を持つので、無いなら
+その手順を踏んでいない)、**最新の一覧に終わっていない項目が無いこと**、**その区間に現れた項目が最新の
+一覧から消えていないこと**(消して通す経路を閉じる)。区間は、**それまでに現れた項目を残らず抱えた
+まま片付いた地点**で切る——そこで走り切っているので、それより前の一覧は別の作業のものである。項目を
+終わったことにするのは自己申告のままだが、それは**明示の行為として転写に残る**。
 
 完了で手番が戻るときの音もここが鳴らす。宣言の形を見る側は自分が通したことしか分からず、
 こちらが block する場面でも鳴らしてしまうため。
+
+転写を読めない・走行が無い場合は何もせず通す——判定できないことを不許可の理由にすると、何を書いても
+抜けられない恒久ブロックになる。
 
 使い方: プラグインルートを第1引数に渡す Stop フックとして登録する。--selftest で自己テスト。
 """
 import importlib.util
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
 
 HOOKS = Path(__file__).resolve().parent
 GUARD = HOOKS / "guard-idle-stop.py"
-MATERIAL = ("scripts", "goal_material.py")
+TRANSCRIPT = ("scripts", "transcript.py")
 STOP_DOC = "defect-followthrough.md"
 TAG = "[guard-goal-completion]"
 
-AUDITOR = "goal-auditor"
-AGENT_TOOL = "Agent"
 SKILL_TOOL = "Skill"
+TODO_TOOL = "TodoWrite"
 AUTONOMOUS = "autonomous-dev"
-VERDICT = re.compile(
-    r"^\s*[>*_\-\s]*ゴール到達[*_\s]*(?:は)?[*_\s]*[::]?[*_\s]*(達成|未達)[*_\s]*[—\-–:：]?\s*(.*)$"
-)
+STOP_EVENT = "Stop"
+DONE_STATUS = "completed"
 
-HOW = (
-    "取るべき行動は、完了判定エージェント `{auditor}` を Agent ツールで起動し、"
-    "その依頼文に**このセッションの転写の絶対パス** `{transcript}` と"
-    "**材料取り出しスクリプトの絶対パス** `{material}` を書いて渡すこと。"
-    "判定はそのエージェントが材料を読んで出すもので、依頼文に済んだ/済んでいないを書いて"
-    "誘導しない。達成が返ってから宣言し直す。"
-    "**このセッションに Agent ツールが無く起動できないなら、それは停止規定の発火にあたる**"
-    "——判定を省いて完了を宣言せず、要判断で諮る。"
+REASON_NO_TODO = (
+    f"作業一覧が登録されていない走行で `{{done}}` を宣言している。自律進行は計画をステップへ割って"
+    f"`{TODO_TOOL}` に登録する手順を持つので、一覧が無いということは、計画を割らずに走ったか、"
+    "割った結果を残さずに走ったかである。どちらでも、どこまでやれば終わりだったのかが誰にも"
+    "確かめられない。"
+    f"取るべき行動は、この走行が引き受けた作業を `{TODO_TOOL}` へ登録し、"
+    "残っているものを片付けてから宣言し直すこと。"
 )
-
-REASON_NO_AUDIT = (
-    "完了判定を経ていない `[停止: 完了]` である。宣言を書けることは完了の裏付けにならないので、"
-    "このハーネスは**作業した本人とは別のモデル**に、ユーザーの指示の原文とこのセッションの行動を"
-    "突き合わせさせる。" + HOW
-)
-REASON_RESUMED = (
-    "完了判定の後に新しい指示を受けて作業している。その判定はその作業を見ていないので、"
-    "いまの完了の裏付けにならない。**割り込みで入った指示が済んだだけなら、その前に受けていた"
-    "指示へ戻る。**" + HOW
-)
-REASON_NOT_MET = (
-    "完了判定エージェントが**未達**と判定した: {detail}\n"
-    "取るべき行動は、名指しされた項目を実際に進めること。"
+REASON_OPEN = (
+    "作業一覧に終わっていない項目が残っている。\n{items}\n"
+    "取るべき行動は、名指しされた項目を実際に片付けること。"
     "**割り込みで入った指示が済んだだけなら、その前に受けていた指示へ戻る。**\n"
-    "既に済んでいるのに未達と読まれたのなら、済んだことを示す事実(コミットハッシュ・実行結果・"
-    "ファイルの状態)を残してから判定を取り直す。判定を取り直さずに宣言し直しても同じ判定に当たる。\n"
+    "既に済んでいるのに残っているなら、片付いた事実を残したうえで一覧の状態を更新する。\n"
     "進められない事情があるなら、止まってよい場面かどうかを {doc} で確かめる。"
+)
+REASON_DROPPED = (
+    "作業一覧に登録した項目が、最新の一覧から消えている。\n{items}\n"
+    "**引き受けた作業は、片付ければ終わった項目として残るのであって、一覧から消えることはない。**"
+    "消えたものが在るなら、それは終わっていないのに一覧から外れた作業である。\n"
+    f"取るべき行動は、消えた項目を `{TODO_TOOL}` へ戻し、残っているものを片付けてから宣言し直すこと。"
+    "その作業がもう要らないと判断したのなら、要らないと判断した理由を報告に残したうえで、"
+    "一覧に戻して終わった扱いにする。"
+    "名前を書き換えたのなら、書き換えを戻すか、書き換え前の名前も最新の一覧に残す。"
 )
 
 
@@ -88,78 +75,59 @@ def plugin_root():
     return roots[0] if roots else ""
 
 
-def plugin_file(parts, label):
-    """同梱ファイルの絶対パス。ルートを渡されない起動では名前だけを返す。"""
+def stop_doc():
+    """諮ってよい場面を定める規約の絶対パス。ルートを渡されない起動では名前だけを返す。"""
     root = plugin_root()
     if not root:
-        return f"<flow プラグイン同梱の {label}>"
-    return Path(root, *parts).as_posix()
+        return f"<flow プラグイン同梱の docs/guidance/{STOP_DOC}>"
+    return Path(root, "docs", "guidance", STOP_DOC).as_posix()
 
 
-def material_script():
-    return plugin_file(MATERIAL, "/".join(MATERIAL))
-
-
-def stop_doc():
-    return plugin_file(("docs", "guidance", STOP_DOC), f"docs/guidance/{STOP_DOC}")
-
-
-def same_path(text, path):
-    """依頼文がそのファイルを指しているか。区切りと大文字小文字の表記揺れを吸収して見る。"""
-    if not isinstance(text, str) or not isinstance(path, str) or not path:
-        return False
-    return path.replace("\\", "/").lower() in text.replace("\\", "/").lower()
-
-
-def verdict_of(text):
-    """応答から `(達成か, 詳細)` を取り出す。申告行が無ければ None。"""
-    found = None
-    for line in str(text).splitlines():
-        matched = VERDICT.match(line)
-        if matched:
-            found = (matched.group(1) == "達成", matched.group(2).strip())
-    return found
-
-
-def result_text(content):
-    """tool_result の中身を文字列にならす。ブロック配列でも文字列でも同じ形にする。"""
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    return "\n".join(
-        b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
-    )
-
-
-def audits_of(rows, transcript):
-    """`(起動の位置, 判定の中身)` の並び。この転写のパスを渡した完了判定エージェントの起動で、
-    結果が返っているものだけを数える——パスを渡していない起動は材料を読んでいない。"""
-    found, pending = [], {}
+def tool_calls(rows, name, start=-1):
+    """その位置より後の、指定した道具の呼び出しの引数。サブエージェントの手番は数えない。"""
+    found = []
     for index, row in enumerate(rows):
-        if row.get("isSidechain"):
+        if index <= start or row.get("isSidechain") or row.get("type") != "assistant":
             continue
-        kind = row.get("type")
         content = (row.get("message") or {}).get("content")
         if not isinstance(content, list):
             continue
         for block in content:
-            if not isinstance(block, dict):
-                continue
-            if kind == "user" and block.get("type") == "tool_result":
-                launched = pending.pop(block.get("tool_use_id"), None)
-                if launched is not None:
-                    found.append((launched, verdict_of(result_text(block.get("content")))))
-            elif kind == "assistant" and block.get("name") == AGENT_TOOL:
-                args = block.get("input")
-                if not isinstance(args, dict):
-                    continue
-                subagent = args.get("subagent_type")
-                if not isinstance(subagent, str) or subagent.split(":")[-1] != AUDITOR:
-                    continue
-                if same_path(args.get("prompt"), transcript):
-                    pending[block.get("id")] = index
-    return sorted(found, key=lambda item: item[0])
+            if isinstance(block, dict) and block.get("name") == name:
+                found.append(block.get("input") if isinstance(block.get("input"), dict) else {})
+    return found
+
+
+def todo_lists(rows, start):
+    """走行の中で登録された作業一覧の並び。項目の形をしていないものは落とす。"""
+    found = []
+    for args in tool_calls(rows, TODO_TOOL, start):
+        todos = args.get("todos")
+        if isinstance(todos, list):
+            found.append([t for t in todos if isinstance(t, dict)])
+    return found
+
+
+def display(todo):
+    """項目の表示名。同一性の判定にも使うので、名前が無いものは同じ1件に畳む。"""
+    return str(todo.get("content") or todo.get("activeForm") or "(名前の無い項目)")
+
+
+def unfinished(todos):
+    """終わっていない項目の表示名。"""
+    return [display(t) for t in todos if t.get("status") != DONE_STATUS]
+
+
+def segment(lists):
+    """最新の一覧が属する区間。**それまでに現れた項目を残らず抱えたまま片付いた地点**より後を返す。
+    片付いたことだけを切り口にすると、消した当の一覧が切り口になって、消えた項目が区間の外へ出る。"""
+    start, seen = 0, set()
+    for index, one in enumerate(lists[:-1]):
+        names = {display(t) for t in one}
+        seen |= names
+        if one and not unfinished(one) and seen <= names:
+            start, seen = index + 1, set()
+    return lists[start:]
 
 
 def autonomous_launch(rows):
@@ -180,6 +148,36 @@ def autonomous_launch(rows):
     return found
 
 
+def rows_of(data):
+    """転写の行。読めなければ None——判定できないことを不許可の理由にすると恒久ブロックになる。"""
+    reader = load("_transcript", HOOKS.parent / Path(*TRANSCRIPT))
+    return reader.rows_of(data.get("transcript_path"))
+
+
+def verdict(rows):
+    """走行の作業一覧から `(block する理由の型, 埋める値)` を返す。通せるなら None。"""
+    launch = autonomous_launch(rows)
+    if launch is None:
+        return None
+    lists = todo_lists(rows, launch)
+    if not lists:
+        return (REASON_NO_TODO, {})
+    current = segment(lists)
+    latest = current[-1]
+    left = unfinished(latest)
+    if left:
+        return (REASON_OPEN, {"items": listed(left)})
+    kept = {display(t) for t in latest}
+    dropped = sorted({display(t) for one in current for t in one} - kept)
+    if dropped:
+        return (REASON_DROPPED, {"items": listed(dropped)})
+    return None
+
+
+def listed(items):
+    return "\n".join(f"- {item}" for item in items)
+
+
 def decide(data):
     """block する理由を返す。通すときは `None`。"""
     guard = load("_guard_idle_stop", GUARD)
@@ -188,34 +186,17 @@ def decide(data):
         return None
     if guard.fold(guard.last_line(message)) != guard.fold(guard.DONE):
         return None
-    transcript = data.get("transcript_path")
-    material = load("_goal_material", HOOKS.parent / Path(*MATERIAL))
-    rows = material.rows_of(transcript)
+    rows = rows_of(data)
     if rows is None:
         return None
-    launch = autonomous_launch(rows)
-    if launch is None:
+    found = verdict(rows)
+    if found is None:
         return None
-    audits = [a for a in audits_of(rows, transcript) if a[0] > launch]
-    how = HOW.format(auditor=AUDITOR, transcript=transcript, material=material_script())
-    if not audits:
-        return REASON_NO_AUDIT.format(auditor=AUDITOR, transcript=transcript,
-                                      material=material_script())
-    index, verdict = audits[-1]
-    if verdict is None:
-        return ("完了判定エージェントの応答に `ゴール到達: 達成` / `ゴール到達: 未達 — <理由>` の"
-                "申告行が無い。申告の無い応答は、地の文が済んだと読めても完了の裏付けにならない。"
-                + how)
-    if not verdict[0]:
-        return REASON_NOT_MET.format(detail=verdict[1] or "(理由の記述なし)", doc=stop_doc())
-    if material.resumed_after(rows, index):
-        return REASON_RESUMED.format(auditor=AUDITOR, transcript=transcript,
-                                     material=material_script())
-    return None
+    return found[0].format(done=guard.DONE, doc=stop_doc(), **found[1])
 
 
 def main():
-    # UTF-8 を明示する。既定の符号化で読むと日本語が化けて、判定も deny 文も壊れる。
+    # ハーネスが渡す JSON は UTF-8 で、既定の符号化では復号できずに落ちる。
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     try:
@@ -252,36 +233,18 @@ def selftest():
             ok = False
             print(f"FAIL {label}: {actual!r} != {expected!r}")
 
-    def user(text):
-        return {"type": "user", "isSidechain": False,
-                "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
-
-    def queued(text):
-        return {"type": "attachment", "isSidechain": False,
-                "attachment": {"type": "queued_command", "origin": {"kind": "human"},
-                               "prompt": [{"type": "text", "text": text}]}}
-
-    def launch(call_id, prompt, subagent=f"flow:{AUDITOR}", tool=AGENT_TOOL):
+    def call(name, args, ident="t1"):
         return {"type": "assistant", "isSidechain": False, "message": {
             "role": "assistant", "content": [{
-                "type": "tool_use", "id": call_id, "name": tool,
-                "input": {"subagent_type": subagent, "prompt": prompt}}]}}
+                "type": "tool_use", "id": ident, "name": name, "input": args}]}}
 
     def skill(name=f"flow:{AUTONOMOUS}"):
-        return {"type": "assistant", "isSidechain": False, "message": {
-            "role": "assistant", "content": [{
-                "type": "tool_use", "id": "s1", "name": SKILL_TOOL, "input": {"skill": name}}]}}
+        return call(SKILL_TOOL, {"skill": name})
 
-    def edit(path):
-        return {"type": "assistant", "isSidechain": False, "message": {
-            "role": "assistant", "content": [{
-                "type": "tool_use", "id": "e1", "name": "Edit", "input": {"file_path": path}}]}}
-
-    def result(call_id, text):
-        return {"type": "user", "isSidechain": False, "message": {
-            "role": "user", "content": [{
-                "type": "tool_result", "tool_use_id": call_id,
-                "content": [{"type": "text", "text": text}]}]}}
+    def todo(*items):
+        return call(TODO_TOOL, {"todos": [
+            {"content": content, "status": status, "activeForm": content} for content, status in items
+        ]})
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp, "transcript.jsonl").as_posix()
@@ -294,90 +257,71 @@ def selftest():
             return path
 
         def stop(message, transcript=path):
-            return {"hook_event_name": "Stop", "last_assistant_message": message,
+            return {"hook_event_name": STOP_EVENT, "last_assistant_message": message,
                     "transcript_path": transcript, "session_id": "S1"}
 
         done = f"済みました。\n\n{guard.DONE}"
-        ask = user("レビューしてコミットしてプッシュしろ")
-        request = f"転写: {path}\nスクリプト: /p/flow/scripts/goal_material.py"
+        step1 = ("共通契約の実装とテスト", DONE_STATUS)
+        step2 = ("ツール群の実装", "pending")
+        step2done = ("ツール群の実装", DONE_STATUS)
 
-        write([ask])
-        check("自律進行の起動が無ければ通す", decide(stop(done)), None)
-        write([ask, edit("a.py"), edit("b.py")])
-        check("単発の書き換え指示でも起動が無ければ通す", decide(stop(done)), None)
-
-        def run(*extra):
-            return write([ask, skill(), *extra])
-
-        run()
-        check("走行の判定が無ければ block", decide(stop(done)) is not None, True)
+        write([skill(), todo(step1, step2)])
+        blocked = decide(stop(done))
+        check("終わっていない項目が在れば block", blocked is not None, True)
+        check("残っている項目を名指しする", "ツール群の実装" in (blocked or ""), True)
         check("宣言が完了でなければ通す", decide(stop(f"待ちます。\n\n{guard.WAIT}")), None)
         check("宣言が無ければ通す", decide(stop("コミットしました。")), None)
 
-        run(launch("a1", request), result("a1", "全部済んでいる。\nゴール到達: 達成"))
-        check("達成の判定があれば通す", decide(stop(done)), None)
-        check("全角の宣言も判定に載せる", decide(stop("済みました。\n\n[停止：完了]")), None)
+        write([skill(), todo(step1, step2), todo(step1, step2done)])
+        check("最新の一覧で判定する", decide(stop(done)), None)
 
-        run(launch("a1", request), result("a1", "ゴール到達: 達成"),
-            queued("これはどうなってる"), user("追加の質問"))
-        check("達成の後の会話は判定を求めない", decide(stop(done)), None)
+        write([skill(), todo(step1, step2done), todo(step1, step2)])
+        check("後から差し戻された項目も見る", decide(stop(done)) is not None, True)
 
-        run(launch("a1", request), result("a1", "ゴール到達: 達成"),
-            queued("次の計画も同じように進めろ"), edit("next.py"))
-        check("達成の後に指示を受けて作業したら判定を取り直させる",
-              decide(stop(done)) is not None, True)
+        write([skill(), todo(step1, step2), todo(step1)])
+        dropped = decide(stop(done))
+        check("項目が消えたら block", dropped is not None, True)
+        check("消えた項目を名指しする", "ツール群の実装" in (dropped or ""), True)
 
-        run(launch("a1", request), result("a1", "ゴール到達: 達成"),
-            queued("<task-notification>片付いた</task-notification>"), edit("next.py"))
-        check("ハーネスの注入は新しい指示に数えない", decide(stop(done)), None)
+        other = ("別件の作業", DONE_STATUS)
+        write([skill(), todo(step1, step2), todo(step1, other)])
+        check("消して別の項目を足しても block", decide(stop(done)) is not None, True)
 
-        both = {"type": "assistant", "isSidechain": False, "message": {
-            "role": "assistant", "content": [
-                {"type": "tool_use", "id": "p1", "name": AGENT_TOOL,
-                 "input": {"subagent_type": AUDITOR, "prompt": request}},
-                {"type": "tool_use", "id": "p2", "name": AGENT_TOOL,
-                 "input": {"subagent_type": AUDITOR, "prompt": request}}]}}
-        run(both, result("p1", "ゴール到達: 達成"), result("p2", "所見のみ"))
-        check("同じ手番で並べて起動しても落ちない", decide(stop(done)) is not None, True)
+        write([skill(), todo(step1, step2done), todo(other)])
+        check("残らず片付いた後の一覧は別の区間として見る", decide(stop(done)), None)
 
-        run(launch("a1", request), result("a1", "残る。\nゴール到達: 未達 — コミットとプッシュが未了"),
-            queued("これはどうなってる"))
-        blocked = decide(stop(done))
-        check("未達なら会話だけの手番でも block", blocked is not None, True)
-        check("未達の理由を渡す", "コミットとプッシュが未了" in (blocked or ""), True)
+        write([skill(), todo(step1, step2done), todo(step1, step2), todo(step1)])
+        check("片付いた後に始めた作業も消えれば block", decide(stop(done)) is not None, True)
 
-        run(launch("a1", request), result("a1", "ゴール到達: 未達 — 残り"),
-            launch("a2", request), result("a2", "ゴール到達: 達成"))
-        check("最後の判定で決める", decide(stop(done)), None)
+        write([skill(), todo(step1, step2), todo(step1), todo(step1)])
+        check("消した一覧は区間の切り口にならない", decide(stop(done)) is not None, True)
+        write([skill(), todo(step1, step2), todo(step1), todo(other)])
+        check("消した後に別の一覧を出しても block", decide(stop(done)) is not None, True)
 
-        write([ask, launch("a1", request), result("a1", "ゴール到達: 達成"), skill()])
-        check("起動より前の判定は数えない", decide(stop(done)) is not None, True)
+        write([skill()])
+        check("一覧が無ければ block", decide(stop(done)) is not None, True)
+        write([todo(step1, step2)])
+        check("自律進行の起動が無ければ通す", decide(stop(done)), None)
+        write([todo(step1, step2), skill()])
+        check("起動より前の一覧は数えない", decide(stop(done)) is not None, True)
 
-        run(launch("a1", "転写を渡さない依頼文"), result("a1", "ゴール到達: 達成"))
-        check("転写を渡さない起動は判定に数えない", decide(stop(done)) is not None, True)
+        write([skill(), call(TODO_TOOL, {"todos": "壊れた形"})])
+        check("項目の形をしていない引数は一覧に数えない", decide(stop(done)) is not None, True)
 
-        run(launch("a1", request, subagent="flow:opus-reviewer"), result("a1", "ゴール到達: 達成"))
-        check("別のエージェントの応答は判定に数えない", decide(stop(done)) is not None, True)
-
-        run(launch("a1", request), result("a1", "全部済んでいる。"))
-        check("申告行が無ければ block", decide(stop(done)) is not None, True)
-
-        run(launch("a1", request))
-        check("結果が返っていない起動は判定に数えない", decide(stop(done)) is not None, True)
+        sidechain = todo(step1, step2)
+        sidechain["isSidechain"] = True
+        write([skill(), sidechain, todo(step1)])
+        check("サブエージェントの一覧は数えない", decide(stop(done)), None)
 
         check("転写が読めなければ通す",
               decide(stop(done, Path(tmp, "no.jsonl").as_posix())), None)
 
-        check("申告行を読む", verdict_of("ゴール到達: 達成"), (True, ""))
-        check("未達の理由を読む",
-              verdict_of("**ゴール到達: 未達 — コミットが未了**"), (False, "コミットが未了**"))
-        check("申告の無い応答", verdict_of("済んでいると思う"), None)
-        check("最後の申告で決める",
-              verdict_of("ゴール到達: 未達 — 残り\nゴール到達: 達成"), (True, ""))
+        check("終わった項目は残らない", unfinished([{"content": "a", "status": DONE_STATUS}]), [])
+        check("名前の無い項目も挙げる", unfinished([{"status": "pending"}]), ["(名前の無い項目)"])
 
-        run()
+        write([skill(), todo(step1, step2)])
         cases += 1
-        if not _roundtrip_ok(stop(done), "完了判定を経ていない"):
+        if not _roundtrip_ok(stop(done), "ツール群の実装"):
             ok = False
         cases += 1
         if not _roundtrip_silent_ok(stop("コミットしました。")):

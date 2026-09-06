@@ -63,7 +63,7 @@ RESPOND_EMPTY = frozenset((
     "すべて完了", "全て完了", "完了", "完了済み", "済み", "none", "n/a", "na", "nothing",
 ))
 RESPOND_TRIM = "*_`「」()()。．.、,-・ 　"
-MATERIAL = ("scripts", "goal_material.py")
+TRANSCRIPT = ("scripts", "transcript.py")
 GIT_WRITE_HOOK = "guard-git-write.py"
 WORK_TOOLS = ("Edit", "Write", "NotebookEdit", "Agent", "Task", "SendMessage")
 WORK_COMMANDS = ("tee", "cp", "mv", "rm", "mkdir", "touch", "truncate", "patch", "dd", "install")
@@ -399,7 +399,7 @@ def worked_since_instruction(data):
     """直近のユーザー発言より後に手を出したか。転写から判定できなければ None。"""
     root = Path(__file__).resolve().parent.parent
     try:
-        spec = importlib.util.spec_from_file_location("_goal_material", Path(root, *MATERIAL))
+        spec = importlib.util.spec_from_file_location("_transcript", Path(root, *TRANSCRIPT))
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         rows = module.rows_of(data.get("transcript_path"))
