@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""PreToolUse フック: `date` の読み取りを無プロンプトで承認し、時計の変更を deny する。
+"""PreToolUse フック: `date` による時計の変更を deny する。
 
-  * 読み取り専用の形(素の date・+FORMAT・-u/-R/-I・-d/--date <引数> など)-> allow
   * 時計を変える形(-s/--set、および位置引数による日時指定)-> deny
-  * 複合コマンド・展開・置換・リダイレクトを含む形 -> 何も出力せず通し、通常の許可フローに委ねる
+  * 読み取り専用の形(素の date・+FORMAT・-u/-R/-I・-d/--date <引数> など)-> 何も出力せず通す
+  * 複合コマンド・展開・置換・リダイレクトを含む形 -> 何も出力せず通す
 
 PowerShell ツールの発行では、Set-Date と w32tm を deny する。w32tm は引数を読まないので、状態を見る
-だけの形も巻き込む。それ以外は無プロンプトの承認へ回さず通常の許可フローに委ねる——判定が POSIX の
-`date` に合わせてあり、別方言の読み取りを同じ確からしさで見分けられないため。
+だけの形も巻き込む。それ以外は通常の許可フローに委ねる。
 
 使い方: Bash・PowerShell の PreToolUse フックとして登録する。--selftest で自己テスト。
 """
@@ -23,7 +22,7 @@ NOT_STANDALONE_STATIC = re.compile(r"[$`<>;&|\n(]")
 
 
 def decide(cmd):
-    """単独の静的な `date` に対する "allow"/"deny"。それ以外は None(通す)。"""
+    """単独の静的な `date` が時計を変えるなら "deny"。それ以外は None(通す)。"""
     if not isinstance(cmd, str) or not cmd.strip():
         return None
     if NOT_STANDALONE_STATIC.search(cmd):
@@ -50,7 +49,7 @@ def decide(cmd):
             i += 1
         else:
             return "deny"
-    return "allow"
+    return None
 
 
 def decide_powershell(cmd):
@@ -88,31 +87,32 @@ def main():
 
     command = (data.get("tool_input") or {}).get("command")
     decision = decide_powershell(command) if tool == "PowerShell" else decide(command)
-    if decision is None:
+    if decision != "deny":
         sys.exit(0)
 
-    out = {"hookEventName": "PreToolUse", "permissionDecision": decision}
-    if decision == "deny":
-        reader = "Get-Date" if tool == "PowerShell" else "date"
-        breadth = "w32tm は状態を見るだけの形も deny する。" if tool == "PowerShell" else ""
-        out["permissionDecisionReason"] = (
+    reader = "Get-Date" if tool == "PowerShell" else "date"
+    breadth = "w32tm は状態を見るだけの形も deny する。" if tool == "PowerShell" else ""
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": (
             f"時計の変更は不可。現在時刻は読み取り専用の {reader} を使う。{breadth}"
             "PowerShellのSet-Date・w32tm・pythonのos/time経由での時刻変更等、"
             "別の手段で同じ変更を回避して実行しないこと。"
-        )
-    print(json.dumps({"hookSpecificOutput": out}))
+        ),
+    }}))
 
 
 def selftest():
     cases = [
-        ("素の date", "date", "allow"),
-        ("書式指定", "date +%Y-%m-%d", "allow"),
-        ("UTC 表示", "date -u", "allow"),
-        ("RFC 表示", "date -R", "allow"),
-        ("値を連結した短フラグ", "date -Iseconds", "allow"),
-        ("値を別トークンで取る短フラグ", "date -d 20:03", "allow"),
-        ("長フラグの等号形", "date --date=now", "allow"),
-        ("参照ファイル", "date -r f", "allow"),
+        ("素の date", "date", None),
+        ("書式指定", "date +%Y-%m-%d", None),
+        ("UTC 表示", "date -u", None),
+        ("RFC 表示", "date -R", None),
+        ("値を連結した短フラグ", "date -Iseconds", None),
+        ("値を別トークンで取る短フラグ", "date -d 20:03", None),
+        ("長フラグの等号形", "date --date=now", None),
+        ("参照ファイル", "date -r f", None),
         ("set の短形式", "date -s 2030-01-01", "deny"),
         ("set の長形式", "date --set=2030-01-01", "deny"),
         ("set の短縮形", "date --se 2030", "deny"),

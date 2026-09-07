@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """PreToolUse フック: `sed -i` を deny し、インプレース編集を Edit ツールへ誘導する。
 
-Edit/Grep で代替できる sed のインプレース編集を Bash で打つと、書き込みのため許可プロンプトが
-出る。それを deny して Edit ツールへ誘導する。
+Edit ツールは対象を読んでからでないと編集できず、書き換えを差分として見せる。Bash の `sed -i` は
+どちらも経ずにファイルを書き換えるので、deny して Edit ツールへ誘導する。
 
 PowerShell ツールの発行も同じく見る。見るのは sed の呼び出しだけで、PowerShell 固有のインプレース編集
 (Get-Content と Set-Content の組み合わせ等)は対象にしない。

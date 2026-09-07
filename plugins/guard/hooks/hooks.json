@@ -23,11 +23,6 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-root-scan.py\"",
             "shell": "bash"
-          },
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-approve-trash.py\" \"${CLAUDE_PLUGIN_ROOT}\"",
-            "shell": "bash"
           }
         ]
       },
@@ -53,19 +48,6 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-root-scan.py\"",
             "shell": "bash"
-          }
-        ]
-      }
-    ],
-    "PermissionRequest": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/notify-attention.py\" 2>/dev/null || true",
-            "shell": "bash",
-            "async": true
           }
         ]
       }
