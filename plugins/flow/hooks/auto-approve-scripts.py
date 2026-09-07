@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """PreToolUse フック: flow 同梱のフック誘導先スクリプトの起動を無プロンプトで承認する。
 
-flow はフックの誘導を受けて起動されるスクリプトを3つ同梱する。skills/codex-watchdog/watchdog.sh
-(codex のジョブ状態ディレクトリに対する find/stat/grep/sleep)・scripts/wait.py(指定時刻か秒数まで
-待つだけ)は読み取り専用で、scripts/reap_codex_jobs.py は自セッションの codex ジョブ記録だけを終局
-させる(対象の限定はスクリプト側が機械で保証し、リポジトリの作業ツリーには書かない)。どれも許可
+flow はフックの誘導を受けて起動されるスクリプトを3つ同梱する。scripts/wait.py(指定時刻か秒数まで
+待つだけ)は読み取り専用、scripts/reap_codex_jobs.py は自セッションの codex ジョブ記録だけを終局
+させる、skills/codex-watchdog/watchdog.sh は codex のジョブ状態ディレクトリを見張り、監視の上限に
+達した回に限り companion の cancel でそのジョブを止める(どれも対象の限定はスクリプト側が機械で
+保証し——watchdog は渡された companion のパスが `codex-companion.mjs` であることを確かめてから
+起動する——リポジトリの作業ツリーには書かない)。どれも許可
 リストに載る形ではなく、呼び出し側にプロンプトが出る(Claude Code は `bash <script>` 形のコマンドを
 許可パイプライン内で上書き不能な "ask" へ降格させることがある)。**reap_codex_jobs.py は Stop フックが
 手番を返す経路として要求するので、プロンプトが出ると無人運転がそこで止まる。** PreToolUse の allow
@@ -96,7 +98,9 @@ def _selftest():
     spaced = "C:/Program Files/user/.claude/plugins/cache/harness/flow/1.0.0"
     Case = namedtuple("Case", "why cmd root want")
     cases = [
-        Case("watchdog を全引数付きで起動", launch + ' 420 1200 "" 240 vprv0test9m2', root, True),
+        Case("watchdog を全引数付き(companion のパスを含む)で起動",
+             launch + ' 420 1200 "" 240 vprv0test9m2 "' + root + '/../../openai-codex/codex/1.0.0'
+             '/scripts/codex-companion.mjs"', root, True),
         Case("watchdog を引数なしで起動", launch, root, True),
         Case("状態ルートを空文字で渡す", launch + " 420 1200 '' 240 tok", root, True),
         Case("状態ルートをパスで渡す", launch + " 420 1200 /some/state 240 tok", root, True),
