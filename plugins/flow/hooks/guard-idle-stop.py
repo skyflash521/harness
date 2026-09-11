@@ -12,18 +12,21 @@ codex のジョブ記録も同じように見る。進行の実体を失った�
 ブロックする——残せば以後そのスレッドを継ぐ起動が拒否され続ける。進行中と分かる記録は
 `待機` 以外の宣言をブロックする。どちらとも決められない記録はブロックしない。
 
-`要判断` は区分の申告行と、区分外に当たらないことを確かめた旨の1行を、`応答` は残っている指示を
-名指しする1行を要求する。書かれた内容の真偽は検査できないので、書かせること自体を条件にする——
-残りを名指しできない `応答` は完了の突き合わせを避ける経路になり、区分を当てられない `要判断` は
+`要判断` は区分の申告行と、区分外に当たらないことを確かめた旨の1行を、`応答` は**ユーザーが問うた
+ことを復唱する1行**を要求する。復唱は直近のユーザー発言と突き合わせるので、**発言に無い文字列は
+書けない**——ただし確かめられるのはその発言に在ることまでで、**写した部分が問いかどうかは判定して
+いない**。区分を当てられない `要判断` は
 ユーザーが手を入れるまで作業が進まない停止になる。区分外の確認の1行は常時の文脈に載らないため、
 初めて要判断で止まろうとした停止は必ずここで弾かれ、この deny が区分外の列挙を渡す。1手番を
 費やすが、止まるべきでない停止はその1手番で消える。
 
+**`応答` が問うのは、問われたかどうかだけである。** 済んでいない指示が残っているかは条件に入れない
+——問われたなら、指示が残っていても残っていなくても答えを届けるために止まってよい。
+
 `応答` はさらに、**直近のユーザー発言より後に成果物へ手を出していないこと**を転写で確かめる。
 調べるための読み取りは答えるうちだが、編集・サブエージェントへの委譲と継続・書き換えるコマンドが
 入っていれば、その手番は作業の途中である。コマンドは語の位置で見るので、引用の中の言及・捨て場への
-リダイレクト・空振りの指定(`--dry-run` 等)は当たらない。残りを名指しできたことは、それをいま実行できることを
-意味する——申告行だけを条件にすると、この宣言が作業を先送りする口実になる。手を出した事実は
+リダイレクト・空振りの指定(`--dry-run` 等)は当たらない。手を出した事実は
 取り消せないので、この条件で弾かれた手番は宣言を書き直しても通らない。
 
 判定は末尾行の等値比較。応答本文を渡さないハーネスでは判定せず通す——判定できないことを不許可の
@@ -56,11 +59,11 @@ STOP_DOC = "defect-followthrough.md"
 DECISION_FIELD = "要判断の区分"
 DECISION_CONFIRM = "区分外に当たらないことを確かめた"
 DECISION_KINDS = ("要求仕様", "指示不明", "停止規定", "操作承認")
-RESPOND_FIELD = "残っている指示"
+RESPOND_FIELD = "答えた質問"
 RESPOND_EMPTY = frozenset((
     "なし", "無し", "無い", "ない", "特になし", "特に無し", "特にない", "該当なし", "該当無し",
-    "ありません", "特にありません", "ございません", "残っていません", "残りなし", "0件", "0",
-    "すべて完了", "全て完了", "完了", "完了済み", "済み", "none", "n/a", "na", "nothing",
+    "ありません", "特にありません", "ございません", "0件", "0",
+    "質問なし", "質問は無い", "問われていない", "none", "n/a", "na", "nothing",
 ))
 RESPOND_TRIM = "*_`「」()()。．.、,-・ 　"
 TRANSCRIPT = ("scripts", "transcript.py")
@@ -151,7 +154,8 @@ _HOW = (
     f"{DECISION} — ユーザーの判断が要り、それ無しでは進めない。"
     "何を選ぶのかを確定的に書いたうえで付ける。"
     f"{WAIT} — 何かの完了を待つ。手番が戻る経路として、登録された背景処理が在るときだけ使える。"
-    f"{RESPOND} — 問われたことに答えたので手番を返す。まだ済んでいない指示が残っている。"
+    f"{RESPOND} — ユーザーに問われたことへ答えたので、答えを届けるために手番を返す。"
+    "指示が残っているかどうかは問わない。"
 )
 
 REASON_NO_MARKER = (
@@ -166,7 +170,7 @@ REASON_WAIT_UNSUBSTANTIATED = (
     f"取るべき行動は、待つ対象を実際に起動するか、時間で待つなら {wait_script()} を"
     "run_in_background の Bash で起動するか、待たずにその作業を自分で済ませること。"
     f"作業が終わっているなら {DONE}、ユーザーの判断が要るなら {DECISION}、"
-    f"問われたことに答えただけで指示が残っているなら {RESPOND} を使う。"
+    f"ユーザーに問われたことへ答えたのなら {RESPOND} を使う。"
 )
 REASON_MULTIPLE = (
     "末尾行に停止宣言が複数ある。どの理由で止まるのかが決まらない。1つだけにすること。" + _HOW
@@ -206,7 +210,7 @@ REASON_DECISION_UNCLASSIFIED = (
     + DECISION_EXCLUDED_TEXT
     + f"当たる区分が在るなら、末尾行の前に「{DECISION_FIELD}: <区分名>」の1行を置いて宣言し直す。"
     f"当たらないなら止まらずに自分で決めて進み、決めた理由を報告に残す。作業が終わっているなら {DONE}、"
-    f"問われたことに答えただけで指示が残っているなら {RESPOND}。"
+    f"ユーザーに問われたことへ答えたのなら {RESPOND}。"
 )
 REASON_DECISION_UNCONFIRMED = (
     f"{DECISION} と区分「{{kind}}」が申告されているが、区分外に当たらないことを確かめた旨が無い。"
@@ -217,13 +221,29 @@ REASON_DECISION_UNCONFIRMED = (
     "確かめた根拠を添えるなら、その行の末尾に括弧で書く。"
 )
 REASON_RESPOND_UNSUBSTANTIATED = (
-    f"{RESPOND} と宣言しているが、何が残っているのかの申告が無い。"
-    f"{RESPOND} は「問われたことに答えたが、まだ済んでいない指示が残っている」ことを述べる宣言で、"
-    "残りが無いのにこれを書くと、済んでいるものを未了と偽って伝えたうえ、完了に掛かる突き合わせを"
-    "受けずに手番を返すことになる。"
-    f"残っているものが在るなら、末尾行の前に「{RESPOND_FIELD}: <何が残っているか>」の1行を置いて"
-    f"宣言し直す。書くのは**ユーザーの指示のうち済んでいないもの**で、自分で足した作業は書かない。"
-    f"「なし」のように残りが無いと述べる申告は名指しに当たらない。残っていないなら {DONE} を使う。"
+    f"{RESPOND} と宣言しているが、**ユーザーに何を問われたのかの復唱が無い**。"
+    f"{RESPOND} は「ユーザーに問われたことへ答えたので、答えを届けるために手番を返す」ことを述べる"
+    "宣言で、問われていないのにこれを書くと、作業の途中で手番を返す口実になる。"
+    f"問われているなら、末尾行の前に「{RESPOND_FIELD}: <ユーザーが問うたこと>」の1行を置いて"
+    "宣言し直す。**書くのはユーザーが実際に発した問いの復唱**で、自分が report したい内容・"
+    "自分で立てた論点は書かない。"
+    f"「なし」のように問いが無いと述べる申告は復唱に当たらない。"
+    "**復唱はユーザーの発言から原文のまま引く**——書いた文字列が直近のユーザー発言に見つからなければ"
+    "弾かれるので、言い換えず、問いに当たる部分をそのまま写す。"
+    f"問われていないなら、この宣言は使えない——作業が終わっているなら {DONE}、"
+    f"ユーザーの判断が要るなら {DECISION}、待ちが発生したなら {WAIT} を使い、"
+    "どれでもないなら止まらずに作業を続ける。"
+)
+REASON_RESPOND_UNQUOTED = (
+    f"{RESPOND} と宣言しているが、**復唱した文字列が直近のユーザー発言に見つからない**。"
+    "この宣言が成り立つのはユーザーに問われたときだけなので、復唱はその発言から原文のまま引かせる。"
+    "言い換え・要約・自分で立てた論点は一致しない。"
+    f"直近の発言に問いが在るなら、その部分を**原文のまま**「{RESPOND_FIELD}: 」の行へ写して"
+    "宣言し直すこと。"
+    "**ここで確かめているのは、写した文字列がその発言に在ることだけである**——"
+    "問いでない部分を写せば検査は通るが、それは問われたことにはならない。"
+    "**問われていないのに問われたことにして止まらない**——"
+    "作業の区切りで報告したいだけなら、それは手番を返してよい理由にならない。"
 )
 REASON_RESPOND_AFTER_WORK = (
     f"{RESPOND} と宣言しているが、直近のユーザー発言より後に成果物へ手を出している"
@@ -231,8 +251,8 @@ REASON_RESPOND_AFTER_WORK = (
     f"{RESPOND} は**問われたことに答えたので、回答を届けるために手番を返す**宣言である——"
     "調べるための読み取りは答えるうちだが、手を出したならそれは作業であって、その手番はまだ"
     "作業の途中である。"
-    "**残っている指示を書き出せたということは、それをいま実行できるということである**"
-    "——進んでよいなら、止まらずにその指示へ進む。"
+    "**問いに答えることと作業を進めることは別である**——答えるために調べたのでなく手を出したのなら、"
+    "その手番は作業であって、進んでよいなら止まらずに続ける。"
     "順序の指定(「まず」「先に」)は、済んだところで止まってよいという意味ではない。"
     "**ただしユーザーがその作業の着手を禁じているなら、進んではならない。この deny は、ユーザーが"
     f"出した禁止を解除しない**——解除を諮るために {DECISION} を使う。"
@@ -288,17 +308,36 @@ def declared_kind(message):
     return None
 
 
-def remaining(message):
-    """残っている指示が名指しされているか。文中の言及と区別するため行単位で見る。無いと述べた申告は
-    名指しではないので数えない。"""
+def quoted_questions(message):
+    """復唱行に書かれた文字列。文中の言及と区別するため行単位で見る。無いと述べた申告は数えない。"""
+    found = []
     for line in message.splitlines():
         matched = RESPOND_LINE.match(line)
         if not matched:
             continue
-        named = matched.group(1).strip().strip(RESPOND_TRIM).lower()
-        if named and named not in RESPOND_EMPTY:
-            return True
-    return False
+        named = matched.group(1).strip().strip(RESPOND_TRIM)
+        if named and named.lower() not in RESPOND_EMPTY:
+            found.append(named)
+    return found
+
+
+def condensed(text):
+    """照合のために表記の揺れを畳む。空白と装飾は復唱で落ちても同じ発言を指す。"""
+    return "".join(str(text).split()).strip(RESPOND_TRIM).replace("*", "").replace("`", "")
+
+
+def answered(message, data):
+    """復唱された問いが、直近のユーザー発言に実在するか。転写を読めなければ None(判定しない)。"""
+    if not quoted_questions(message):
+        return False
+    module = transcript_module()
+    if module is None:
+        return None
+    rows = module.rows_of(data.get("transcript_path"))
+    said = None if rows is None else module.latest_instruction(rows)
+    if not said:
+        return None
+    return any(condensed(q) in condensed(said) for q in quoted_questions(message))
 
 
 def git_write_hook():
@@ -401,13 +440,24 @@ def is_work(block):
     return isinstance(command, str) and writes(command)
 
 
-def worked_since_instruction(data):
-    """直近のユーザー発言より後に手を出したか。転写から判定できなければ None。"""
-    root = Path(__file__).resolve().parent.parent
+def transcript_module():
+    """転写の読み取りを持つ側を取り込む。読めなければ None。"""
     try:
+        root = Path(__file__).resolve().parent.parent
         spec = importlib.util.spec_from_file_location("_transcript", Path(root, *TRANSCRIPT))
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
+
+
+def worked_since_instruction(data):
+    """直近のユーザー発言より後に手を出したか。転写から判定できなければ None。"""
+    module = transcript_module()
+    if module is None:
+        return None
+    try:
         rows = module.rows_of(data.get("transcript_path"))
         calls = None if rows is None else module.calls_since_last_instruction(rows)
     except Exception:
@@ -495,8 +545,10 @@ def decide(data, codex=()):
             jobs=label(blocked), reaper=reaper_script(), session=data.get("session_id"),
         )
     if found[0] == RESPOND:
-        if not remaining(message):
+        if not quoted_questions(message):
             return None, REASON_RESPOND_UNSUBSTANTIATED
+        if answered(message, data) is False:
+            return None, REASON_RESPOND_UNQUOTED
         if worked_since_instruction(data):
             return None, REASON_RESPOND_AFTER_WORK
     if found[0] == DECISION:
@@ -595,16 +647,16 @@ def selftest():
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting, waiting_seconds]),
          REASON_WAIT_DUPLICATED),
         (stop("作業は終わりました。\n\n[停止: 完了] [停止: 要判断]"), REASON_MULTIPLE),
-        (stop("回答しました。\n残っている指示: プッシュ\n\n[停止: 応答]", tasks=[task]),
+        (stop("回答しました。\n答えた質問: プッシュはまだか\n\n[停止: 応答]", tasks=[task]),
          REASON_TASK_LEFT_RUNNING.format(tasks="b1")),
         (stop("回答しました。\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
-        (stop("回答しました。\n残っている指示: なし\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
-        (stop("回答しました。\n残っている指示は無い\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
-        (stop("回答しました。\n**残っている指示**: 特になし。\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
-        (stop("回答しました。\n残っている指示: 特にありません\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
-        (stop("回答しました。\n残っている指示: すべて完了\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
-        (stop("回答しました。残っている指示は無い。\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
-        (stop("回答しました。\n残っている指示: プッシュ\n\n[停止: 応答]"), codex_running("j1"), [codex_alive]),
+        (stop("回答しました。\n答えた質問: なし\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
+        (stop("回答しました。\n答えた質問は無い\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
+        (stop("回答しました。\n**答えた質問**: 特になし。\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
+        (stop("回答しました。\n答えた質問: 特にありません\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
+        (stop("回答しました。\n答えた質問: 質問なし\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
+        (stop("回答しました。答えた質問は無い。\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
+        (stop("回答しました。\n答えた質問: プッシュはまだか\n\n[停止: 応答]"), codex_running("j1"), [codex_alive]),
         (stop("どちらで進めますか。1. フックを作る 2. 文書だけにする\n\n[停止: 要判断]"),
          unclassified()),
         (stop("諮ります。\n\n要判断の区分: 実装方針\n\n[停止: 要判断]"), unclassified()),
@@ -655,10 +707,10 @@ def selftest():
         (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[waiting_ended]), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[unknown]), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止: 完了]", active=True), "[停止: 完了]"),
-        (stop("ご質問への回答です。\n残っている指示: 実装ステップ2以降\n\n[停止: 応答]"), "[停止: 応答]"),
-        (stop("回答です。\n残っている指示: None を渡したときの分岐の修正\n\n[停止: 応答]"), "[停止: 応答]"),
-        (stop("回答です。\n残っている指示: - プッシュ\n\n[停止: 応答]"), "[停止: 応答]"),
-        (stop("回答しました。\n**残っている指示**: プッシュ\n\n[停止: 応答]", tasks=[waiting_ended]), "[停止: 応答]"),
+        (stop("ご質問への回答です。\n答えた質問: どこまで進んだ\n\n[停止: 応答]"), "[停止: 応答]"),
+        (stop("回答です。\n答えた質問: None を渡すとどうなる\n\n[停止: 応答]"), "[停止: 応答]"),
+        (stop("回答です。\n答えた質問: - プッシュはまだか\n\n[停止: 応答]"), "[停止: 応答]"),
+        (stop("回答しました。\n**答えた質問**: プッシュはまだか\n\n[停止: 応答]", tasks=[waiting_ended]), "[停止: 応答]"),
         (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[task]), "[停止: 待機]", [codex_alive]),
         (stop("作業は終わりました。\n\n[停止: 完了]"), "[停止: 完了]", [codex_unknown]),
     ]
@@ -733,7 +785,7 @@ def _respond_gate_ok():
         return {"type": kind, "isSidechain": False,
                 "message": {"role": kind, "content": [block]}}
 
-    asked = row("user", {"type": "text", "text": "不要なエントリは消せ"})
+    asked = row("user", {"type": "text", "text": "不要なエントリは消せ。どれが不要か分かるか"})
     acted = row("assistant", {"type": "tool_use", "id": "t1", "name": "Agent", "input": {}})
     edited = row("assistant", {"type": "tool_use", "id": "t2", "name": "Edit", "input": {}})
     committed = row("assistant", {"type": "tool_use", "id": "t3", "name": "Bash",
@@ -760,7 +812,7 @@ def _respond_gate_ok():
                                "input": {"command": 'sed -n 1,9p x.md && grep -n -i "更新" y.md'}})
     read = row("assistant", {"type": "tool_use", "id": "t5", "name": "Read", "input": {}})
     said = row("assistant", {"type": "text", "text": "お答えします。"})
-    message = ("回答しました。\n残っている指示: 規約2本のレビュー\n\n" + RESPOND)
+    message = ("回答しました。\n答えた質問: どれが不要か分かるか\n\n" + RESPOND)
     ok = True
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp, "transcript.jsonl")
@@ -788,6 +840,36 @@ def _respond_gate_ok():
             if actual != expected:
                 ok = False
                 print(f"FAIL {label}: {actual!r}")
+
+        path.write_text(json.dumps(asked, ensure_ascii=False) + "\n", encoding="utf-8")
+        for quoted, expected, label in (
+            ("どれが不要か分かるか", RESPOND, "発言にある問いの復唱は通す"),
+            ("**「どれが不要か分かるか」**", RESPOND, "囲みを付けた復唱も通す"),
+            ("どれが 不要か 分かるか", RESPOND, "空白の入った復唱も通す"),
+            ("いつ終わるのか", REASON_RESPOND_UNQUOTED, "発言に無い問いは弾く"),
+            ("不要なものを消してよいか確認したいそうですね", REASON_RESPOND_UNQUOTED,
+             "言い換えた復唱は弾く"),
+            ("エントリの整理について", REASON_RESPOND_UNQUOTED, "自分で立てた論点は弾く"),
+        ):
+            marker, reason = decide({
+                "hook_event_name": "Stop", "background_tasks": [], "session_id": "S1",
+                "last_assistant_message": f"回答しました。\n{RESPOND_FIELD}: {quoted}\n\n{RESPOND}",
+                "transcript_path": path.as_posix(),
+            })
+            actual = reason if reason else marker
+            if actual != expected:
+                ok = False
+                print(f"FAIL {label}: {actual!r}")
+
+        missing = Path(tmp, "no.jsonl").as_posix()
+        marker, reason = decide({
+            "hook_event_name": "Stop", "background_tasks": [], "session_id": "S1",
+            "last_assistant_message": f"回答しました。\n{RESPOND_FIELD}: 何か\n\n{RESPOND}",
+            "transcript_path": missing,
+        })
+        if (reason if reason else marker) != RESPOND:
+            ok = False
+            print(f"FAIL 転写が読めなければ照合しない: {reason!r}")
     return ok
 
 

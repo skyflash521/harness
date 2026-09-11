@@ -70,6 +70,23 @@ def said_by_user(row):
     return bool(spoken(text_blocks((row.get("message") or {}).get("content"))))
 
 
+def spoken_of(row):
+    """その行でユーザーが書いた本文。割り込みとそれ以外で content の置き場が違う。"""
+    content = ((row.get("attachment") or {}).get("prompt")
+               if row.get("type") == "attachment"
+               else (row.get("message") or {}).get("content"))
+    return spoken(text_blocks(content))
+
+
+def latest_instruction(rows):
+    """直近のユーザー発言の本文。発言が1件も無ければ None。"""
+    found = None
+    for row in rows:
+        if said_by_user(row):
+            found = spoken_of(row)
+    return found
+
+
 def calls_since_last_instruction(rows):
     """直近のユーザー発言より後の道具の呼び出し。発言が1件も無ければ None。"""
     latest = None
@@ -125,6 +142,16 @@ def selftest():
     check("割り込みの発言を数える", said_by_user(queued("ついでに README も直して")), True)
     check("機械の割り込みは数えない", said_by_user(queued("片付いた", kind="hook")), False)
     check("素のユーザー発言を数える", said_by_user(user("レビューしろ")), True)
+
+    check("直近の発言の本文を返す",
+          latest_instruction([user("古い指示"), assistant(tool="Bash"), user("新しい指示")]),
+          "新しい指示")
+    check("割り込みの本文も返す",
+          latest_instruction([user("古い指示"), queued("あとで直して")]), "あとで直して")
+    check("ハーネスの囲みは本文に数えない",
+          latest_instruction([user("指示"), user("<system-reminder>注入</system-reminder>")]),
+          "指示")
+    check("発言が無ければ None", latest_instruction([assistant(tool="Bash")]), None)
 
     rows = [
         user("レビューしろ"),

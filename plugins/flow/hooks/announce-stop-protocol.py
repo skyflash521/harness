@@ -40,8 +40,8 @@ def build_context():
         f"「{guard.DECISION_FIELD}: <区分>」の1行を置く"
         f"(区分は {'・'.join(guard.DECISION_KINDS)} のいずれか)\n"
         f"- {guard.WAIT} — 完了を待つ\n"
-        f"- {guard.RESPOND} — 問われたことに答えたが、まだ済んでいない指示が残っている。"
-        f"末尾行の前に「{guard.RESPOND_FIELD}: <何が残っているか>」の1行を置く\n"
+        f"- {guard.RESPOND} — ユーザーに問われたことへ答えた(問われていないなら使えない)。"
+        f"末尾行の前に「{guard.RESPOND_FIELD}: <ユーザーが問うた部分を原文のまま>」の1行を置く\n"
         "完了・要判断・応答は、宣言の前に PushNotification を送る。"
     )
 
@@ -86,7 +86,7 @@ def selftest():
         if phrase not in context:
             ok = False
             print(f"FAIL 区分の宣言の形が文脈に無い: {phrase}")
-    for phrase in ("PushNotification", "完了・要判断・応答", "宣言の前", "指示の全部", "残っている"):
+    for phrase in ("PushNotification", "完了・要判断・応答", "宣言の前", "指示の全部", "原文のまま"):
         cases += 1
         if phrase not in context:
             ok = False
