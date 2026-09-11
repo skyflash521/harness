@@ -4,17 +4,24 @@
 無言で通るのは次の2つだけ。
 
     git add -- <明示したファイル>...
-    git commit -m <メッセージ>          (件名に日本語が1文字以上あること)
+    git commit -m <メッセージ>          (件名に日本語が1文字以上あること。呼び出し元がコミットワーカー)
 
 件名が ASCII だけの形は deny し、日本語で起草し直させる。起草されたメッセージではありえない件名も
 deny する——使い捨ての語だけの件名と、コマンド自身の先頭が引数へ紛れ込んだ件名。メッセージの行構造も
 検査する。
 
+`git commit` は**呼び出し元がコミットワーカーのときだけ**通す。フック入力の `agent_id`(サブエージェント
+から発火したときだけ入る)と `agent_type` で見分ける。ワーカー以外の発行は、git と commit が同居する
+コマンドをどの形でも deny する——子シェルや未知の起動子の内側に隠した commit も止めるための線引きで、
+これらの語を含む読み取り専用の呼び出しも巻き込む。**`git add` は呼び出し元を見ない**——レビューへ回す前の
+ステージはメインモデルの経路である。
+
 これら以外の add/commit は deny するので、エージェントはユーザーへ許可を求めず通常の形で出し直す。
-add/commit と認識できない形(フックが起動子として知らない語や bash -c の中の git)はここを素通りする。
-**素通りは安全の判定ではない**——導入契約は許可リストを要求せず、前提の許可モード `auto` は許可 glob に
-依らず分類器の判断で自動実行しうるので、素通りした形が止まる保証は無い。止めているのは、素の形だけを
-使うというコミットワーカー側の規律である。無関係なコマンドは通る。
+ワーカーからの発行では、add/commit と認識できない形(フックが起動子として知らない語や bash -c の中の
+git)はここを素通りする。**素通りは安全の判定ではない**——導入契約は許可リストを要求せず、前提の許可
+モード `auto` は許可 glob に依らず分類器の判断で自動実行しうるので、素通りした形が止まる保証は無い。
+素通りする形を止めているのは、素の形だけを使うというコミットワーカー側の規律である。無関係なコマンドは
+通る。
 
 PowerShell ツールの発行は、git と add・commit・reset が同居する形を deny する。読み取り専用の呼び出しが
 これらの語を含む場合も巻き込む安全側の線引きで、書き込みかどうかの見分けはしない——トークン化が POSIX
@@ -44,6 +51,7 @@ from pathlib import Path
 
 CONTROL_CHARS = ";&|<>\n"
 GLOB_CHARS = "*?[]{}"
+WORKER = "commit-worker"
 JAPANESE_CHAR = re.compile(r"[぀-ヿ㐀-䶿一-鿿]")
 TARGET_WORD = re.compile(r"(?<![\w-])(add|commit)(?![\w-])")
 ESCAPE_NEWLINE = "\\n"
@@ -80,7 +88,8 @@ REPOSITION_READONLY = {
 }
 # grep・cat-file の --textconv と --filters は外部ドライバを起動する。git は一意な短縮形も受け付ける。
 REPOSITION_UNSAFE_LONG = ("--open-files-in-pager", "--filters", "--textconv")
-PS_GIT_WORD = re.compile(r"(?<![\w.-])git(?:\.exe)?(?![\w-])", re.IGNORECASE)
+GIT_WORD = re.compile(r"(?<![\w.-])git(?:\.exe)?(?![\w-])", re.IGNORECASE)
+COMMIT_WORD = re.compile(r"(?<![\w-])commit(?![\w-])", re.IGNORECASE)
 PS_WRITE_WORD = re.compile(r"(?<![\w-])(?:add|commit|reset)(?![\w-])", re.IGNORECASE)
 PS_DENY_REASON = (
     "A PowerShell command that mentions git together with add, commit or reset is denied, "
@@ -88,6 +97,12 @@ PS_DENY_REASON = (
     "the two apart in PowerShell quoting, and the commit worker is allowed to issue git writes "
     "only through the Bash tool. Re-issue the plain command with the Bash tool; do not route it "
     "through PowerShell, a child shell, or any other indirection."
+)
+COMMIT_CALLER_DENY_REASON = (
+    "git と commit が同居するコマンドを通すのは flow:commit-worker サブエージェントからの発行だけで、"
+    "この呼び出しはそこから来ていない。コミットが目的なら flow:commit スキルを起動して委譲すること。"
+    "読み取りが目的なら、git と commit を同じ呼び出しに含めない形で出し直すこと。コミットを"
+    "子シェル・別のツール・別種のサブエージェント経由で出し直して回避しないこと。"
 )
 
 
@@ -371,13 +386,36 @@ def _message_format_problem(message):
     )
 
 
-def classify(command, root=None, staged=None):
+def _mentions_commit(command):
+    """どんな形であれ git と commit が同居するか。"""
+    return bool(GIT_WORD.search(command) and COMMIT_WORD.search(command))
+
+
+def _from_commit_worker(data):
+    """フック入力がコミットワーカーからの発火か。
+
+    `agent_type` は `--agent` で始めたセッションの主スレッドにも入るので、サブエージェントかどうかは
+    `agent_id` で見る。プラグイン名の接頭辞は剥がして比べる。
+    """
+    agent_id = data.get("agent_id") if isinstance(data, dict) else None
+    agent_type = data.get("agent_type") if isinstance(data, dict) else None
+    if not isinstance(agent_id, str) or not agent_id.strip():
+        return False
+    if not isinstance(agent_type, str):
+        return False
+    return agent_type.split(":")[-1] == WORKER
+
+
+def classify(command, root=None, staged=None, worker=False):
     """("deny", 理由) か ("pass", None) を返す。
 
     staged はインデックスの現在のステージ一覧。None なら共有インデックス検査を飛ばす。
+    worker は呼び出し元がコミットワーカーか。既定の False は渡し忘れをコミットへ通さないため。
     """
     if not isinstance(command, str) or not command.strip():
         return "pass", None
+    if not worker and _mentions_commit(command):
+        return "deny", COMMIT_CALLER_DENY_REASON
     try:
         tokens = _tokens(command)
     except ValueError:
@@ -429,6 +467,8 @@ def classify(command, root=None, staged=None):
     args = tokens[2:]
     root = root or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     if tokens[1] == "commit":
+        if not worker:
+            return "deny", COMMIT_CALLER_DENY_REASON
         if not _safe_commit(args):
             return "deny", "Retry with git commit -m <message>"
         subject = args[1].split("\n", 1)[0]
@@ -468,7 +508,7 @@ def classify_powershell(command):
     """
     if not isinstance(command, str) or not command.strip():
         return "pass", None
-    if PS_GIT_WORD.search(command) and PS_WRITE_WORD.search(command):
+    if GIT_WORD.search(command) and PS_WRITE_WORD.search(command):
         return "deny", PS_DENY_REASON
     return "pass", None
 
@@ -493,7 +533,9 @@ def main():
     else:
         root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
         could_be_add = isinstance(command, str) and "git" in command and "add" in command
-        decision, reason = classify(command, root, _staged_paths(root) if could_be_add else None)
+        decision, reason = classify(
+            command, root, _staged_paths(root) if could_be_add else None,
+            _from_commit_worker(data))
     if decision == "deny":
         print(json.dumps({
             "hookSpecificOutput": {
@@ -682,11 +724,41 @@ def selftest():
         IndexCase("拒む形はインデックスの中身によらず拒む", "git add -- missing-file.py", ["CLAUDE.md"], "deny"),
         IndexCase("commit はインデックス全体を取るので対象外", f"git commit -m '件名\n\n本文\n\n{TRAILER}'", ["CLAUDE.md"], "pass"),
     ]
+    CallerCase = namedtuple("CallerCase", "why command data expected")
+    COMMIT = f"git commit -m '件名を書く\n\n本文\n\n{TRAILER}'"
+    ADD = "git add -- plugins/flow/hooks/guard-git-write.py"
+    caller_cases = [
+        CallerCase("コミットワーカーからの commit",
+                   COMMIT, {"agent_id": "a1", "agent_type": "flow:commit-worker"}, "pass"),
+        CallerCase("プラグイン名を伴わないワーカー名",
+                   COMMIT, {"agent_id": "a1", "agent_type": "commit-worker"}, "pass"),
+        CallerCase("メインモデルからの commit(agent_id が無い)", COMMIT, {}, "deny"),
+        CallerCase("他種のサブエージェントからの commit",
+                   COMMIT, {"agent_id": "a1", "agent_type": "flow:opus-reviewer"}, "deny"),
+        CallerCase("`--agent` セッションの主スレッド(agent_type だけ入る)",
+                   COMMIT, {"agent_type": "flow:commit-worker"}, "deny"),
+        CallerCase("agent_id が空文字",
+                   COMMIT, {"agent_id": " ", "agent_type": "flow:commit-worker"}, "deny"),
+        CallerCase("agent_id が文字列でない",
+                   COMMIT, {"agent_id": 1, "agent_type": "flow:commit-worker"}, "deny"),
+        CallerCase("agent_type が無い", COMMIT, {"agent_id": "a1"}, "deny"),
+        CallerCase("メインモデルが子シェルの内側へ隠した commit",
+                   "bash -c \"git commit -m x\"", {}, "deny"),
+        CallerCase("メインモデルが未知の起動子の内側へ隠した commit",
+                   "mycmd --run 'git commit -m x'", {}, "deny"),
+        CallerCase("ワーカーが子シェルの内側へ隠した commit(素の形の規律に委ねる)",
+                   "bash -c \"git commit -m x\"",
+                   {"agent_id": "a1", "agent_type": "flow:commit-worker"}, "pass"),
+        CallerCase("メインモデルの add は通す", ADD, {}, "pass"),
+        CallerCase("メインモデルの許可しない形の add は形で deny する",
+                   "git add -A", {}, "deny"),
+        CallerCase("メインモデルの reset は形で deny する", "git reset --hard", {}, "deny"),
+    ]
     repo = Path(__file__).resolve().parents[3]
     failures = []
     for group in case_groups:
         for command, expected in group.cases:
-            actual, _ = classify(command, repo)
+            actual, _ = classify(command, repo, worker=True)
             if actual != expected:
                 failures.append((f"{group.why}: {command}", expected, actual))
     for group in powershell_cases:
@@ -695,10 +767,17 @@ def selftest():
             if actual != expected:
                 failures.append((f"{group.why}: {command}", expected, actual))
     for case in index_cases:
-        actual, _ = classify(case.command, repo, case.staged)
+        actual, _ = classify(case.command, repo, case.staged, worker=True)
         if actual != case.expected:
             failures.append((f"{case.why}: {case.command} [staged={case.staged}]",
                              case.expected, actual))
+    for case in caller_cases:
+        actual, _ = classify(case.command, repo, worker=_from_commit_worker(case.data))
+        if actual != case.expected:
+            failures.append((f"呼び出し元の検査 / {case.why}", case.expected, actual))
+    if not roundtrip_denies_main_thread():
+        failures.append(("ハーネスと同じ形の起動でメインモデルの commit が deny されない",
+                         "deny", "pass"))
     if failures:
         for command, expected, actual in failures:
             print(f"FAIL expected={expected} actual={actual}: {command!r}")
@@ -706,8 +785,29 @@ def selftest():
     if not _tracked_file(repo, repo / "plugins/flow/tests/fixtures/日本語パス検査.txt"):
         print("FAIL 追跡下の非ASCIIパスがバイト比較で一致しない")
         raise SystemExit(1)
-    total = sum(len(group.cases) for group in case_groups + powershell_cases) + len(index_cases)
+    total = (sum(len(group.cases) for group in case_groups + powershell_cases)
+             + len(index_cases) + len(caller_cases) + 1)
     print(f"ALL PASS ({total} cases + non-ASCII tracked-path check)")
+
+
+def roundtrip_denies_main_thread():
+    """ハーネスと同じ形(UTF-8 の JSON を標準入力へ)で起動して deny を確かめる。
+
+    メインモデルからの発火は `agent_id` が入らないことで表す。
+    """
+    payload = json.dumps({
+        "session_id": "S1", "transcript_path": "", "cwd": ".",
+        "hook_event_name": "PreToolUse", "tool_name": "Bash",
+        "tool_input": {"command": "git commit -m '件名を書く\n\n本文\n\n"
+                                  "Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>'"},
+    }, ensure_ascii=False).encode("utf-8")
+    result = subprocess.run(
+        [sys.executable, __file__], input=payload, stdout=subprocess.PIPE, check=False)
+    try:
+        output = json.loads(result.stdout.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return False
+    return output.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
 
 
 if __name__ == "__main__":
