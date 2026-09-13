@@ -58,7 +58,7 @@ def decide(data):
         return None
     completion = load("_guard_goal_completion", COMPLETION)
     rows = completion.rows_of(data)
-    if rows is None or completion.verdict(rows) is None:
+    if rows is None or completion.verdict(rows, data.get("cwd")) is None:
         return None
     idle = load("_guard_idle_stop", IDLE)
     return REASON.format(
@@ -108,21 +108,17 @@ def selftest():
         return {"type": "assistant", "isSidechain": False, "message": {
             "role": "assistant", "content": [{
                 "type": "tool_use", "id": "s1", "name": completion.SKILL_TOOL,
-                "input": {"skill": name}}]}}
+                "input": {"skill": name, "args": "plan.md に基づいて自律進行"}}]}}
 
-    def todo(*items):
+    def said(text):
         return {"type": "assistant", "isSidechain": False, "message": {
-            "role": "assistant", "content": [{
-                "type": "tool_use", "id": "t1", "name": completion.TODO_TOOL,
-                "input": {"todos": [
-                    {"content": content, "status": status, "activeForm": content}
-                    for content, status in items
-                ]}}]}}
+            "role": "assistant", "content": [{"type": "text", "text": text}]}}
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp, "transcript.jsonl").as_posix()
-        left = ("ツール群の実装", "pending")
-        finished = ("ツール群の実装", completion.DONE_STATUS)
+        scope = said(f"{completion.SCOPE_FIELD}: 1-2")
+        one = said(f"{completion.STEP_FIELD}: 1")
+        two = said(f"{completion.STEP_FIELD}: 2")
 
         def write(rows):
             Path(path).write_text(
@@ -141,9 +137,9 @@ def selftest():
         write([ask_user])
         check("自律進行の起動が無ければ通す", decide(ask()), None)
 
-        write([ask_user, skill(), todo(left)])
+        write([ask_user, skill(), scope, one])
         blocked = decide(ask())
-        check("終わっていない項目が在れば deny", blocked is not None, True)
+        check("済んでいないステップが残れば deny", blocked is not None, True)
         check("区分を渡す", "要求仕様" in (blocked or ""), True)
         check("区分外を渡す", "段取り" in (blocked or ""), True)
         check("宣言の方へ誘導する", "[停止: 要判断]" in (blocked or ""), True)
@@ -154,11 +150,11 @@ def selftest():
         check("転写が読めなければ通す",
               decide(ask(transcript=Path(tmp, "no.jsonl").as_posix())), None)
 
-        write([ask_user, skill(), todo(finished)])
-        check("残らず片付いていれば通す", decide(ask()), None)
+        write([ask_user, skill(), scope, one, two])
+        check("範囲が埋まれば通す", decide(ask()), None)
 
         write([ask_user, skill()])
-        check("作業一覧が無ければ走行中として deny", decide(ask()) is not None, True)
+        check("範囲が示されていなければ走行中として deny", decide(ask()) is not None, True)
 
         cases += 1
         if not _roundtrip_ok(ask()):
