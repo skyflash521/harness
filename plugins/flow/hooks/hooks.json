@@ -57,6 +57,16 @@
         ]
       },
       {
+        "matcher": "TaskStop",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-codex-stop.py\" \"${CLAUDE_PLUGIN_ROOT}\"",
+            "shell": "bash"
+          }
+        ]
+      },
+      {
         "matcher": "ScheduleWakeup",
         "hooks": [
           {
