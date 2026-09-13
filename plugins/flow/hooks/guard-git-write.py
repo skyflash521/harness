@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """PreToolUse フック: コミットスキルが発する git の書き込みを検査する。
 
-無言で通るのは次の2つだけ。
+無言で通るのは次の3つだけ。
 
     git add -- <明示したファイル>...
     git commit -m <メッセージ>          (件名に日本語が1文字以上あること。呼び出し元がコミットワーカー)
+    git commit --amend -m <メッセージ>  (加えて、その発行元自身が作った直前のコミットで、インデックスが空)
 
 件名が ASCII だけの形は deny し、日本語で起草し直させる。起草されたメッセージではありえない件名も
 deny する——使い捨ての語だけの件名と、コマンド自身の先頭が引数へ紛れ込んだ件名。メッセージの行構造も
@@ -15,6 +16,16 @@ deny する——使い捨ての語だけの件名と、コマンド自身の先
 コマンドをどの形でも deny する——子シェルや未知の起動子の内側に隠した commit も止めるための線引きで、
 これらの語を含む読み取り専用の呼び出しも巻き込む。**`git add` は呼び出し元を見ない**——レビューへ回す前の
 ステージはメインモデルの経路である。
+
+`--amend` は、**その発行元自身が作った直前のコミットの文面を書き換えるときだけ**通す。素の commit を
+通すたびにそのときの HEAD を控えておき、amend の時点で HEAD の親がその控えと一致するかで見分ける
+(控えは作業ツリー・セッション・発行元の識別子ごとに分ける)。加えて、インデックスが空であること
+——これで書き換わるのが文面だけになる——と、HEAD がリモート追跡参照に含まれないことを求め、メッセージは
+素の commit と同じ検査を通す。控えはワーカー自身が書ける場所にあるので、これは詐称を防ぐ証明ではなく、
+取り違えを防ぐ支えである。**同じ鍵の別の発行が、前の発行の作ったコミットが手つかずで HEAD に残っている
+うちに amend を出せば、その文面は通る**——鍵が発行を分けきるかはハーネス側の事実で、ここでは裏取り
+できない。
+`--amend` が直せるのは文面だけで、コミットが履歴に増えたことも、その内容も取り消せない。
 
 これら以外の add/commit は deny するので、エージェントはユーザーへ許可を求めず通常の形で出し直す。
 ワーカーからの発行では、add/commit と認識できない形(フックが起動子として知らない語や bash -c の中の
@@ -40,12 +51,15 @@ git reset はどの形も deny する。インデックスと HEAD を書き換�
 検査に使うので、フィクスチャをステージするかコミットしてから実行する。
 """
 
+import hashlib
 import json
 import os
 import re
 import shlex
 import subprocess
 import sys
+import tempfile
+import time
 from collections import namedtuple
 from pathlib import Path
 
@@ -104,6 +118,36 @@ COMMIT_CALLER_DENY_REASON = (
     "読み取りが目的なら、git と commit を同じ呼び出しに含めない形で出し直すこと。コミットを"
     "子シェル・別のツール・別種のサブエージェント経由で出し直して回避しないこと。"
 )
+AMEND_FORM_REASON = (
+    "The only amend this guard allows is git commit --amend -m <message>, written in exactly that "
+    "order with a single -m: it rewrites the message of the commit you just made and nothing "
+    "else. Drop the other arguments (--no-edit, -F, -a, -- <file>, a second -m) and re-issue that "
+    "form. Do not reach for git reset or a rebase instead."
+)
+AMEND_NOT_OWN_REASON = (
+    "git commit --amend is allowed only on the commit this invocation created itself, and HEAD is "
+    "not that commit: either you have not committed here yet, or HEAD moved after your commit. Do "
+    "not amend it, and do not use git reset or a rebase to reach your own commit: stop and report "
+    "what HEAD holds -- another session may be working in this worktree."
+)
+AMEND_INDEX_REASON = (
+    "git commit --amend is allowed only while nothing is staged, so that it rewrites the message "
+    "and never the committed content. The index holds staged changes, which the amend would sweep "
+    "into the commit you already made. Commit them separately; do not unstage them to get past "
+    "this."
+)
+AMEND_PUBLISHED_REASON = (
+    "HEAD is contained in a remote-tracking ref, so the commit is already published and amending "
+    "it would rewrite history other clones hold. Stop and report it instead."
+)
+AMEND_UNKNOWN_REASON = (
+    "git did not report the state this amend must be checked against (the staged set, HEAD and "
+    "its parent, or the remote-tracking refs containing HEAD), so the commit cannot be shown to "
+    "be yours and the rewrite message-only. Report the failure instead of retrying."
+)
+RECORD_DIR = "flow-guard-git-write"
+RECORD_MAX_AGE = 7 * 24 * 60 * 60
+AmendState = namedtuple("AmendState", "index_clean own_head published")
 
 
 def _is_unsafe_reposition_arg(arg):
@@ -326,6 +370,128 @@ def _shared_index_reason(unnamed):
     )
 
 
+def _git_out(root, args):
+    """git の標準出力を文字列で返す。起動できないか終了コードが非0なら None。"""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *args], capture_output=True, check=False)
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    # git は参照名もパスも UTF-8 バイトで出す。text=True はロケールの符号化で壊す。
+    return result.stdout.decode("utf-8", "replace")
+
+
+def _record_path(root, data):
+    """この発行元が作ったコミットを控える先。発行元を特定できなければ None。
+
+    鍵は作業ツリー・セッション・発行元の識別子。どれも突き合わせるだけで、値が何を表すかには
+    依らない。
+    """
+    agent_id = data.get("agent_id") if isinstance(data, dict) else None
+    if not isinstance(agent_id, str) or not agent_id.strip():
+        return None
+    session_id = data.get("session_id")
+    session_id = session_id.strip() if isinstance(session_id, str) else ""
+    key = hashlib.sha256(
+        f"{Path(root).resolve()}\0{session_id}\0{agent_id.strip()}".encode("utf-8")).hexdigest()
+    return Path(tempfile.gettempdir()) / RECORD_DIR / f"{key[:32]}.head"
+
+
+def _prune_records(directory):
+    """置き場に溜まった古い控えを捨てる。"""
+    threshold = time.time() - RECORD_MAX_AGE
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if entry.is_file() and entry.stat().st_mtime < threshold:
+                entry.unlink()
+        except OSError:
+            continue
+
+
+def _record_head(root, data):
+    """通した commit が作るコミットの親になる sha を控える。amend の対象の見分けに使う。
+
+    コミットがまだ無ければ空を控える。git が答えられなかったときも空になるが、空の控えで許すのは
+    親を持たない HEAD の amend だけなので、安全側へ落ちる。
+    """
+    path = _record_path(root, data)
+    if path is None:
+        return
+    head = _git_out(root, ["rev-parse", "--verify", "HEAD"]) or ""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _prune_records(path.parent)
+        path.write_text(head.strip(), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _head_is_own(root, data):
+    """HEAD がこの発行元自身の作ったコミットか。git が答えられなければ None。
+
+    控えが無い(この発行でまだコミットしていない)ときは False。控えと一致するのは、控えた時点の
+    HEAD をただ1つの親に持つコミットだけで、その後に誰かが積んだコミットは一致しない。
+    """
+    path = _record_path(root, data)
+    if path is None:
+        return False
+    try:
+        recorded = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    out = _git_out(root, ["rev-list", "--parents", "-n", "1", "HEAD"])
+    if out is None:
+        return None
+    parts = out.split()
+    if not parts:
+        return None
+    parents = parts[1:]
+    if not recorded:
+        return not parents
+    return len(parents) == 1 and parents[0] == recorded
+
+
+def _index_clean(root):
+    """インデックスが HEAD と同じか。git が答えられなければ None。"""
+    out = _git_out(root, ["diff", "--cached", "--name-only", "-z"])
+    if out is None:
+        return None
+    return not out.strip("\0")
+
+
+def _head_published(root):
+    """HEAD を含むリモート追跡参照があるか。git が答えられなければ None。"""
+    out = _git_out(root, ["branch", "--remotes", "--contains", "HEAD"])
+    if out is None:
+        return None
+    return bool(out.strip())
+
+
+def _amend_state(root, data):
+    """amend を許す条件の実測。"""
+    return AmendState(_index_clean(root), _head_is_own(root, data), _head_published(root))
+
+
+def _is_plain_commit(command):
+    """素の(amend でない)git commit か。通した後に HEAD を控えるかの判定に使う。"""
+    try:
+        tokens = _tokens(command)
+    except ValueError:
+        return False
+    return (
+        len(tokens) >= 2
+        and _is_plain_git(tokens[0])
+        and tokens[1] == "commit"
+        and "--amend" not in tokens
+    )
+
+
 def _safe_commit(args):
     return len(args) == 2 and args[0] == "-m" and bool(args[1].strip())
 
@@ -341,8 +507,9 @@ def _probe_subject_problem(subject):
     return (
         "Commit subject is a placeholder, so this reads as a commit issued to try out the command "
         "form rather than to record the drafted message. With changes staged, every git commit is "
-        "a real commit, and neither --amend nor git reset can repair the history it leaves. Do not "
-        "probe with a commit: re-issue the message drafted from the diff, or stop and report the "
+        "a real commit: git reset is denied and --amend rewrites only the message, so the commit "
+        "it leaves in history stays. Do not probe with a commit: re-issue the message drafted "
+        "from the diff, or stop and report the "
         "deny reason you cannot get past."
     )
 
@@ -386,6 +553,49 @@ def _message_format_problem(message):
     )
 
 
+def _classify_message(message):
+    """コミットメッセージの検査。素の commit と amend が共有する。"""
+    subject = message.split("\n", 1)[0]
+    if not JAPANESE_CHAR.search(subject):
+        return "deny", (
+            "Commit subject must be Japanese (repo convention): the first line has no "
+            "Japanese character. Redraft the subject in Japanese and retry."
+        )
+    problem = _probe_subject_problem(subject)
+    if problem:
+        return "deny", problem
+    if LEAKED_COMMAND_PREFIX.match(subject):
+        return "deny", (
+            "Commit subject opens with the commit command itself, so the -m argument picked up "
+            "the front of the command while it was assembled. Re-issue the subject you drafted, "
+            "without the command text. Compare the argument against the draft BEFORE running it "
+            "-- once the commit exists, only its message can still be rewritten, and only by "
+            "amending the commit this invocation made itself."
+        )
+    problem = _message_format_problem(message)
+    if problem:
+        return "deny", problem
+    return "pass", None
+
+
+def _classify_amend(args, amend):
+    """`git commit --amend` の検査。自分が作った直前のコミットの文面だけを書き換える形に限る。
+
+    amend は許す条件の実測。None(実測を渡されていない)は許さない側へ落とす。
+    """
+    if len(args) != 3 or args[1] != "-m" or not args[2].strip():
+        return "deny", AMEND_FORM_REASON
+    if amend is None or None in amend:
+        return "deny", AMEND_UNKNOWN_REASON
+    if not amend.own_head:
+        return "deny", AMEND_NOT_OWN_REASON
+    if amend.published:
+        return "deny", AMEND_PUBLISHED_REASON
+    if not amend.index_clean:
+        return "deny", AMEND_INDEX_REASON
+    return _classify_message(args[2])
+
+
 def _mentions_commit(command):
     """どんな形であれ git と commit が同居するか。"""
     return bool(GIT_WORD.search(command) and COMMIT_WORD.search(command))
@@ -406,11 +616,12 @@ def _from_commit_worker(data):
     return agent_type.split(":")[-1] == WORKER
 
 
-def classify(command, root=None, staged=None, worker=False):
+def classify(command, root=None, staged=None, worker=False, amend=None):
     """("deny", 理由) か ("pass", None) を返す。
 
     staged はインデックスの現在のステージ一覧。None なら共有インデックス検査を飛ばす。
     worker は呼び出し元がコミットワーカーか。既定の False は渡し忘れをコミットへ通さないため。
+    amend は amend を許す条件の実測。既定の None は渡し忘れを amend へ通さないため。
     """
     if not isinstance(command, str) or not command.strip():
         return "pass", None
@@ -469,28 +680,11 @@ def classify(command, root=None, staged=None, worker=False):
     if tokens[1] == "commit":
         if not worker:
             return "deny", COMMIT_CALLER_DENY_REASON
+        if args and args[0] == "--amend":
+            return _classify_amend(args, amend)
         if not _safe_commit(args):
             return "deny", "Retry with git commit -m <message>"
-        subject = args[1].split("\n", 1)[0]
-        if not JAPANESE_CHAR.search(subject):
-            return "deny", (
-                "Commit subject must be Japanese (repo convention): the first line has no "
-                "Japanese character. Redraft the subject in Japanese and retry."
-            )
-        problem = _probe_subject_problem(subject)
-        if problem:
-            return "deny", problem
-        if LEAKED_COMMAND_PREFIX.match(subject):
-            return "deny", (
-                "Commit subject opens with the commit command itself, so the -m argument picked up "
-                "the front of the command while it was assembled. Re-issue the subject you "
-                "drafted, without the command text. Compare the argument against the draft BEFORE "
-                "running it -- once the commit exists neither --amend nor git reset can repair it."
-            )
-        problem = _message_format_problem(args[1])
-        if problem:
-            return "deny", problem
-        return "pass", None
+        return _classify_message(args[1])
     named = _safe_add(args, root)
     if named is None:
         return "deny", "Retry with git add -- <explicit-file>..."
@@ -532,10 +726,14 @@ def main():
         decision, reason = classify_powershell(command)
     else:
         root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+        worker = _from_commit_worker(data)
         could_be_add = isinstance(command, str) and "git" in command and "add" in command
+        could_be_amend = worker and isinstance(command, str) and "--amend" in command
         decision, reason = classify(
-            command, root, _staged_paths(root) if could_be_add else None,
-            _from_commit_worker(data))
+            command, root, _staged_paths(root) if could_be_add else None, worker,
+            _amend_state(root, data) if could_be_amend else None)
+        if decision == "pass" and worker and _is_plain_commit(command):
+            _record_head(root, data)
     if decision == "deny":
         print(json.dumps({
             "hookSpecificOutput": {
@@ -724,6 +922,37 @@ def selftest():
         IndexCase("拒む形はインデックスの中身によらず拒む", "git add -- missing-file.py", ["CLAUDE.md"], "deny"),
         IndexCase("commit はインデックス全体を取るので対象外", f"git commit -m '件名\n\n本文\n\n{TRAILER}'", ["CLAUDE.md"], "pass"),
     ]
+    OWN = AmendState(index_clean=True, own_head=True, published=False)
+    AMEND = f"git commit --amend -m '件名を書き直す\n\n本文\n\n{TRAILER}'"
+    AmendCase = namedtuple("AmendCase", "why command state expected")
+    amend_cases = [
+        AmendCase("自分が作った直前のコミットの文面を直す", AMEND, OWN, "pass"),
+        AmendCase("HEAD が自分の作ったコミットでない",
+                  AMEND, OWN._replace(own_head=False), "deny"),
+        AmendCase("インデックスにステージがある",
+                  AMEND, OWN._replace(index_clean=False), "deny"),
+        AmendCase("HEAD が公開済み", AMEND, OWN._replace(published=True), "deny"),
+        AmendCase("作業ツリーの状態を git が答えられない",
+                  AMEND, OWN._replace(own_head=None), "deny"),
+        AmendCase("実測を渡されていない発行", AMEND, None, "deny"),
+        AmendCase("メッセージの検査は素の commit と同じ(件名が英語)",
+                  f"git commit --amend -m 'Rewrite the subject\n\n{TRAILER}'", OWN, "deny"),
+        AmendCase("メッセージの検査は素の commit と同じ(トレーラが無い)",
+                  "git commit --amend -m '件名を書き直す'", OWN, "deny"),
+        AmendCase("メッセージの検査は素の commit と同じ(間に合わせの件名)",
+                  f"git commit --amend -m 'テスト\n\n{TRAILER}'", OWN, "deny"),
+        AmendCase("文面を伴わない amend", "git commit --amend --no-edit", OWN, "deny"),
+        AmendCase("エディタを開く amend", "git commit --amend", OWN, "deny"),
+        AmendCase("--amend を -m の後ろへ置いた形",
+                  f"git commit -m '件名を書き直す\n\n{TRAILER}' --amend", OWN, "deny"),
+        AmendCase("-m が複数", "git commit --amend -m '件名' -m '本文'", OWN, "deny"),
+        AmendCase("ファイルを名指した amend",
+                  f"git commit --amend -m '件名を書き直す\n\n{TRAILER}' -- a.py", OWN, "deny"),
+        AmendCase("インデックスを取り込む amend",
+                  f"git commit --amend -a -m '件名を書き直す\n\n{TRAILER}'", OWN, "deny"),
+        AmendCase("他のコマンドと連結した amend",
+                  f"git status && git commit --amend -m '件名を書き直す\n\n{TRAILER}'", OWN, "deny"),
+    ]
     CallerCase = namedtuple("CallerCase", "why command data expected")
     COMMIT = f"git commit -m '件名を書く\n\n本文\n\n{TRAILER}'"
     ADD = "git add -- plugins/flow/hooks/guard-git-write.py"
@@ -749,6 +978,8 @@ def selftest():
         CallerCase("ワーカーが子シェルの内側へ隠した commit(素の形の規律に委ねる)",
                    "bash -c \"git commit -m x\"",
                    {"agent_id": "a1", "agent_type": "flow:commit-worker"}, "pass"),
+        CallerCase("メインモデルからの amend",
+                   f"git commit --amend -m '件名を書き直す\n\n本文\n\n{TRAILER}'", {}, "deny"),
         CallerCase("メインモデルの add は通す", ADD, {}, "pass"),
         CallerCase("メインモデルの許可しない形の add は形で deny する",
                    "git add -A", {}, "deny"),
@@ -771,6 +1002,10 @@ def selftest():
         if actual != case.expected:
             failures.append((f"{case.why}: {case.command} [staged={case.staged}]",
                              case.expected, actual))
+    for case in amend_cases:
+        actual, _ = classify(case.command, repo, worker=True, amend=case.state)
+        if actual != case.expected:
+            failures.append((f"amend の検査 / {case.why}", case.expected, actual))
     for case in caller_cases:
         actual, _ = classify(case.command, repo, worker=_from_commit_worker(case.data))
         if actual != case.expected:
@@ -786,7 +1021,7 @@ def selftest():
         print("FAIL 追跡下の非ASCIIパスがバイト比較で一致しない")
         raise SystemExit(1)
     total = (sum(len(group.cases) for group in case_groups + powershell_cases)
-             + len(index_cases) + len(caller_cases) + 1)
+             + len(index_cases) + len(amend_cases) + len(caller_cases) + 1)
     print(f"ALL PASS ({total} cases + non-ASCII tracked-path check)")
 
 
