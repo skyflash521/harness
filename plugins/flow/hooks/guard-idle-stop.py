@@ -6,7 +6,10 @@
 完了の判定は掛からない。`要判断` と `応答` は音を鳴らす。
 
 併せてこのセッションが起動した背景処理を数え、生存しているものが残ったままの `待機` 以外の宣言と、
-生存している `wait.py` が2つ以上ある `待機` をブロックする。
+生存している `wait.py` が2つ以上ある `待機` をブロックする。**`wait.py` が1つも無い `待機` も
+ブロックする**——待つ対象が生きていることは通知が届くことを意味せず、届かなければ手番が戻る経路が
+無いまま止まり続ける。時間で起きる `wait.py` がその起点になり、締切が来れば進み具合を確かめて
+待ち続けるか取り直すかを決められる。
 
 codex のジョブ記録も同じように見る。進行の実体を失ったまま実行中として残った記録はどの宣言でも
 ブロックする——残せば以後そのスレッドを継ぐ起動が拒否され続ける。進行中と分かる記録は
@@ -117,6 +120,7 @@ RESPOND_LINE = re.compile(
 INSTRUCTION_LINE = re.compile(
     rf"^\s*[>*_\-\s]*[^\s::]{{0,12}}{INSTRUCTION_WORD}[*_\s]*(?:は)?[*_\s]*[::]"
 )
+WAIT_NAME = re.compile(rf"(?:^|[/\s'\"]){re.escape(WAIT_SCRIPT)}")
 KIND_LEAD = "*_`「(("
 DECISION_EXCLUDED = (
     "実装の設計", "段取り", "作業量", "レビュアーが諮れと述べたこと", "既定や選択肢を書けること",
@@ -175,7 +179,8 @@ _HOW = (
     f"{DONE} — 依頼された作業が終わり、手番を返す。"
     f"{DECISION} — ユーザーの判断が要り、それ無しでは進めない。"
     "何を選ぶのかを確定的に書いたうえで付ける。"
-    f"{WAIT} — 何かの完了を待つ。手番が戻る経路として、登録された背景処理が在るときだけ使える。"
+    f"{WAIT} — 何かの完了を待つ。手番が戻る経路として、登録された背景処理と、"
+    f"締切になる {WAIT_SCRIPT} の背景実行がどちらも在るときだけ使える。"
     f"{RESPOND} — ユーザーに問われたことへ答えたので、答えを届けるために手番を返す。"
     "戻ってきて続ける作業が残っているときに使う。"
 )
@@ -189,8 +194,9 @@ REASON_NO_MARKER = (
 REASON_WAIT_UNSUBSTANTIATED = (
     f"{WAIT} と宣言しているが、手番が戻る経路になる背景処理が無い(終わった処理は経路にならない)。"
     "このまま止まると再開する手立てが無く、ユーザーが促すまで止まり続けることになる。"
-    f"取るべき行動は、待つ対象を実際に起動するか、時間で待つなら {wait_script()} を"
-    "run_in_background の Bash で起動するか、待たずにその作業を自分で済ませること。"
+    f"取るべき行動は、待つ対象を実際に起動し、締切として {wait_script()} も"
+    "run_in_background の Bash で起動すること(時間そのものを待つなら締切だけでよい)。"
+    "待たずにその作業を自分で済ませられるなら、そちらのほうが早い。"
     f"作業が終わっているなら {DONE}、ユーザーの判断が要るなら {DECISION}、"
     f"ユーザーに問われたことへ答えたのなら {RESPOND} を使う。"
 )
@@ -202,6 +208,15 @@ REASON_TASK_LEFT_RUNNING = (
     "残したものは後で終わって手番を戻し、確認するものが無いターンを1つ作る。"
     "用が済んだものは TaskStop で止めてから宣言し直すこと(対象のIDは起動時の戻り値が示す)。"
     f"まだ待つのであれば、止めずに {WAIT} を使う。"
+)
+REASON_WAIT_NO_DEADLINE = (
+    f"{WAIT} と宣言しているが、**いつ手番が戻るかの締切が張られていない**。"
+    "待つ対象が生きていても通知は落ちることがあり、落ちれば"
+    "**ユーザーが促すまで何も起きない停止になる**。対象が自分で締切を持っていても同じ。\n"
+    "取るべき行動は、対象の所要に見合った秒数で "
+    f'`python3 "{wait_script()}" <秒数>` を run_in_background の Bash から起こし、宣言し直すこと。'
+    "**締切に達したのに対象が終わっていない回で、締切だけを張り直さない**"
+    "——ハングを捕まえるための締切が、ハングを見逃す装置になる。"
 )
 REASON_WAIT_DUPLICATED = (
     f"{WAIT_SCRIPT} が2つ以上動いている。待つ対象は1つなので、先に用が済んだ後も残りが発火し、"
@@ -320,7 +335,7 @@ REASON_FABRICATED_INSTRUCTION = (
 REASON_CODEX_RUNNING = (
     "このセッションが起こした codex が実行中のまま手番を返そうとしている: {jobs}。"
     "途中で止めた実行は成果ゼロで費用だけが残るので、殺して片付けない。結果を受け取るまで待つこと"
-    f"——待つなら背景処理を起こして {WAIT} を使う。"
+    f"——待つなら締切として {WAIT_SCRIPT} を背景で起こしてから {WAIT} を使う。"
     'プロセスが終わったのに記録が実行中のままなら python3 "{reaper}" {session} で終局させる。'
 )
 
@@ -603,12 +618,24 @@ def live_now(data):
     return [t for t in tasks_of(data) if t.get("status") in LIVE]
 
 
-def live_waits(data):
-    """生存と分かる wait.py の件数。"""
+def waits_in(tasks):
+    """その並びに在る wait.py の件数。**起動の形は問わず名前の境界で見る**——絶対パスで渡す形も
+    直に名前を書く形も同じ待機で、取りこぼすと締切を張っているのに無いことにしてしまう。"""
     def is_wait(task):
         fields = " ".join(str(task.get(key, "")) for key in ("command", "description"))
-        return f"/{WAIT_SCRIPT}" in fields.replace("\\", "/")
-    return sum(1 for t in live_now(data) if is_wait(t))
+        return WAIT_NAME.search(fields.replace("\\", "/")) is not None
+    return sum(1 for t in tasks if is_wait(t))
+
+
+def live_waits(data):
+    """生存と分かる wait.py の件数。余分な待機を弾く側はこちらで見る。"""
+    return waits_in(live_now(data))
+
+
+def pending_waits(data):
+    """終端と分かるものを除いた wait.py の件数。**締切が在るかはこちらで見る**——状態の語彙に
+    無い値を数え落とすと、締切を張っているのに弾かれて、何を直しても抜けられなくなる。"""
+    return waits_in(live_tasks(data))
 
 
 def codex_jobs(data):
@@ -644,6 +671,8 @@ def decide(data, codex=()):
             return None, REASON_WAIT_UNSUBSTANTIATED
         if live_waits(data) > 1:
             return None, REASON_WAIT_DUPLICATED
+        if not pending_waits(data):
+            return None, REASON_WAIT_NO_DEADLINE
     elif live_now(data):
         return None, REASON_TASK_LEFT_RUNNING.format(tasks=label(live_now(data)))
     stale = [job for job in codex if job.get("state") in ENDED_RUN]
@@ -726,6 +755,7 @@ def selftest():
         "command": 'python3 "/p/flow/scripts/wait.py" "2026-08-30 21:00"',
     }
     waiting_seconds = dict(waiting, id="b3", command="python3 /p/flow/scripts/wait.py 300")
+    waiting_bare = dict(waiting, id="b8", command="python3 wait.py 300")
     waiting_ended = dict(waiting, id="b4", status="completed")
     other_test = dict(waiting, id="b5", description="回帰検査",
                       command="python3 -m pytest tests/test_wait.py")
@@ -801,7 +831,10 @@ def selftest():
         (stop("コミットしました。ハッシュは 90d8326 です。"), REASON_NO_MARKER, [codex_ghost]),
         (stop("作業は終わりました。\n\n[停止: 完了]"), codex_stale("j2"), [codex_ghost]),
         (stop("どちらで進めますか。\n\n[停止: 要判断]"), codex_stale("j2"), [codex_ghost]),
-        (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[task]), codex_stale("j2"), [codex_ghost]),
+        (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[waiting, task]),
+         codex_stale("j2"), [codex_ghost]),
+        (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[task]), REASON_WAIT_NO_DEADLINE),
+        (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[other_test]), REASON_WAIT_NO_DEADLINE),
         (stop("作業は終わりました。\n\n[停止: 完了]"), codex_stale("j2"), [codex_alive, codex_ghost]),
         (stop("作業は終わりました。\n\n[停止: 完了]"), codex_running("j1"), [codex_alive]),
         (stop("どちらで進めますか。\n\n[停止: 要判断]"), codex_running("j1"), [codex_alive]),
@@ -809,7 +842,7 @@ def selftest():
         (stop("コミットしました。\n残っている指示: ステップ2〜52の自律進行\n\n[停止: 完了]"),
          REASON_FABRICATED_INSTRUCTION),
         (stop("レビューを回しています。\n**残っている指示**: 完了条件2を満たすまでの残り98行"
-              "\n\n[停止: 待機]", tasks=[task]), REASON_FABRICATED_INSTRUCTION),
+              "\n\n[停止: 待機]", tasks=[waiting, task]), REASON_FABRICATED_INSTRUCTION),
         (stop("回答です。\n答えた質問: どこまで進んだ\n残りの指示: 計画書の未了2件\n\n[停止: 応答]"),
          REASON_FABRICATED_INSTRUCTION),
         (stop("諮ります。\n\n要判断の区分: 指示不明\n区分外に当たらないことを確かめた\n"
@@ -850,9 +883,12 @@ def selftest():
         (stop("作業は終わりました。\n\n[停止:\t完了]"), "[停止: 完了]"),
         ({"hook_event_name": "Stop", "last_assistant_message": None}, None),
         ({"hook_event_name": "Stop", "stop_hook_active": False}, None),
-        (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[task]), "[停止: 待機]"),
+        (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[waiting, task]), "[停止: 待機]"),
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting]), "[停止: 待機]"),
-        (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[unknown]), "[停止: 待機]"),
+        (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting, unknown]), "[停止: 待機]"),
+        (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[dict(waiting, status="mystery")]),
+         "[停止: 待機]"),
+        (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting_bare]), "[停止: 待機]"),
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting, task]), "[停止: 待機]"),
         (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[waiting_ended]), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[unknown]), "[停止: 完了]"),
@@ -861,7 +897,8 @@ def selftest():
         (stop("回答です。\n答えた質問: None を渡すとどうなる\n\n[停止: 応答]"), "[停止: 応答]"),
         (stop("回答です。\n答えた質問: - プッシュはまだか\n\n[停止: 応答]"), "[停止: 応答]"),
         (stop("回答しました。\n**答えた質問**: プッシュはまだか\n\n[停止: 応答]", tasks=[waiting_ended]), "[停止: 応答]"),
-        (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[task]), "[停止: 待機]", [codex_alive]),
+        (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[waiting, task]),
+         "[停止: 待機]", [codex_alive]),
         (stop("作業は終わりました。\n\n[停止: 完了]"), "[停止: 完了]", [codex_unknown]),
         (stop("指示された作業は全部終わりました。\n\n[停止: 完了]"), "[停止: 完了]"),
         (stop("ご指示のとおり、まとめて1コミットにしました。\n\n[停止: 完了]"), "[停止: 完了]"),
