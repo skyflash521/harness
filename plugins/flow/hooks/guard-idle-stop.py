@@ -23,14 +23,21 @@ codex のジョブ記録も同じように見る。進行の実体を失った�
 初めて要判断で止まろうとした停止は必ずここで弾かれ、この deny が区分外の列挙を渡す。1手番を
 費やすが、止まるべきでない停止はその1手番で消える。
 
-**`応答` が問うのは、問われたかどうかだけである。** 済んでいない指示が残っているかは条件に入れない
-——問われたなら、指示が残っていても残っていなくても答えを届けるために止まってよい。
+**`応答` は、戻ってきて続ける作業が残っているときの宣言である。** 受けたものが全部済んでいるなら、
+答えを届けることは `完了` が述べる状態に含まれるので、そちらを使わせる——**止まれるかどうかは変わらず、
+宣言の種類だけが変わる**。残っているかは消化の突き合わせ(`guard-goal-completion.py`)が数えるので、
+問いかどうかを文面から当てなくても、済んだものを応答の側へ寄せる停止はここで消える。
 
 `応答` はさらに、**直近のユーザー発言より後に成果物へ手を出していないこと**を転写で確かめる。
 調べるための読み取りは答えるうちだが、編集・サブエージェントへの委譲と継続・書き換えるコマンドが
 入っていれば、その手番は作業の途中である。コマンドは語の位置で見るので、引用の中の言及・捨て場への
 リダイレクト・空振りの指定(`--dry-run` 等)は当たらない。手を出した事実は
 取り消せないので、この条件で弾かれた手番は宣言を書き直しても通らない。
+
+どの宣言でも、**残っている作業を指示として名乗る行**は弾く。そこへ書かれるのは自分が見立てた残件で
+あることが多く、ユーザーはそれを自分が頼んだものとして受け取る。どの宣言もこの行を要求していない
+——要求しているのは区分の申告と問いの復唱だけである。見るのは行頭の定型のラベルだけなので、本文で
+指示に触れる書き方は当たらない。
 
 判定は末尾行の等値比較。応答本文を渡さないハーネスでは判定せず通す——判定できないことを不許可の
 理由にすると、何を書いても抜けられない恒久ブロックになる。
@@ -71,7 +78,9 @@ RESPOND_EMPTY = frozenset((
     "質問なし", "質問は無い", "問われていない", "none", "n/a", "na", "nothing",
 ))
 RESPOND_TRIM = "*_`「」()()。．.、,-・ 　"
+INSTRUCTION_WORD = "指示"
 TRANSCRIPT = ("scripts", "transcript.py")
+COMPLETION_HOOK = "guard-goal-completion.py"
 GIT_WRITE_HOOK = "guard-git-write.py"
 WORK_TOOLS = ("Edit", "Write", "NotebookEdit", "Agent", "Task", "SendMessage")
 WORK_COMMANDS = ("tee", "cp", "mv", "rm", "mkdir", "touch", "truncate", "patch", "dd", "install")
@@ -104,6 +113,9 @@ DECISION_KIND_LINE = re.compile(
 )
 RESPOND_LINE = re.compile(
     rf"^\s*[>*_\-\s]*{re.escape(RESPOND_FIELD)}[*_\s]*(?:は)?[*_\s]*[::]?[*_\s]*(.+?)\s*$"
+)
+INSTRUCTION_LINE = re.compile(
+    rf"^\s*[>*_\-\s]*[^\s::]{{0,12}}{INSTRUCTION_WORD}[*_\s]*(?:は)?[*_\s]*[::]"
 )
 KIND_LEAD = "*_`「(("
 DECISION_EXCLUDED = (
@@ -165,7 +177,7 @@ _HOW = (
     "何を選ぶのかを確定的に書いたうえで付ける。"
     f"{WAIT} — 何かの完了を待つ。手番が戻る経路として、登録された背景処理が在るときだけ使える。"
     f"{RESPOND} — ユーザーに問われたことへ答えたので、答えを届けるために手番を返す。"
-    "指示が残っているかどうかは問わない。"
+    "戻ってきて続ける作業が残っているときに使う。"
 )
 
 REASON_NO_MARKER = (
@@ -285,6 +297,26 @@ REASON_RESPOND_AFTER_WORK = (
     f"進むのにユーザーの判断が要るとき({DECISION}。着手を禁じられている場合を含む)、"
     f"待ちが発生したとき({WAIT})である。"
 )
+REASON_RESPOND_NOTHING_LEFT = (
+    f"{RESPOND} と宣言しているが、**このセッションで受けたものに未了が1件も残っていない**。"
+    f"{RESPOND} が言うのは「答えを届けるためにいったん手番を返す」ことで、"
+    "戻ってくる作業が在ることを前提にした宣言である。"
+    f"受けたものが全部済んでいるなら、それは {DONE} が述べる状態そのものなので、そちらを使うこと"
+    "——答えは同じように届く。"
+    "**指摘や確認に答えたことを問いに答えたことにして、済んでいる作業を応答の側へ寄せない。**"
+)
+REASON_FABRICATED_INSTRUCTION = (
+    f"手番を返す応答に、残っている作業を**「{INSTRUCTION_WORD}」として名乗る行**がある。"
+    "そこへ書くのは自分が見立てた残件であることが多く、**ユーザーが出していない作業をそこへ置けば、"
+    "受けていないものを受けた指示にすることになる**——読み手はそれを自分が頼んだものとして受け取る。"
+    "**この行はどの停止宣言も要求していない。** 要求しているのは"
+    f"{DECISION} の区分の申告と {RESPOND} の問いの復唱だけで、残っている作業の列挙を求める宣言は無い。"
+    "取るべき行動は、その行を消して宣言し直すこと。"
+    "残件そのものを伝えたいなら、**自分が見立てた作業として**本文に書く——"
+    f"ユーザーが出した言葉を引くのであれば、それは {RESPOND} の復唱の行が引き受ける。"
+    "そのうえで、**列挙できるということは着手できるということである**——"
+    "止まってよい場面に当たるかを確かめ、当たらないなら止まらずにその作業を続けること。"
+)
 REASON_CODEX_RUNNING = (
     "このセッションが起こした codex が実行中のまま手番を返そうとしている: {jobs}。"
     "途中で止めた実行は成果ゼロで費用だけが残るので、殺して片付けない。結果を受け取るまで待つこと"
@@ -331,6 +363,11 @@ def declared_kind(message):
             if declared.startswith(kind):
                 return kind
     return None
+
+
+def names_instruction(message):
+    """残っている作業を指示として名乗る行が在るか。文中の言及と区別するため行頭のラベルだけを見る。"""
+    return any(INSTRUCTION_LINE.match(line) for line in message.splitlines())
 
 
 def quoted_questions(message):
@@ -463,6 +500,30 @@ def is_work(block):
         return True
     command = (block.get("input") or {}).get("command")
     return isinstance(command, str) and writes(command)
+
+
+def completion_module():
+    """受けたものの消化を数える側を取り込む。読めなければ None。"""
+    try:
+        path = Path(__file__).resolve().parent / COMPLETION_HOOK
+        spec = importlib.util.spec_from_file_location("_guard_goal_completion", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
+
+
+def others_unsettled(data):
+    """まだ済ませていない発言の数。転写を読めなければ None(判定しない)。"""
+    completion = completion_module()
+    reader = transcript_module()
+    if completion is None or reader is None:
+        return None
+    rows = reader.rows_of(data.get("transcript_path"))
+    if rows is None:
+        return None
+    return len(completion.unsettled(rows))
 
 
 def transcript_module():
@@ -600,6 +661,8 @@ def decide(data, codex=()):
             return None, REASON_RESPOND_UNQUOTED
         if worked_since_instruction(data):
             return None, REASON_RESPOND_AFTER_WORK
+        if others_unsettled(data) == 0:
+            return None, REASON_RESPOND_NOTHING_LEFT
     if found[0] == DECISION:
         kind = declared_kind(message)
         if not kind:
@@ -608,6 +671,8 @@ def decide(data, codex=()):
             return None, REASON_DECISION_UNCONFIRMED.format(kind=kind)
         if kind == DECISION_SPEC_KIND and not spec_named(message, data.get("cwd")):
             return None, REASON_DECISION_NO_SPEC
+    if names_instruction(message):
+        return None, REASON_FABRICATED_INSTRUCTION
     return found[0], None
 
 
@@ -741,6 +806,16 @@ def selftest():
         (stop("作業は終わりました。\n\n[停止: 完了]"), codex_running("j1"), [codex_alive]),
         (stop("どちらで進めますか。\n\n[停止: 要判断]"), codex_running("j1"), [codex_alive]),
         (stop("作業は終わりました。\n\n[停止: 完了]"), codex_stale("j4"), [codex_stalled]),
+        (stop("コミットしました。\n残っている指示: ステップ2〜52の自律進行\n\n[停止: 完了]"),
+         REASON_FABRICATED_INSTRUCTION),
+        (stop("レビューを回しています。\n**残っている指示**: 完了条件2を満たすまでの残り98行"
+              "\n\n[停止: 待機]", tasks=[task]), REASON_FABRICATED_INSTRUCTION),
+        (stop("回答です。\n答えた質問: どこまで進んだ\n残りの指示: 計画書の未了2件\n\n[停止: 応答]"),
+         REASON_FABRICATED_INSTRUCTION),
+        (stop("諮ります。\n\n要判断の区分: 指示不明\n区分外に当たらないことを確かめた\n"
+              "- 未了の指示: 仕様書の追記\n\n[停止: 要判断]"), REASON_FABRICATED_INSTRUCTION),
+        (stop("終わりました。\n指示:全ステップの自律進行\n\n[停止: 完了]"),
+         REASON_FABRICATED_INSTRUCTION),
     ]
     pass_cases = [
         (stop("コミットしました。ハッシュは 90d8326 です。\n\n[停止: 完了]"), "[停止: 完了]"),
@@ -788,6 +863,11 @@ def selftest():
         (stop("回答しました。\n**答えた質問**: プッシュはまだか\n\n[停止: 応答]", tasks=[waiting_ended]), "[停止: 応答]"),
         (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[task]), "[停止: 待機]", [codex_alive]),
         (stop("作業は終わりました。\n\n[停止: 完了]"), "[停止: 完了]", [codex_unknown]),
+        (stop("指示された作業は全部終わりました。\n\n[停止: 完了]"), "[停止: 完了]"),
+        (stop("ご指示のとおり、まとめて1コミットにしました。\n\n[停止: 完了]"), "[停止: 完了]"),
+        (stop("回答です。\n答えた質問: 残っている指示をやれ\n\n[停止: 応答]"), "[停止: 応答]"),
+        (stop("対象が分かりません。\n\n要判断の区分: 指示不明\n区分外に当たらないことを確かめた"
+              "\n\n[停止: 要判断]"), "[停止: 要判断]"),
     ]
     def unpack(case):
         return case if len(case) == 3 else (case[0], case[1], ())
@@ -860,6 +940,7 @@ def _respond_gate_ok():
         return {"type": kind, "isSidechain": False,
                 "message": {"role": kind, "content": [block]}}
 
+    pending = row("user", {"type": "text", "text": "台帳の重複を整理しろ"})
     asked = row("user", {"type": "text", "text": "不要なエントリは消せ。どれが不要か分かるか"})
     acted = row("assistant", {"type": "tool_use", "id": "t1", "name": "Agent", "input": {}})
     edited = row("assistant", {"type": "tool_use", "id": "t2", "name": "Edit", "input": {}})
@@ -892,18 +973,20 @@ def _respond_gate_ok():
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp, "transcript.jsonl")
         for rows, expected, label in (
-            ([asked, acted], REASON_RESPOND_AFTER_WORK, "委譲した後の応答は弾く"),
-            ([asked, edited], REASON_RESPOND_AFTER_WORK, "編集した後の応答は弾く"),
-            ([asked, committed], REASON_RESPOND_AFTER_WORK, "コミットした後の応答は弾く"),
-            ([asked, scripted], REASON_RESPOND_AFTER_WORK, "スクリプトを流した後の応答は弾く"),
-            ([asked, sent], REASON_RESPOND_AFTER_WORK, "委譲を継いだ後の応答は弾く"),
-            ([asked, wrapped], REASON_RESPOND_AFTER_WORK, "前置語ごしのプッシュも弾く"),
-            ([asked, stamped], REASON_RESPOND_AFTER_WORK, "同梱の書き込みスクリプトも弾く"),
-            ([asked, staged], REASON_RESPOND_AFTER_WORK, "後続の節の空振り指定で打ち消されない"),
-            ([asked, said], RESPOND, "答えただけの応答は通す"),
-            ([asked, looked, listed, read, said], RESPOND, "調べてから答えた応答は通す"),
-            ([asked, discarded, unparsed, ranged, said], RESPOND,
+            ([pending, asked, acted], REASON_RESPOND_AFTER_WORK, "委譲した後の応答は弾く"),
+            ([pending, asked, edited], REASON_RESPOND_AFTER_WORK, "編集した後の応答は弾く"),
+            ([pending, asked, committed], REASON_RESPOND_AFTER_WORK, "コミットした後の応答は弾く"),
+            ([pending, asked, scripted], REASON_RESPOND_AFTER_WORK, "スクリプトを流した後の応答は弾く"),
+            ([pending, asked, sent], REASON_RESPOND_AFTER_WORK, "委譲を継いだ後の応答は弾く"),
+            ([pending, asked, wrapped], REASON_RESPOND_AFTER_WORK, "前置語ごしのプッシュも弾く"),
+            ([pending, asked, stamped], REASON_RESPOND_AFTER_WORK, "同梱の書き込みスクリプトも弾く"),
+            ([pending, asked, staged], REASON_RESPOND_AFTER_WORK, "後続の節の空振り指定で打ち消されない"),
+            ([pending, asked, said], RESPOND, "答えただけの応答は通す"),
+            ([pending, asked, looked, listed, read, said], RESPOND, "調べてから答えた応答は通す"),
+            ([pending, asked, discarded, unparsed, ranged, said], RESPOND,
              "捨て場へのリダイレクト・読めないコマンド・別の節の -i は通す"),
+            ([asked, row("assistant", {"type": "text", "text": message})],
+             REASON_RESPOND_NOTHING_LEFT, "未了が残っていない応答は弾く"),
         ):
             body = "\n".join(json.dumps(r, ensure_ascii=False) for r in rows)
             path.write_text(body + "\n", encoding="utf-8")
@@ -916,7 +999,8 @@ def _respond_gate_ok():
                 ok = False
                 print(f"FAIL {label}: {actual!r}")
 
-        path.write_text(json.dumps(asked, ensure_ascii=False) + "\n", encoding="utf-8")
+        path.write_text("\n".join(json.dumps(r, ensure_ascii=False)
+                                  for r in (pending, asked)) + "\n", encoding="utf-8")
         for quoted, expected, label in (
             ("どれが不要か分かるか", RESPOND, "発言にある問いの復唱は通す"),
             ("**「どれが不要か分かるか」**", RESPOND, "囲みを付けた復唱も通す"),

@@ -7,8 +7,11 @@ Stop フックが発火せず、**同じ「ユーザーが答えるまで進ま�
 止まらず最後まで進めるという指示で始まった走行なので、そこに開いたこの抜け道を塞ぐ。
 
 塞ぐのは走行中だけ。単発の指示や会話では、聞いたほうが早い場面で聞けることに価値がある。走行中かどうかは
-`guard-goal-completion.py` が完了の宣言に当てる判定をそのまま使う——**その判定が通す状態は、完了を
-宣言できる状態である**。宣言できる状態に達した後の停止は完了の宣言が受け持つので、ここは通す。
+`guard-goal-completion.py` が持つ、起動の検出と**その走行が完了の宣言で終わったか**で決める
+——走行が終わった後の会話まで塞ぐと、聞けば1手番で済む場面が停止へ回る。走行中なら、**完了を
+宣言できる状態に達しているか**——ステップの消化と、受けた発言の消化の両方——で通すかを決める。
+完了を宣言できるなら、その後の停止は完了の宣言が受け持つので、ここは通す。**片方だけを見ると、
+もう片方が未了の区間でこの経路が開く。**
 
 質問する手立てそのものを奪うわけではない。区分に当たる判断は `[停止: 要判断]` で諮れて、そちらは
 区分の申告と区分外の確認を受ける。ここが消すのは**その確認を受けない経路**だけである。
@@ -58,7 +61,9 @@ def decide(data):
         return None
     completion = load("_guard_goal_completion", COMPLETION)
     rows = completion.rows_of(data)
-    if rows is None or completion.verdict(rows, data.get("cwd")) is None:
+    if rows is None or completion.finished(rows):
+        return None
+    if completion.verdict(rows, data.get("cwd")) is None and not completion.unsettled(rows):
         return None
     idle = load("_guard_idle_stop", IDLE)
     return REASON.format(
@@ -151,7 +156,15 @@ def selftest():
               decide(ask(transcript=Path(tmp, "no.jsonl").as_posix())), None)
 
         write([ask_user, skill(), scope, one, two])
-        check("範囲が埋まれば通す", decide(ask()), None)
+        check("範囲が埋まっても発言が未消化なら deny", decide(ask()) is not None, True)
+        settled = said(f"{completion.SETTLED_FIELD}: 計画に沿って自律で最後まで進めろ")
+        write([ask_user, skill(), scope, one, two, settled])
+        check("完了を宣言できる状態になれば通す", decide(ask()), None)
+
+        done = said(f"済みました。\n\n{load('_guard_idle_stop', IDLE).DONE}")
+        write([ask_user, skill(), scope, one, two, settled, done,
+               user("次は別の件を頼む")])
+        check("走行が完了で終わった後の会話は塞がない", decide(ask()), None)
 
         write([ask_user, skill()])
         check("範囲が示されていなければ走行中として deny", decide(ask()) is not None, True)

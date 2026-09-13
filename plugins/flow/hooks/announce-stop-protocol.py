@@ -21,27 +21,42 @@ import sys
 from pathlib import Path
 
 GUARD = Path(__file__).resolve().parent / "guard-idle-stop.py"
+COMPLETION = Path(__file__).resolve().parent / "guard-goal-completion.py"
 
 
-def load_guard():
+def load(name, path):
     """判定する側を取り込む。`__main__` ガードが効くので `main()` は走らない。"""
-    spec = importlib.util.spec_from_file_location("_guard_idle_stop", GUARD)
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
+def load_guard():
+    return load("_guard_idle_stop", GUARD)
+
+
+def load_completion():
+    return load("_guard_goal_completion", COMPLETION)
+
+
 def build_context():
     guard = load_guard()
+    completion = load_completion()
     return (
+        "ユーザーの発言を1件済ませるたびに"
+        f"「{completion.SETTLED_FIELD}: <その発言から引いた文字列>」の1行を残す"
+        "(問いへ答えたのなら下の復唱の行がこれを兼ねる)。\n"
         "手番を返すときは理由を宣言する。末尾行を次のいずれかだけにする。\n"
-        f"- {guard.DONE} — このセッションで受けた指示の全部が済んだ\n"
+        f"- {guard.DONE} — このセッションで受けた指示の全部が済んだ"
+        "(発言の全部に上の記録が要る)\n"
         f"- {guard.DECISION} — ユーザーの判断が要る。末尾行の前に"
         f"「{guard.DECISION_FIELD}: <区分>」の1行を置く"
         f"(区分は {'・'.join(guard.DECISION_KINDS)} のいずれか)\n"
         f"- {guard.WAIT} — 完了を待つ\n"
         f"- {guard.RESPOND} — ユーザーに問われたことへ答えた(問われていないなら使えない)。"
-        f"末尾行の前に「{guard.RESPOND_FIELD}: <ユーザーが問うた部分を原文のまま>」の1行を置く\n"
+        f"末尾行の前に「{guard.RESPOND_FIELD}: <ユーザーが問うた部分を原文のまま>」の1行を置く"
+        "(戻ってきて続ける作業が残っているときに使う)\n"
         "完了・要判断・応答は、宣言の前に PushNotification を送る。"
     )
 

@@ -11,6 +11,12 @@
 `全ステップ` のときの総数は、起動の引数が指す計画書の実装ステップの表から数える。引数に計画書の
 パスが在ることは走行の前提で、無ければ範囲を数えられないので範囲の側で終わりを書かせる。
 
+**計画書にステップを持たない指示も同じように突き合わせる。** 会話で受けた依頼・走行へ割り込んだ指示・
+問いかけには番号が無いので、番号の代わりに**その発言から引いた文字列**を `対応済み` の1行に残させ、
+転写のユーザー発言と1対1で割り当てる。割り当たらない発言が残っていれば完了は通らない。走行の
+有無を問わずここが掛かるので、**走行中に割り込んだ指示がステップの消化だけで押し流されることもない**。
+引いた文字列はその発言に在ることを確かめるので、受けていないものを済ませたことにはできない。
+
 完了で手番が戻るときの音もここが鳴らす。宣言の形を見る側は自分が通したことしか分からず、
 こちらが block する場面でも鳴らしてしまうため。
 
@@ -38,12 +44,16 @@ STOP_EVENT = "Stop"
 
 SCOPE_FIELD = "着手範囲"
 STEP_FIELD = "ステップ完了"
+SETTLED_FIELD = "対応済み"
 WHOLE = "全ステップ"
+QUOTE_CUT = 40
 SCOPE_LINE = re.compile(
     rf"^\s*[>*_\-\s]*{SCOPE_FIELD}[*_\s]*(?:は)?[*_\s]*[::]\s*[*_`]*\s*"
     rf"(?:(\d+)\s*[-–~〜]\s*(\d+)|(\d+)|({WHOLE}))"
 )
 STEP_LINE = re.compile(rf"^\s*[>*_\-\s]*{STEP_FIELD}[*_\s]*(?:は)?[*_\s]*[::]\s*[*_`]*\s*(\d+)")
+SETTLED_LINE = "^\\s*[>*_\\-\\s]*(?:{fields})[*_\\s]*(?:は)?[*_\\s]*[::]\\s*(.+?)\\s*$"
+BLOCKED_MARK = "Stop hook feedback"
 PLAN_STEPS = re.compile(r"^##+\s*実装ステップ\s*$")
 PLAN_ROW = re.compile(r"^\s*\|\s*(\d+)\s*\|")
 PATH_SPLIT = re.compile(r"[\s、,。「」『』()（）\[\]`*]+")
@@ -72,6 +82,22 @@ REASON_OPEN = (
     "取るべき行動は、名指しされたステップを実際に片付けること。"
     "**割り込みで入った指示が済んだだけなら、その前に受けていた指示へ戻る。**\n"
     f"既に片付いているのに残っているなら、「{STEP_FIELD}: <n>」の行が抜けている。\n"
+    "進められない事情があるなら、止まってよい場面かどうかを {doc} で確かめる。"
+)
+SETTLED_HOW = (
+    f"済ませたら「{SETTLED_FIELD}: <その発言から引いた文字列>」の1行を残す"
+    "(問いへ答えたのであれば「{respond}: 」の復唱がその記録を兼ねる)。"
+    "**引く文字列はその発言の原文からそのまま写す**——言い換えは一致しない。"
+    "**1行が済ませるのは発言1件で、古いものから順に割り当てる**ので、"
+    "同じ言葉で複数回言われているならその回数ぶんの行が要る。"
+)
+REASON_UNSETTLED = (
+    f"`{{done}}` を宣言しているが、**済ませた記録の無いユーザーの発言が残っている**: {{items}}\n"
+    "完了の宣言が言うのは、このセッションで受けたものの全部が済んだことである。"
+    "計画書のステップに現れない指示——会話で受けた依頼・作業中に割り込んだ指示・問いかけ——も"
+    "その全部に含まれるので、**1件ずつ済ませたことが転写に残っている必要がある**。\n"
+    f"取るべき行動は、名指しされた発言を実際に片付けること。{SETTLED_HOW}\n"
+    "**記録が無いだけで既に片付いているなら、その行を足せば足りる。**"
     "進められない事情があるなら、止まってよい場面かどうかを {doc} で確かめる。"
 )
 
@@ -236,6 +262,112 @@ def verdict(rows, cwd=None):
     return None
 
 
+def settled_fields():
+    """済ませた記録として数えるラベル。問いの復唱は、その発言を済ませたことを兼ねる。"""
+    guard = load("_guard_idle_stop", GUARD)
+    return (SETTLED_FIELD, guard.RESPOND_FIELD)
+
+
+def settled_quotes(text):
+    """その本文が残した、済ませた記録の引いた文字列。"""
+    pattern = re.compile(SETTLED_LINE.format(
+        fields="|".join(re.escape(one) for one in settled_fields())))
+    return [m.group(1) for m in
+            (pattern.match(line) for line in str(text).splitlines()) if m]
+
+
+def texts_of(row):
+    """その手番でエージェントが書いた本文。"""
+    content = (row.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return []
+    return [str(b.get("text", "")) for b in content
+            if isinstance(b, dict) and b.get("type") == "text"]
+
+
+def turned_back(row):
+    """宣言を弾いたハーネスが差し込む行か。**弾かれたことだけを指す信号を見る**——人の発言でない
+    行(`isMeta`)にはスキルの本文・再開時の注入も含まれるので、それだけでは弾かれた根拠にならない。"""
+    if row.get("type") != "user" or not row.get("isMeta"):
+        return False
+    content = (row.get("message") or {}).get("content")
+    return isinstance(content, str) and content.lstrip().startswith(BLOCKED_MARK)
+
+
+def cleared(rows, reader, guard):
+    """手番が戻った直近の完了宣言の位置。そこまでの発言は、受け取ったユーザーが続きを述べている
+    以上、片付いたものとして数えない。**弾かれた宣言では手番が戻っていない**ので数に入れない。"""
+    passed, pending = -1, None
+    for index, row in enumerate(rows):
+        if row.get("isSidechain"):
+            continue
+        if row.get("type") == "assistant":
+            texts = texts_of(row)
+            if texts and guard.fold(guard.last_line(texts[-1])) == guard.fold(guard.DONE):
+                pending = index
+        elif pending is None:
+            continue
+        elif turned_back(row):
+            pending = None
+        elif reader.said_by_user(row):
+            passed, pending = pending, None
+    return passed
+
+
+def finished(rows):
+    """走行が無いか、その走行が完了の宣言で終わっているか。終わった後の停止は走行中のものでない。"""
+    launch = launch_of(rows)
+    if launch is None:
+        return True
+    reader = load("_transcript", HOOKS.parent / Path(*TRANSCRIPT))
+    guard = load("_guard_idle_stop", GUARD)
+    return cleared(rows, reader, guard) > launch[0]
+
+
+def unsettled(rows):
+    """済ませた記録を割り当てられなかったユーザーの発言。古い順。
+
+    記録はその発言より後の手番に在るものだけを充て、**1つの記録が済ませるのは1件**とする
+    ——短く引いた1行で複数の発言を済ませられると、言われた回数を数えたことにならない。
+    宣言を書いた手番も転写に載ってから Stop フックが走るので、記録はここだけから数える。
+    **畳むと何も残らない発言は数えない**——引ける文字列が無く、どう書いても済ませられない。"""
+    reader = load("_transcript", HOOKS.parent / Path(*TRANSCRIPT))
+    guard = load("_guard_idle_stop", GUARD)
+    start = cleared(rows, reader, guard)
+    marks = []
+    for index, row in enumerate(rows):
+        if index <= start or row.get("isSidechain") or row.get("type") != "assistant":
+            continue
+        for text in texts_of(row):
+            marks += [(index, quote) for quote in settled_quotes(text)]
+    used, left = set(), []
+    for index, row in enumerate(rows):
+        if index <= start or not reader.said_by_user(row):
+            continue
+        said = guard.condensed(reader.spoken_of(row))
+        if not said:
+            continue
+        for spot, (at, quote) in enumerate(marks):
+            if spot in used or at <= index:
+                continue
+            quoted = guard.condensed(quote)
+            if quoted and quoted in said:
+                used.add(spot)
+                break
+        else:
+            left.append(reader.spoken_of(row))
+    return left
+
+
+def quoted(says):
+    """名指しのための表記。長い発言は頭だけを見せる——名指しが要るのはどれかが分かることまで。"""
+    lines = []
+    for one in says:
+        flat = " ".join(str(one).split())
+        lines.append("- 「" + flat[:QUOTE_CUT] + ("…" if len(flat) > QUOTE_CUT else "") + "」")
+    return "\n".join(lines)
+
+
 def rows_of(data):
     """転写の行。読めなければ None——判定できないことを不許可の理由にすると恒久ブロックになる。"""
     reader = load("_transcript", HOOKS.parent / Path(*TRANSCRIPT))
@@ -255,8 +387,12 @@ def decide(data):
         return None
     found = verdict(rows, data.get("cwd"))
     if found is None:
-        return None
-    return found[0].format(done=guard.DONE, doc=stop_doc(), **found[1])
+        left = unsettled(rows)
+        if not left:
+            return None
+        found = (REASON_UNSETTLED, {"items": quoted(left)})
+    return found[0].format(
+        done=guard.DONE, doc=stop_doc(), respond=guard.RESPOND_FIELD, **found[1])
 
 
 def main():
@@ -300,6 +436,15 @@ def selftest():
     def said(text):
         return {"type": "assistant", "isSidechain": False, "message": {
             "role": "assistant", "content": [{"type": "text", "text": text}]}}
+
+    def user(text):
+        return {"type": "user", "isSidechain": False, "message": {
+            "role": "user", "content": [{"type": "text", "text": text}]}}
+
+    def injected(text=f"{BLOCKED_MARK}:\n[guard-goal-completion] …"):
+        """ハーネスが差し込む行。人の発言でないので `isMeta` が立つ。"""
+        return {"type": "user", "isSidechain": False, "isMeta": True, "message": {
+            "role": "user", "content": text}}
 
     def skill(args="plan.md に基づいて自律進行", ident="s1"):
         return {"type": "assistant", "isSidechain": False, "message": {
@@ -404,6 +549,50 @@ def selftest():
         side["isSidechain"] = True
         write([skill(), scope13, said(f"{STEP_FIELD}: 1"), said(f"{STEP_FIELD}: 2"), side])
         check("サブエージェントの記録は数えない", decide(stop(done)) is not None, True)
+
+        asked = user("台帳の重複を整理しろ")
+        mark = said(f"{SETTLED_FIELD}: 台帳の重複を整理しろ")
+        write([asked])
+        opened = decide(stop(done))
+        check("済ませた記録の無い発言が残れば block", opened is not None, True)
+        check("残っている発言を名指しする", "台帳の重複" in (opened or ""), True)
+        write([asked, mark])
+        check("記録を残せば通す", decide(stop(done)), None)
+        write([asked, said(f"{guard.RESPOND_FIELD}: 台帳の重複を整理しろ")])
+        check("問いの復唱も記録として数える", decide(stop(done)), None)
+        write([asked, said(f"{SETTLED_FIELD}: 索引を作り直した")])
+        check("発言に無い文字列では済ませられない", decide(stop(done)) is not None, True)
+        write([mark, asked])
+        check("発言より前の記録は数えない", decide(stop(done)) is not None, True)
+        write([asked, mark, user("台帳の重複を整理しろ")])
+        check("同じ言葉で二度言われたら記録も二つ要る", decide(stop(done)) is not None, True)
+        write([asked, mark, user("台帳の重複を整理しろ"), mark])
+        check("二つ目の記録で埋まる", decide(stop(done)), None)
+        write([asked, said(f"{SETTLED_FIELD}: 台帳の重複を整理しろ\n\n{guard.DONE}")])
+        check("宣言を書いた手番の記録も数える",
+              decide(stop(f"{SETTLED_FIELD}: 台帳の重複を整理しろ\n\n{guard.DONE}")), None)
+        write([user("。"), user("台帳の重複を整理しろ"), mark])
+        check("畳むと何も残らない発言は数えない", decide(stop(done)), None)
+        write([asked, said(f"済みました。\n\n{guard.DONE}"), injected(),
+               user("次を頼む"), said(f"{SETTLED_FIELD}: 次を頼む")])
+        check("弾かれた完了より前の発言は消えない", decide(stop(done)) is not None, True)
+        write([asked, said(f"済みました。\n\n{guard.DONE}"), injected("<local-command-caveat>…"),
+               user("次を頼む"), said(f"{SETTLED_FIELD}: 次を頼む")])
+        check("弾いた印の無い差し込みでは通った完了を捨てない", decide(stop(done)), None)
+        aside = said(f"{SETTLED_FIELD}: 台帳の重複を整理しろ")
+        aside["isSidechain"] = True
+        write([asked, aside])
+        check("サブエージェントの記録は消化に数えない", decide(stop(done)) is not None, True)
+        write([asked, said(f"済みました。\n\n{guard.DONE}"), user("次を頼む"),
+               said(f"{SETTLED_FIELD}: 次を頼む")])
+        check("手番が戻った完了より前の発言は数えない", decide(stop(done)), None)
+        write([asked, said(f"済みました。\n\n{guard.DONE}"), user("次を頼む")])
+        check("戻った後の発言は数える", decide(stop(done)) is not None, True)
+        write([asked, said(f"済みました。\n\n{guard.DONE}")])
+        check("手番が戻っていない完了宣言では消えない", decide(stop(done)) is not None, True)
+        write([skill(), scope13, said(f"{STEP_FIELD}: 1"), said(f"{STEP_FIELD}: 2"),
+               said(f"{STEP_FIELD}: 3"), user("ついでに索引も直せ")])
+        check("走行へ割り込んだ指示も数える", decide(stop(done)) is not None, True)
 
         check("転写が読めなければ通す",
               decide(stop(done, Path(tmp, "no.jsonl").as_posix())), None)
