@@ -16,7 +16,10 @@ codex のジョブ記録も同じように見る。進行の実体を失った�
 ことを復唱する1行**を要求する。復唱は直近のユーザー発言と突き合わせるので、**発言に無い文字列は
 書けない**——ただし確かめられるのはその発言に在ることまでで、**写した部分が問いかどうかは判定して
 いない**。区分を当てられない `要判断` は
-ユーザーが手を入れるまで作業が進まない停止になる。区分外の確認の1行は常時の文脈に載らないため、
+ユーザーが手を入れるまで作業が進まない停止になる。**区分が要求仕様のときは、変わる先が実在する
+ファイルで名指しされていることも確かめる**——名指しできないなら、その停止は文書に書かれた要件の
+変更ではない。決まっていないことをいま決める場面なら止まる理由にならず、ユーザーが会話で出した
+禁止・明示指定が妨げているなら区分は停止規定である。区分外の確認の1行は常時の文脈に載らないため、
 初めて要判断で止まろうとした停止は必ずここで弾かれ、この deny が区分外の列挙を渡す。1手番を
 費やすが、止まるべきでない停止はその1手番で消える。
 
@@ -59,6 +62,8 @@ STOP_DOC = "defect-followthrough.md"
 DECISION_FIELD = "要判断の区分"
 DECISION_CONFIRM = "区分外に当たらないことを確かめた"
 DECISION_KINDS = ("要求仕様", "指示不明", "停止規定", "操作承認")
+DECISION_SPEC_KIND = "要求仕様"
+DECISION_SPEC_FIELD = "変わる要求仕様"
 RESPOND_FIELD = "答えた質問"
 RESPOND_EMPTY = frozenset((
     "なし", "無し", "無い", "ない", "特になし", "特に無し", "特にない", "該当なし", "該当無し",
@@ -89,6 +94,11 @@ DECISION_CONFIRM_LINE = re.compile(
     rf"^\s*[>*_\-\s]*{re.escape(DECISION_CONFIRM)}[*_\s。．.]*"
     r"(?:[(（].*[)）][*_\s。．.]*)?$"
 )
+DECISION_SPEC_LINE = re.compile(
+    rf"^\s*[>*_\-\s]*{re.escape(DECISION_SPEC_FIELD)}[*_\s]*(?:は)?[*_\s]*[::]?[*_\s]*(.+?)\s*$"
+)
+PATH_SPLIT = re.compile(r"[\s、,。「」『』()（）\[\]`*＿]+")
+PATH_TRIM = re.compile(r"(?:#[^/\\]*)?(?::\d+(?:-\d+)?)?$")
 DECISION_KIND_LINE = re.compile(
     rf"^\s*[>*_\-\s]*{re.escape(DECISION_FIELD)}[*_\s]*(?:は)?[*_\s]*[::]?[*_\s]*(.+?)\s*$"
 )
@@ -192,10 +202,11 @@ REASON_CODEX_STALE = (
     'python3 "{reaper}" {session} で終局させてから宣言し直すこと。'
 )
 DECISION_KINDS_TEXT = (
-    "**要求仕様**(ユーザーの決めた値・方針・スコープ・受入条件が変わる。守れなくなった明示指定と、"
-    "解除しなければ進めない禁止を含む)・"
+    "**要求仕様**(ユーザーの決めた値・方針・スコープ・受入条件が変わる。"
+    "変わる先を実在する文書の箇所として名指しできることが条件)・"
     "**指示不明**(対象・入力がユーザーにしか無く、推測では別のものを作る)・"
-    "**停止規定**(規約またはスキルが命じる停止が実際に発火した)・"
+    "**停止規定**(規約またはスキルが命じる停止が実際に発火した。"
+    "ユーザーが出した禁止や明示指定が作業を妨げ、その解除・変更なしには進めない場面もこれに当たる)・"
     "**操作承認**(取り消せない操作・外部へ及ぶ操作の承認が要る)。"
 )
 DECISION_EXCLUDED_TEXT = (  # 使う側が `.format(doc=...)` で埋める。
@@ -219,6 +230,20 @@ REASON_DECISION_UNCONFIRMED = (
     "どれかに当たるなら止まる場面ではない——自分で決めて進み、決めた理由を報告に残す。"
     f"どれにも当たらないと確かめたなら、区分の行に続けて「{DECISION_CONFIRM}」の1行を置いて宣言し直す。"
     "確かめた根拠を添えるなら、その行の末尾に括弧で書く。"
+)
+REASON_DECISION_NO_SPEC = (
+    f"{DECISION} と区分「{DECISION_SPEC_KIND}」が申告されているが、"
+    "**どの要求仕様が変わるのかが、実在するファイルで名指しされていない**。"
+    f"この区分に当たるのは、ユーザーが決めた値・方針・スコープ・受入条件が変わるときだけである"
+    "——変わる先が在るなら、それはどこかの仕様書・計画書・台帳に書かれている。"
+    f"取るべき行動は、末尾行の前に「{DECISION_SPEC_FIELD}: <ファイル>の<箇所>を<どう変えるか>」の"
+    "1行を置いて宣言し直すこと。ファイルは作業ディレクトリから辿れる実在のパスで書く"
+    "(行番号や見出しを添えてよい)。\n"
+    "**名指しできないなら、変わる要求仕様は無い。** 決まっていないことを自分で決めるのは実装の設計で、"
+    "それは止まる理由にならない——選択肢を書けることも、どちらが良いか迷うことも同じである。"
+    "自分で決めて進み、決めた理由を報告に残すこと。\n"
+    "**ユーザーが会話で出した禁止や明示指定が作業を妨げていて、その解除・変更を諮りたいのであれば、"
+    "区分は「停止規定」である**——文書に書かれていない指定は名指しできないので、この区分では通らない。"
 )
 REASON_RESPOND_UNSUBSTANTIATED = (
     f"{RESPOND} と宣言しているが、**ユーザーに何を問われたのかの復唱が無い**。"
@@ -470,6 +495,30 @@ def confirmed(message):
     return any(DECISION_CONFIRM_LINE.match(line) for line in message.splitlines())
 
 
+def names_file(text, cwd):
+    """その申告が実在するファイルを指しているか。行番号・アンカーは落として見る。"""
+    base = Path(cwd) if cwd else Path.cwd()
+    for token in PATH_SPLIT.split(str(text)):
+        candidate = PATH_TRIM.sub("", token)
+        while candidate and candidate not in (".", ".."):
+            try:
+                if Path(candidate).is_file() or (base / candidate).is_file():
+                    return True
+            except (OSError, ValueError):
+                pass
+            candidate = candidate[:-1]
+    return False
+
+
+def spec_named(message, cwd):
+    """変わる要求仕様が、実在するファイルを指して申告されているか。"""
+    return any(
+        names_file(matched.group(1), cwd)
+        for matched in (DECISION_SPEC_LINE.match(line) for line in message.splitlines())
+        if matched
+    )
+
+
 def tasks_of(data):
     tasks = data.get("background_tasks")
     return [t for t in tasks if isinstance(t, dict)] if isinstance(tasks, list) else []
@@ -557,6 +606,8 @@ def decide(data, codex=()):
             return None, REASON_DECISION_UNCLASSIFIED.format(doc=stop_doc())
         if not confirmed(message):
             return None, REASON_DECISION_UNCONFIRMED.format(kind=kind)
+        if kind == DECISION_SPEC_KIND and not spec_named(message, data.get("cwd")):
+            return None, REASON_DECISION_NO_SPEC
     return found[0], None
 
 
@@ -588,6 +639,8 @@ def selftest():
             "session_crons": list(crons),
             "session_id": "S1",
         }
+
+    here = Path(__file__).resolve().as_posix()
 
     def unclassified():
         return REASON_DECISION_UNCLASSIFIED.format(doc=stop_doc())
@@ -665,6 +718,20 @@ def selftest():
          unconfirmed("要求仕様")),
         (stop("要判断の区分: 要求仕様\n区分外に当たらないことを確かめたわけではない。\n\n[停止: 要判断]"),
          unconfirmed("要求仕様")),
+        (stop("どちらも計画に無い変更です。\n\n要判断の区分: 要求仕様\n"
+              "区分外に当たらないことを確かめた\n\n[停止: 要判断]"), REASON_DECISION_NO_SPEC),
+        (stop("方針が変わります。\n\n要判断の区分: 要求仕様\n区分外に当たらないことを確かめた\n"
+              f"{DECISION_SPEC_FIELD}: 公開面を絞らないという要件\n\n[停止: 要判断]"),
+         REASON_DECISION_NO_SPEC),
+        (stop("方針が変わります。\n\n要判断の区分: 要求仕様\n区分外に当たらないことを確かめた\n"
+              f"{DECISION_SPEC_FIELD}: docs/specs/no-such-file.md の受入条件\n\n[停止: 要判断]"),
+         REASON_DECISION_NO_SPEC),
+        (stop("禁止の解除が要ります。\n\n要判断の区分: 要求仕様\n区分外に当たらないことを確かめた\n"
+              f"{DECISION_SPEC_FIELD}: ユーザーが出した着手禁止\n\n[停止: 要判断]"),
+         REASON_DECISION_NO_SPEC),
+        (stop("明示指定を守れません。\n\n要判断の区分: 要求仕様\n区分外に当たらないことを確かめた\n"
+              f"{DECISION_SPEC_FIELD}: ユーザーが会話で指定したテスト基盤\n\n[停止: 要判断]"),
+         REASON_DECISION_NO_SPEC),
         (stop("これからフックを書きます。", active=True), REASON_NO_MARKER),
         (stop("コミットしました。ハッシュは 90d8326 です。"), REASON_NO_MARKER, [codex_ghost]),
         (stop("作業は終わりました。\n\n[停止: 完了]"), codex_stale("j2"), [codex_ghost]),
@@ -678,9 +745,17 @@ def selftest():
     pass_cases = [
         (stop("コミットしました。ハッシュは 90d8326 です。\n\n[停止: 完了]"), "[停止: 完了]"),
         (stop("受入条件が変わります。\n\n要判断の区分: 要求仕様\n区分外に当たらないことを確かめた"
+              f"\n{DECISION_SPEC_FIELD}: {here} の受入条件を緩める\n\n[停止: 要判断]"),
+         "[停止: 要判断]"),
+        (stop("受入条件が変わります。\n\n要判断の区分: 要求仕様\n区分外に当たらないことを確かめた"
+              f"\n{DECISION_SPEC_FIELD}: {here}の受入条件を緩める\n\n[停止: 要判断]"),
+         "[停止: 要判断]"),
+        (stop("禁止の解除が要ります。\n\n要判断の区分: 停止規定\n区分外に当たらないことを確かめた"
               "\n\n[停止: 要判断]"), "[停止: 要判断]"),
         (stop("受入条件が変わります。\n\n要判断の区分: 要求仕様(受入条件が変わる)\n"
-              "区分外に当たらないことを確かめた\n\n[停止: 要判断]"), "[停止: 要判断]"),
+              "区分外に当たらないことを確かめた\n"
+              f"**{DECISION_SPEC_FIELD}**: `{here}:61` の区分の定義を差し替える\n\n[停止: 要判断]"),
+         "[停止: 要判断]"),
         (stop("対象のファイルが分かりません。\n\n**要判断の区分**: 指示不明\n"
               "**区分外に当たらないことを確かめた**\n\n[停止: 要判断]"), "[停止: 要判断]"),
         (stop("千日手で終わりました。\n\n- 要判断の区分:停止規定\n- 区分外に当たらないことを確かめた"
