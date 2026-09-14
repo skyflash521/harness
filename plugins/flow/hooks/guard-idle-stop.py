@@ -11,6 +11,12 @@
 無いまま止まり続ける。時間で起きる `wait.py` がその起点になり、締切が来れば進み具合を確かめて
 待ち続けるか取り直すかを決められる。
 
+**その締切が長すぎる `待機` もブロックする**——待つ対象が別に在る場での締切には上限が定まっており、
+それより後ろへ置けば、対象が結末を出せないまま落ちた回に、超えたぶんだけ手番が戻らずに止まる。
+対象側の監視が持つ閾値へ余裕を足して置く形が、長い締切の出所になる。**時間そのものを待つ形
+(`wait.py` だけが残る待機)は長さを問わない**——使用量上限のリセット待ちがそれで、そこは長いのが
+正しい。
+
 codex のジョブ記録も同じように見る。進行の実体を失ったまま実行中として残った記録はどの宣言でも
 ブロックする——残せば以後そのスレッドを継ぐ起動が拒否され続ける。進行中と分かる記録は
 `待機` 以外の宣言をブロックする。どちらとも決められない記録はブロックしない。
@@ -50,6 +56,7 @@ codex のジョブ記録も同じように見る。進行の実体を失った�
 使い方: プラグインルートを第1引数に渡す Stop フックとして登録する。--selftest で自己テスト。
 宣言を偽らずに発火させたいときは、宣言を書かずに手番を返せば、宣言の無い停止として弾かれる。
 """
+import datetime
 import importlib.util
 import json
 import os
@@ -68,6 +75,7 @@ MARKERS = (DONE, DECISION, WAIT, RESPOND)
 CHIME = (DECISION, RESPOND)
 
 WAIT_SCRIPT = "wait.py"
+WAIT_CAP_SECS = 900
 CODEX_REAPER = "reap_codex_jobs.py"
 STOP_DOC = "defect-followthrough.md"
 
@@ -219,6 +227,19 @@ REASON_WAIT_NO_DEADLINE = (
     f'`python3 "{wait_script()}" <秒数>` を run_in_background の Bash から起こし、宣言し直すこと。'
     "**締切に達したのに対象が終わっていない回で、締切だけを張り直さない**"
     "——ハングを捕まえるための締切が、ハングを見逃す装置になる。"
+)
+REASON_WAIT_TOO_LONG = (
+    f"{WAIT} の締切が長すぎる: {{tasks}} が残り{{secs}}秒を張っている。待つ対象が別に在る場で、"
+    f"{WAIT_CAP_SECS}秒を超える締切は張らない。"
+    f"レビュー1ラウンドを待つ回では、{WAIT_CAP_SECS}秒がハングと判断する時間として定まっている"
+    "(正本はレビューループの判断ロジック)。**対象が自分でハングを判定する仕組みを持っていても、"
+    "その閾値に余裕を足して後ろへ置かない**——締切が担うのは通知の取りこぼしで、対象側の判定が"
+    "結末を出すまでの時間ではない。後ろへ置けば、その仕組みが結末を出せずに落ちた回に、"
+    "置いたぶんだけ手番が戻らないまま止まる。\n"
+    "レビュー以外の待ちでも同じで、締切は対象の所要に見合わせる。"
+    f"取るべき行動は、{WAIT_CAP_SECS}秒以内の締切を張り直し、"
+    "先の締切を TaskStop で止めてから宣言し直すこと。"
+    "時間そのものを待つ場合(使用量上限のリセット待ち等)はこの上限を受けない。"
 )
 REASON_WAIT_DUPLICATED = (
     f"{WAIT_SCRIPT} が2つ以上動いている。待つ対象は1つなので、先に用が済んだ後も残りが発火し、"
@@ -624,12 +645,15 @@ def live_now(data):
     return [t for t in tasks_of(data) if t.get("status") in LIVE]
 
 
-def waits_in(tasks):
-    """その並びに在る wait.py の件数。**起動の形は問わず名前の境界で見る**——絶対パスで渡す形も
+def is_wait(task):
+    """その背景処理が wait.py か。**起動の形は問わず名前の境界で見る**——絶対パスで渡す形も
     直に名前を書く形も同じ待機で、取りこぼすと締切を張っているのに無いことにしてしまう。"""
-    def is_wait(task):
-        fields = " ".join(str(task.get(key, "")) for key in ("command", "description"))
-        return WAIT_NAME.search(fields.replace("\\", "/")) is not None
+    fields = " ".join(str(task.get(key, "")) for key in ("command", "description"))
+    return WAIT_NAME.search(fields.replace("\\", "/")) is not None
+
+
+def waits_in(tasks):
+    """その並びに在る wait.py の件数。"""
     return sum(1 for t in tasks if is_wait(t))
 
 
@@ -642,6 +666,75 @@ def pending_waits(data):
     """終端と分かるものを除いた wait.py の件数。**締切が在るかはこちらで見る**——状態の語彙に
     無い値を数え落とすと、締切を張っているのに弾かれて、何を直しても抜けられなくなる。"""
     return waits_in(live_tasks(data))
+
+
+def wait_module():
+    """締切の引数を解釈する側(wait.py)を取り込む。読めなければ None。
+
+    **取り込み先は自分の位置から辿る**——プラグインルートは誘導文に出すパスの都合で渡されない
+    起動があり、そこで取り込めないと締切の長さを見ないまま通す。"""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_wait", Path(__file__).resolve().parent.parent / "scripts" / WAIT_SCRIPT,
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
+
+
+def deadline_text(task):
+    """その起動が wait.py へ渡した引数。**command からしか採らない**——description の文言は
+    起動の実体ではなく、そこから読んだ秒数で締切の長さを決めると、実際より短い値で通してしまう。"""
+    command = str(task.get("command", "")).replace("\\", "/")
+    found = re.search(rf"{re.escape(WAIT_SCRIPT)}[\"']?\s+(.*)$", command)
+    if not found:
+        return ""
+    rest = found.group(1).strip()
+    if not rest:
+        return ""
+    if rest[0] in "\"'":
+        end = rest.find(rest[0], 1)
+        return rest[1:end] if end > 0 else ""
+    return rest.split()[0]
+
+
+def deadline_left(task, now, module):
+    """その締切の残り秒数。引数を解釈できなければ None(判定しない)。"""
+    text = deadline_text(task)
+    if module is None or not text:
+        return None
+    target = module.parse_target(text, now)
+    if target is None:
+        return None
+    return module.remaining_seconds(target, now)
+
+
+def overlong_deadline(data):
+    """待つ対象が別に在るのに長すぎる締切。無ければ None、在れば `(対象の一覧, 最長の残り秒数)`。
+
+    **wait.py だけが残る待機は見ない**——時間そのものを待つ形(使用量上限のリセット待ち)で、
+    そこは長いのが正しい。解釈できない引数も見ない。判定できないことを不許可の理由にすると、
+    何を張り直しても抜けられなくなる。**見るのは生存が確定している集合に限る**——弾く側の判定なので、
+    語彙に無い状態をここへ含めると、終わった処理の残骸のせいで長い待ちが塞がり、止める相手も縮める
+    締切も無いまま抜けられなくなる(締切が在るかを見る側は広い集合を使うが、あちらは広げるほど
+    通る側へ倒れるので向きが逆である)。"""
+    tasks = live_now(data)
+    if not any(not is_wait(t) for t in tasks):
+        return None
+    module = wait_module()
+    now = datetime.datetime.now()
+    overlong = []
+    for task in tasks:
+        if not is_wait(task):
+            continue
+        left = deadline_left(task, now, module)
+        if left is not None and left > WAIT_CAP_SECS:
+            overlong.append((task, int(left)))
+    if not overlong:
+        return None
+    return label([task for task, _ in overlong]), max(secs for _, secs in overlong)
 
 
 def codex_jobs(data):
@@ -679,6 +772,10 @@ def decide(data, codex=()):
             return None, REASON_WAIT_DUPLICATED
         if not pending_waits(data):
             return None, REASON_WAIT_NO_DEADLINE
+        overlong = overlong_deadline(data)
+        if overlong is not None:
+            tasks, secs = overlong
+            return None, REASON_WAIT_TOO_LONG.format(tasks=tasks, secs=secs)
     elif live_now(data):
         return None, REASON_TASK_LEFT_RUNNING.format(tasks=label(live_now(data)))
     stale = [job for job in codex if job.get("state") in ENDED_RUN]
@@ -762,6 +859,11 @@ def selftest():
     }
     waiting_seconds = dict(waiting, id="b3", command="python3 /p/flow/scripts/wait.py 300")
     waiting_bare = dict(waiting, id="b8", command="python3 wait.py 300")
+    waiting_long = dict(waiting, id="b9", command="python3 /p/flow/scripts/wait.py 1320")
+    waiting_cap = dict(waiting, id="b10",
+                       command=f"python3 /p/flow/scripts/wait.py {WAIT_CAP_SECS}")
+    waiting_far = dict(waiting, id="b11",
+                       command='python3 "/p/flow/scripts/wait.py" "2099-01-01 00:00"')
     waiting_ended = dict(waiting, id="b4", status="completed")
     other_test = dict(waiting, id="b5", description="回帰検査",
                       command="python3 -m pytest tests/test_wait.py")
@@ -841,6 +943,8 @@ def selftest():
          codex_stale("j2"), [codex_ghost]),
         (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[task]), REASON_WAIT_NO_DEADLINE),
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[other_test]), REASON_WAIT_NO_DEADLINE),
+        (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[waiting_long, task]),
+         REASON_WAIT_TOO_LONG.format(tasks="b9", secs=1320)),
         (stop("作業は終わりました。\n\n[停止: 完了]"), codex_stale("j2"), [codex_alive, codex_ghost]),
         (stop("作業は終わりました。\n\n[停止: 完了]"), codex_running("j1"), [codex_alive]),
         (stop("どちらで進めますか。\n\n[停止: 要判断]"), codex_running("j1"), [codex_alive]),
@@ -895,6 +999,16 @@ def selftest():
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[dict(waiting, status="mystery")]),
          "[停止: 待機]"),
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting_bare]), "[停止: 待機]"),
+        (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting_far]), "[停止: 待機]"),
+        (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting_long]), "[停止: 待機]"),
+        (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[waiting_cap, task]),
+         "[停止: 待機]"),
+        (stop("上限明けを待ちます。\n\n[停止: 待機]",
+              tasks=[dict(waiting_far, status="mystery"), waiting_seconds, task]),
+         "[停止: 待機]"),
+        (stop("レビューの完了を待ちます。\n\n[停止: 待機]",
+              tasks=[waiting_long, dict(task, id="b12", status="mystery")]),
+         "[停止: 待機]"),
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting, task]), "[停止: 待機]"),
         (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[waiting_ended]), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[unknown]), "[停止: 完了]"),
@@ -934,9 +1048,44 @@ def selftest():
         ok = False
     if not _respond_gate_ok():
         ok = False
-    total = len(block_cases) + len(pass_cases) + 3
+    if not _deadline_text_ok():
+        ok = False
+    total = len(block_cases) + len(pass_cases) + 4
     print("ALL PASS" if ok else "SOME FAILED", f"({total} cases)")
     sys.exit(0 if ok else 1)
+
+
+def _deadline_text_ok():
+    """締切の引数を起動の形ごとに取り出せるところを確かめる。ここを取り違えると、
+    長い締切を短い値と読んで通す(または短い締切を弾く)。"""
+    cases = [
+        ('python3 "/p/flow/scripts/wait.py" "2026-08-30 21:00"', "2026-08-30 21:00"),
+        ("python3 /p/flow/scripts/wait.py 300", "300"),
+        ("python3 wait.py 1320", "1320"),
+        (r'python3 "C:\Users\d\scripts\wait.py" "2026-09-14 10:41:00"', "2026-09-14 10:41:00"),
+        ("python3 /p/flow/scripts/wait.py", ""),
+        ("python3 -m pytest tests/test_wait.py", ""),
+    ]
+    ok = True
+    for command, expected in cases:
+        actual = deadline_text({"command": command})
+        if actual != expected:
+            ok = False
+            print(f"FAIL deadline_text({command!r}) -> {actual!r}, expected {expected!r}")
+    if deadline_text({"description": "wait.py 60 で待つ"}) != "":
+        ok = False
+        print("FAIL deadline_text: description に書かれた秒数を引数として採っている")
+    module = wait_module()
+    if module is None:
+        ok = False
+        print("FAIL deadline_text: wait.py を取り込めない(締切の長さを見ないまま通す)")
+    else:
+        now = datetime.datetime.now()
+        left = deadline_left({"command": "python3 wait.py 1320"}, now, module)
+        if left != 1320:
+            ok = False
+            print(f"FAIL deadline_left: 秒数の締切が {left!r}")
+    return ok
 
 
 def _codex_lookup_ok():

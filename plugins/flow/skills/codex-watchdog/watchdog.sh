@@ -40,7 +40,7 @@
 set -u
 
 STALL_SECS="${1:-420}"
-WALL_CAP_SECS="${2:-1200}"
+WALL_CAP_SECS="${2:-900}"
 STATE_ROOT="${3:-${STATE_ROOT:-${HOME:-}/.claude/plugins/data/codex-openai-codex/state}}"
 STARTUP_GRACE_SECS="${4:-240}"
 # RUNID は英数と _ と - に限る。ERE のメタ文字を持ち込ませないため。

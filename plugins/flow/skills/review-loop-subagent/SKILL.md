@@ -72,7 +72,8 @@ Codex をレビュアーに使うループの起動契約は [flow:codex-watchdo
   応答が届く。その通知の到着がそのラウンドの完了であり、届く前に同じレビュアーへ次の依頼を重ねない。
 - **継続ラウンドは自分で締切を持つ**: ラウンド1と違い `Agent` ツールの戻りが締切にならない。
   送信後に flow プラグイン同梱の
-  [wait.py](../../scripts/wait.py) へ900秒を渡し、`run_in_background: true` の Bash で
+  [wait.py](../../scripts/wait.py) へ[1ラウンドが時間内に終わらないとき](../review-loop-judgement/SKILL.md#1ラウンドが時間内に終わらないとき)が
+  定める秒数を渡し、`run_in_background: true` の Bash で
   起動して待つ(**時間で待つ手段はこれだけで、`ScheduleWakeup` はフックが deny する**)。
 - **レビュアーの応答が先に届いたら、走っている `wait.py` を `TaskStop` で止めてから次へ進む**。
   **1つ残したまま `[停止: 待機]` と宣言する形は弾かれない**——`待機` は逆に `wait.py` が
