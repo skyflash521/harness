@@ -52,7 +52,8 @@ SCOPE_LINE = re.compile(
     rf"(?:(\d+)\s*[-–~〜]\s*(\d+)|(\d+)|({WHOLE}))"
 )
 STEP_LINE = re.compile(rf"^\s*[>*_\-\s]*{STEP_FIELD}[*_\s]*(?:は)?[*_\s]*[::]\s*[*_`]*\s*(\d+)")
-SETTLED_LINE = "^\\s*[>*_\\-\\s]*(?:{fields})[*_\\s]*(?:は)?[*_\\s]*[::]\\s*(.+?)\\s*$"
+SETTLED_LINE = re.compile(
+    rf"^\s*[>*_\-\s]*{SETTLED_FIELD}[*_\s]*(?:は)?[*_\s]*[::]\s*(.+?)\s*$")
 BLOCKED_MARK = "Stop hook feedback"
 PLAN_STEPS = re.compile(r"^##+\s*実装ステップ\s*$")
 PLAN_ROW = re.compile(r"^\s*\|\s*(\d+)\s*\|")
@@ -86,7 +87,7 @@ REASON_OPEN = (
 )
 SETTLED_HOW = (
     f"済ませたら「{SETTLED_FIELD}: <その発言から引いた文字列>」の1行を残す"
-    "(問いへ答えたのであれば「{respond}: 」の復唱がその記録を兼ねる)。"
+    "(問いへ答えた「{respond}: 」の復唱はこの記録を兼ねない——答えたことと済ませたことは別である)。"
     "**引く文字列はその発言の原文からそのまま写す**——言い換えは一致しない。"
     "**1行が済ませるのは発言1件で、古いものから順に割り当てる**ので、"
     "同じ言葉で複数回言われているならその回数ぶんの行が要る。"
@@ -262,18 +263,10 @@ def verdict(rows, cwd=None):
     return None
 
 
-def settled_fields():
-    """済ませた記録として数えるラベル。問いの復唱は、その発言を済ませたことを兼ねる。"""
-    guard = load("_guard_idle_stop", GUARD)
-    return (SETTLED_FIELD, guard.RESPOND_FIELD)
-
-
 def settled_quotes(text):
     """その本文が残した、済ませた記録の引いた文字列。"""
-    pattern = re.compile(SETTLED_LINE.format(
-        fields="|".join(re.escape(one) for one in settled_fields())))
     return [m.group(1) for m in
-            (pattern.match(line) for line in str(text).splitlines()) if m]
+            (SETTLED_LINE.match(line) for line in str(text).splitlines()) if m]
 
 
 def texts_of(row):
@@ -559,7 +552,7 @@ def selftest():
         write([asked, mark])
         check("記録を残せば通す", decide(stop(done)), None)
         write([asked, said(f"{guard.RESPOND_FIELD}: 台帳の重複を整理しろ")])
-        check("問いの復唱も記録として数える", decide(stop(done)), None)
+        check("問いの復唱は記録に数えない", decide(stop(done)) is not None, True)
         write([asked, said(f"{SETTLED_FIELD}: 索引を作り直した")])
         check("発言に無い文字列では済ませられない", decide(stop(done)) is not None, True)
         write([mark, asked])

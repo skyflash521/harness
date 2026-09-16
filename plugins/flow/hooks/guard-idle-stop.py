@@ -32,10 +32,10 @@ codex のジョブ記録も同じように見る。進行の実体を失った�
 初めて要判断で止まろうとした停止は必ずここで弾かれ、この deny が区分外の列挙を渡す。1手番を
 費やすが、止まるべきでない停止はその1手番で消える。
 
-**`応答` は、戻ってきて続ける作業が残っているときの宣言である。** 受けたものが全部済んでいるなら、
-答えを届けることは `完了` が述べる状態に含まれるので、そちらを使わせる——**止まれるかどうかは変わらず、
-宣言の種類だけが変わる**。残っているかは消化の突き合わせ(`guard-goal-completion.py`)が数えるので、
-問いかどうかを文面から当てなくても、済んだものを応答の側へ寄せる停止はここで消える。
+**`応答` が問うのは、問われたかどうかだけである。** 済んでいない指示が残っているかは条件に入れない
+——問いだけを受けた手番でも、答えを届けるために止まってよい。**代わりに、答えたことを済ませたことに
+数えない**: 復唱した発言は消化の突き合わせ(`guard-goal-completion.py`)で未消化のまま残るので、
+指摘へ答えるのに `応答` を使っても、その指摘は `完了` の前に `対応済み` として片付ける必要がある。
 
 `応答` はさらに、**直近のユーザー発言より後に成果物へ手を出していないこと**を転写で確かめる。
 調べるための読み取りは答えるうちだが、編集・サブエージェントへの委譲と継続・書き換えるコマンドが
@@ -93,7 +93,6 @@ RESPOND_EMPTY = frozenset((
 RESPOND_TRIM = "*_`「」()()。．.、,-・ 　"
 INSTRUCTION_WORD = "指示"
 TRANSCRIPT = ("scripts", "transcript.py")
-COMPLETION_HOOK = "guard-goal-completion.py"
 GIT_WRITE_HOOK = "guard-git-write.py"
 WORK_TOOLS = ("Edit", "Write", "NotebookEdit", "Agent", "Task", "SendMessage")
 WORK_COMMANDS = ("tee", "cp", "mv", "rm", "mkdir", "touch", "truncate", "patch", "dd", "install")
@@ -192,7 +191,7 @@ _HOW = (
     f"{WAIT} — 何かの完了を待つ。手番が戻る経路として、登録された背景処理と、"
     f"締切になる {WAIT_SCRIPT} の背景実行がどちらも在るときだけ使える。"
     f"{RESPOND} — ユーザーに問われたことへ答えたので、答えを届けるために手番を返す。"
-    "戻ってきて続ける作業が残っているときに使う。"
+    "指示が残っているかどうかは問わない。"
 )
 
 REASON_NO_MARKER = (
@@ -337,14 +336,6 @@ REASON_RESPOND_AFTER_WORK = (
     "**ユーザーがその作業の着手を禁じているなら進んではならない。この deny は、ユーザーが"
     f"出した禁止を解除しない**——解除を諮るために {DECISION} を使う"
     f"(待ちが発生したなら {WAIT})。"
-)
-REASON_RESPOND_NOTHING_LEFT = (
-    f"{RESPOND} と宣言しているが、**このセッションで受けたものに未了が1件も残っていない**。"
-    f"{RESPOND} が言うのは「答えを届けるためにいったん手番を返す」ことで、"
-    "戻ってくる作業が在ることを前提にした宣言である。"
-    f"受けたものが全部済んでいるなら、それは {DONE} が述べる状態そのものなので、そちらを使うこと"
-    "——答えは同じように届く。"
-    "**指摘や確認に答えたことを問いに答えたことにして、済んでいる作業を応答の側へ寄せない。**"
 )
 REASON_FABRICATED_INSTRUCTION = (
     f"手番を返す応答に、残っている作業を**「{INSTRUCTION_WORD}」として名乗る行**がある。"
@@ -542,30 +533,6 @@ def is_work(block):
         return True
     command = (block.get("input") or {}).get("command")
     return isinstance(command, str) and writes(command)
-
-
-def completion_module():
-    """受けたものの消化を数える側を取り込む。読めなければ None。"""
-    try:
-        path = Path(__file__).resolve().parent / COMPLETION_HOOK
-        spec = importlib.util.spec_from_file_location("_guard_goal_completion", path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    except Exception:
-        return None
-
-
-def others_unsettled(data):
-    """まだ済ませていない発言の数。転写を読めなければ None(判定しない)。"""
-    completion = completion_module()
-    reader = transcript_module()
-    if completion is None or reader is None:
-        return None
-    rows = reader.rows_of(data.get("transcript_path"))
-    if rows is None:
-        return None
-    return len(completion.unsettled(rows))
 
 
 def transcript_module():
@@ -793,8 +760,6 @@ def decide(data, codex=()):
             return None, REASON_RESPOND_UNQUOTED
         if worked_since_instruction(data):
             return None, REASON_RESPOND_AFTER_WORK
-        if others_unsettled(data) == 0:
-            return None, REASON_RESPOND_NOTHING_LEFT
     if found[0] == DECISION:
         kind = declared_kind(message)
         if not kind:
@@ -1177,8 +1142,8 @@ def _respond_gate_ok():
             ([pending, asked, looked, listed, read, said], RESPOND, "調べてから答えた応答は通す"),
             ([pending, asked, discarded, unparsed, ranged, said], RESPOND,
              "捨て場へのリダイレクト・読めないコマンド・別の節の -i は通す"),
-            ([asked, row("assistant", {"type": "text", "text": message})],
-             REASON_RESPOND_NOTHING_LEFT, "未了が残っていない応答は弾く"),
+            ([asked, row("assistant", {"type": "text", "text": message})], RESPOND,
+             "問いだけを受けて答えた応答は通す"),
         ):
             body = "\n".join(json.dumps(r, ensure_ascii=False) for r in rows)
             path.write_text(body + "\n", encoding="utf-8")
