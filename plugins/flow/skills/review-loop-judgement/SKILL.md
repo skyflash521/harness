@@ -84,7 +84,7 @@ user-invocable: false
 **起動可否ゲート**: このループ(flow:codex-review-loop/flow:fable-review-loop/flow:opus-review-loop)を起動してよいのは、次の
 いずれかを満たすときに限る。
 
-- (a) ユーザーが明示的な指示で起動した `flow:autonomous-dev` のマイクロループ(各フェーズのレビュー
+- (a) ユーザーが明示的な指示で起動した `flow:autonomous-dev` のマイクロループ(各ステップのレビュー
   ゲート)からの呼び出しである(ユーザーの指示なしに `flow:autonomous-dev` を自発起動して、その内部
   手順を根拠にこのゲートを通ることはできない)。
 - (b) このラウンドを開始する直前に、ユーザーからレビュー実行の明示的な指示があった(いまの

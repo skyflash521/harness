@@ -51,7 +51,8 @@ SCOPE_LINE = re.compile(
     rf"^\s*[>*_\-\s]*{SCOPE_FIELD}[*_\s]*(?:は)?[*_\s]*[::]\s*[*_`]*\s*"
     rf"(?:(\d+)\s*[-–~〜]\s*(\d+)|(\d+)|({WHOLE}))"
 )
-STEP_LINE = re.compile(rf"^\s*[>*_\-\s]*{STEP_FIELD}[*_\s]*(?:は)?[*_\s]*[::]\s*[*_`]*\s*(\d+)")
+STEP_LINE = re.compile(
+    rf"^\s*[>*_\-\s]*{STEP_FIELD}[*_\s]*(?:は)?[*_\s]*[::]\s*[*_`]*\s*(\d+)(?!\d)(?!\s*[(（])")
 SETTLED_LINE = re.compile(
     rf"^\s*[>*_\-\s]*{SETTLED_FIELD}[*_\s]*(?:は)?[*_\s]*[::]\s*(.+?)\s*$")
 BLOCKED_MARK = "Stop hook feedback"
@@ -191,7 +192,8 @@ def scope_of(text):
 
 
 def steps_of(text):
-    """その発言が済んだと記したステップの番号。"""
+    """その発言が済んだと記したステップの番号。**番号に括弧書きが続く行は数えない**——
+    そのステップの一部だけが済んだと断る書き方で、済んだことにすると判定が偽になる。"""
     return {int(m.group(1)) for m in
             (STEP_LINE.match(line) for line in str(text).splitlines()) if m}
 
@@ -501,6 +503,18 @@ def selftest():
         write([skill(), scope13, said(f"{STEP_FIELD}: 1"), said(f"{STEP_FIELD}: 2"),
                said(f"{STEP_FIELD}: 3")])
         check("範囲が埋まれば通す", decide(stop(done)), None)
+
+        write([skill(), scope13, said(f"{STEP_FIELD}: 1(テストだけ)"),
+               said(f"{STEP_FIELD}: 2"), said(f"{STEP_FIELD}: 3")])
+        check("括弧で一部と断った行は済みに数えない", decide(stop(done)) is not None, True)
+        write([skill(), said(f"{SCOPE_FIELD}: 1-12"),
+               *[said(f"{STEP_FIELD}: {n}") for n in range(1, 12)],
+               said(f"{STEP_FIELD}: 12(テストだけ)")])
+        check("2桁でも括弧付きは数えず、頭の桁も拾わない",
+              decide(stop(done)) is not None, True)
+        write([skill(), scope13, said(f"{STEP_FIELD}: 1 — コミット abc1234"),
+               said(f"{STEP_FIELD}: 2"), said(f"{STEP_FIELD}: 3")])
+        check("番号の後の補足は済みを妨げない", decide(stop(done)), None)
 
         write([skill(), said(f"{SCOPE_FIELD}: 2"), said(f"{STEP_FIELD}: 2")])
         check("単独のステップの走行も通る", decide(stop(done)), None)
