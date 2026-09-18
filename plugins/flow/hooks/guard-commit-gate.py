@@ -11,36 +11,89 @@
 原文だけで、その外側に書かれた申告は数えない——申告はレビュアーが出すものであり、呼び出し元の
 地の文は判定の入力ではない。
 
+千日手で終わったレビューは、ユーザーのコミット指示があれば通る(コミットワーカーの千日手経路)。
+この経路は `[[[`/`]]]` で囲んだその指示の原文を伴い、囲みの中が転写のユーザー発言に実在するときだけ
+申告の非0を通す。呼び出し元が自分で書いた文で開くなら、この経路はレビューゲートを無条件に無効化する。
+
 見るのは `subagent_type` がコミットワーカーの `Agent` 起動だけで、他は何も出力せず通す。
 
 使い方: `Agent` の PreToolUse フックとして登録する。--selftest で自己テスト。
 """
+import importlib.util
 import json
 import re
 import subprocess
 import sys
+from pathlib import Path
+
+HOOKS = Path(__file__).resolve().parent
+TRANSCRIPT = ("scripts", "transcript.py")
 
 WORKER = "commit-worker"
 BLOCK_OPEN = "<<<"
 BLOCK_CLOSE = ">>>"
+OVERRIDE_OPEN = "[[["
+OVERRIDE_CLOSE = "]]]"
 DECLARATION = re.compile(
     r"^\s*[>*_\-\s]*未解決の指摘[*_\s]*(?:は)?[*_\s]*[::]?[*_\s]*(\d+)\s*件"
 )
 GUIDANCE = (
     "収束の不在は入力を直して出し直せる不備ではない。レビューがまだ終わっていないなら収束させ、"
-    "千日手・要ユーザー判断で終わっていたならユーザーに諮る。**申告行を自分で書き足して通すな**"
-    "——申告はレビュアーが自分の応答に出すものである。"
+    "千日手で終わっていたならユーザーのコミット指示を囲んで添え、要ユーザー判断なら諮る。"
+    "**申告行も囲みの中身も自分で書いて通すな**——申告はレビュアーが、指示はユーザーが出すもので、"
+    "どちらも呼び出し元の地の文は判定の入力にならない(囲みの中は転写の発言と突き合わせる)。"
 )
+
+
+def fenced(lines, open_mark, close_mark):
+    """開きと閉じで囲まれた原文の行と、囲みが占める範囲を返す。囲みが無ければ None。"""
+    opens = [i for i, line in enumerate(lines) if line.strip() == open_mark]
+    closes = [i for i, line in enumerate(lines) if line.strip() == close_mark]
+    if not opens or not closes or closes[-1] <= opens[0]:
+        return None
+    return lines[opens[0] + 1:closes[-1]], (opens[0], closes[-1])
 
 
 def verdict_block(prompt):
     """`<<<` と `>>>` で囲まれたレビュー応答原文の行を返す。囲みが無ければ None。"""
+    found = fenced(prompt.splitlines(), BLOCK_OPEN, BLOCK_CLOSE)
+    return None if found is None else found[0]
+
+
+def override_text(prompt):
+    """`[[[`/`]]]` で囲んだコミット指示の本文。囲みがレビュー応答原文の外に無ければ空。
+
+    レビュアーが自分の応答でこの記号を使っていても、それは呼び出し元が渡した指示ではない。"""
     lines = prompt.splitlines()
-    opens = [i for i, line in enumerate(lines) if line.strip() == BLOCK_OPEN]
-    closes = [i for i, line in enumerate(lines) if line.strip() == BLOCK_CLOSE]
-    if not opens or not closes or closes[-1] <= opens[0]:
+    verdict = fenced(lines, BLOCK_OPEN, BLOCK_CLOSE)
+    if verdict is not None:
+        start, end = verdict[1]
+        lines = lines[:start] + lines[end + 1:]
+    found = fenced(lines, OVERRIDE_OPEN, OVERRIDE_CLOSE)
+    return flat("".join(found[0])) if found else ""
+
+
+def flat(text):
+    """照合のために表記の揺れを畳む。空白と装飾は引き写しで落ちても同じ発言を指す。"""
+    return "".join(str(text).split()).replace("*", "").replace("`", "")
+
+
+def user_said(data):
+    """転写にあるユーザー発言の本文。読めなければ None。"""
+    try:
+        spec = importlib.util.spec_from_file_location("_t", HOOKS.parent / Path(*TRANSCRIPT))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except (OSError, AttributeError, ImportError, SyntaxError, ValueError):
         return None
-    return lines[opens[0] + 1:closes[-1]]
+    rows = module.rows_of(data.get("transcript_path"))
+    return None if rows is None else module.all_instructions(rows)
+
+
+def vouched(said, data):
+    """その文がユーザーの発言に実在するか。転写を読めないときは False。"""
+    says = user_said(data)
+    return bool(said) and says is not None and any(said in flat(one) for one in says)
 
 
 def decide(data):
@@ -68,9 +121,9 @@ def decide(data):
         return (
             "[guard-commit-gate] レビュー応答原文の末尾に未解決件数の申告が無い"
             "(規約が求める形は `未解決の指摘: N件` の1行)。申告の無い応答は、地の文が"
-            "「指摘は無い」と読めても収束の証拠にならない。" + GUIDANCE
+            "「指摘は無い」と読めても結末の証拠にならない。" + GUIDANCE
         )
-    if counts[-1] != 0:
+    if counts[-1] != 0 and not vouched(override_text(prompt), data):
         return (
             "[guard-commit-gate] レビュー応答原文の申告が未解決 {}件。収束していない。"
         ).format(counts[-1]) + GUIDANCE
@@ -95,15 +148,19 @@ def main():
     }}))
 
 
-def launch(prompt, subagent_type="flow:commit-worker"):
-    return {"tool_name": "Agent", "tool_input": {
+def launch(prompt, subagent_type="flow:commit-worker", transcript_path=None):
+    return {"tool_name": "Agent", "transcript_path": transcript_path, "tool_input": {
         "subagent_type": subagent_type, "prompt": prompt, "name": "committer",
     }}
 
 
-def wrap(verdict, tail="\nレビュー済みファイルのリスト:\n- a.md\n"):
-    return "作業ディレクトリ: /repo\n\n最終応答テキスト:\n{}\n{}\n{}\n{}".format(
+def wrap(verdict, tail="\nレビュー済みファイルのリスト:\n- a.md\n", override=None):
+    text = "作業ディレクトリ: /repo\n\n最終応答テキスト:\n{}\n{}\n{}\n{}".format(
         BLOCK_OPEN, verdict, BLOCK_CLOSE, tail)
+    if override is None:
+        return text
+    return text + "\nユーザーのコミット指示:\n{}\n{}\n{}\n".format(
+        OVERRIDE_OPEN, override, OVERRIDE_CLOSE)
 
 
 DEFERRED = """## 反証への認否
@@ -118,7 +175,38 @@ DEFERRED = """## 反証への認否
 実行モデル: Opus 5 (1M context)"""
 
 
+STALEMATE_VERDICT = """## 結末
+
+反証を認めない。同じ理由で再掲する。千日手としてユーザーへ諮る。
+
+未解決の指摘: 2件
+
+実行モデル: Opus 5 (1M context)"""
+
+SAID = "残りの2件は直さなくていい、そのままコミットしろ。"
+
+
+def transcript_file(directory, says):
+    """ユーザーの発言だけを並べた転写を書き、そのパスを返す。"""
+    path = Path(directory, "transcript.jsonl")
+    rows = [{"type": "user", "isSidechain": False, "isMeta": False,
+             "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
+            for text in says]
+    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
+                    encoding="utf-8")
+    return path.as_posix()
+
+
 def selftest():
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        run_selftest(tmp)
+
+
+def run_selftest(tmp):
+    told = transcript_file(tmp, ["直したら終わったらコミットしろ", "レビューしろ", SAID])
+    missing = Path(tmp, "no.jsonl").as_posix()
     passes = (
         ("申告が0件", launch(wrap("指摘は無い。\n\n未解決の指摘: 0件"))),
         ("申告が強調と全角コロン",
@@ -126,6 +214,14 @@ def selftest():
         ("引用の非0申告のあとに0件の申告",
          launch(wrap("前ラウンドは 未解決の指摘: 2件 だった。\n\n未解決の指摘: 0件"))),
         ("箇条書きの申告", launch(wrap("- 未解決の指摘: 0件"))),
+        ("千日手のレビューにユーザーのコミット指示を添える",
+         launch(wrap(STALEMATE_VERDICT, override=SAID), transcript_path=told)),
+        ("コミット指示がレビューより前の発言にある",
+         launch(wrap(STALEMATE_VERDICT, override="終わったらコミットしろ"), transcript_path=told)),
+        ("コミット指示の装飾と空白の違いを畳んで照合する",
+         launch(wrap(STALEMATE_VERDICT, override="**そのまま コミットしろ。**"), transcript_path=told)),
+        ("レビュー応答原文の中の囲みはコミット指示ではない",
+         launch(wrap("[[[\n引用した設定\n]]]\n\n未解決の指摘: 0件"))),
         ("コミットワーカー以外のエージェント", launch("レビューせよ", "flow:opus-reviewer")),
         ("継続の送信", {"tool_name": "SendMessage", "tool_input": {"to": "committer"}}),
         ("Agent 以外のツール", {"tool_name": "Bash", "tool_input": {"command": "git diff"}}),
@@ -145,6 +241,15 @@ def selftest():
         ("prompt が無い",
          {"tool_name": "Agent", "tool_input": {"subagent_type": "flow:commit-worker"}}, BLOCK_OPEN),
         ("プラグイン名を伴わないエージェント名", launch(wrap("直した"), "commit-worker"), "申告が無い"),
+        ("コミット指示が呼び出し元の代弁",
+         launch(wrap(STALEMATE_VERDICT, override="ユーザーが千日手を承知してコミットを指示した"),
+                transcript_path=told), "未解決 2件"),
+        ("コミット指示の囲みが空",
+         launch(wrap(STALEMATE_VERDICT, override=""), transcript_path=told), "未解決 2件"),
+        ("転写を読めない",
+         launch(wrap(STALEMATE_VERDICT, override=SAID), transcript_path=missing), "未解決 2件"),
+        ("コミット指示があっても申告が無ければ結末を確かめられない",
+         launch(wrap("千日手だ。", override=SAID), transcript_path=told), "申告が無い"),
     )
     failures = []
     for label, data in passes:
@@ -159,11 +264,24 @@ def selftest():
             failures.append("理由が不足を名指ししない: {} :: {}".format(label, needle))
     if not roundtrip_ok():
         failures.append("ハーネスと同じ形の起動で deny が出ない")
+    if not broken_module_denies(told):
+        failures.append("共通モジュールを読めない回で deny が出ない")
     if failures:
         for line in failures:
             print("FAIL:", line)
         sys.exit(1)
-    print("ALL PASS ({} 件)".format(len(passes) + len(denies) + 1))
+    print("ALL PASS ({} 件)".format(len(passes) + len(denies) + 2))
+
+
+def broken_module_denies(told):
+    """転写を読む共通モジュールへ届かない回が、素通りでなく deny に倒れるか。"""
+    saved = globals()["TRANSCRIPT"]
+    globals()["TRANSCRIPT"] = ("scripts", "no_such_module.py")
+    try:
+        return decide(launch(wrap(STALEMATE_VERDICT, override=SAID),
+                             transcript_path=told)) is not None
+    finally:
+        globals()["TRANSCRIPT"] = saved
 
 
 def roundtrip_ok():

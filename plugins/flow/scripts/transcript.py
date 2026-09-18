@@ -87,6 +87,11 @@ def latest_instruction(rows):
     return found
 
 
+def all_instructions(rows):
+    """ユーザー発言の本文すべて。古い順。"""
+    return [spoken_of(row) for row in rows if said_by_user(row)]
+
+
 def calls_since_last_instruction(rows):
     """直近のユーザー発言より後の道具の呼び出し。発言が1件も無ければ None。"""
     latest = None
@@ -152,6 +157,11 @@ def selftest():
           latest_instruction([user("指示"), user("<system-reminder>注入</system-reminder>")]),
           "指示")
     check("発言が無ければ None", latest_instruction([assistant(tool="Bash")]), None)
+
+    check("発言の本文を古い順に返す",
+          all_instructions([user("古い指示"), assistant(tool="Bash"), queued("新しい指示")]),
+          ["古い指示", "新しい指示"])
+    check("発言が無ければ空", all_instructions([assistant(tool="Bash")]), [])
 
     rows = [
         user("レビューしろ"),
