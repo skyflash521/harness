@@ -96,8 +96,8 @@ git フックを有効化する。リポジトリローカル設定なので、m
 git config core.hooksPath .githooks
 ```
 
-`ruff` と `rumdl` は pip で個別に導入する。harness は配布物を持たないため `pyproject.toml` を
-置かず、開発依存の宣言機構を使わない。
+`ruff` と `rumdl` は pip で個別に導入する。`pyproject.toml` を置かず、開発依存の宣言機構を
+使わない。
 
 ```sh
 pip install ruff rumdl
@@ -106,8 +106,7 @@ pip install ruff rumdl
 `lychee` は pip では入らないため各自で導入する(配布物のバイナリを入れるか、パッケージマネージャを
 使う)。
 
-**Python は 3.9 以上**を要求する。スクリプトが型注釈で組み込みジェネリクス(`list[str]` 等)を
-使うため。
+**Python は 3.9 以上**を要求する。
 
 検査器が採用する規則・外す規則とその理由は [.ruff.toml](.ruff.toml) と
 [.rumdl.toml](.rumdl.toml) が持つ。

@@ -2,7 +2,6 @@
 
 flow プラグインを有効化するリポジトリが満たす条件と、その導入手順の正本。flow のスキル・エージェントはこの文書を
 参照し、同梱のフックが必須条項をスキルの起動時に機械確認する。
-guard プラグインはこの契約を課さない。
 
 ## 必須条項
 
@@ -23,8 +22,6 @@ guard プラグインはこの契約を課さない。
 `sandbox.excludedCommands` の全エントリを、`.claude/settings.json`・`.claude/settings.local.json`・
 `~/.claude/settings.json` のいずれかに登録する。
 
-登録が必要なエントリの正本はそのファイルであり、この文書はエントリを列挙しない。
-
 ## 任意条項
 
 - レビューで照合させたい規約(用語規約表など)を `docs/conventions/` に置く。flow のレビュー
@@ -37,8 +34,7 @@ guard プラグインはこの契約を課さない。
 
 - guard・flow が動作するOSは Windows・macOS・Linux とする。
 - 許可モードは `auto` を前提とする。auto は Bash の実行を無条件に通すわけではなく、分類器が危険と判断した形は止まる。
-- guard・flow の全フックと補助スクリプトは bash シェル経由で python3 を起動するため、各マシンに
-  python3 と(Windows では)Git Bash が必要。
+- 各マシンに python3 と(Windows では)Git Bash が必要。
 - codex 系スキルを使う場合は Node.js・Codex CLI・Codex プラグインの導入が別途必要。セットアップ
   未完了は実行時に検知して報告する機構を codex 系スキルが持つ。
 
@@ -77,7 +73,6 @@ python3 <flow プラグインの contract/check_adoption.py の絶対パス> [�
 
 `flow:` で始まるスキルの起動を同梱の [guard-adoption.py](../../hooks/guard-adoption.py) が
 PreToolUse フックで受け、[この確認スクリプト](#導入の検証)を実行する。非0で終わったら起動を deny し、
-欠けた条項とこの文書の所在を示す。ハーネス側に置くのは、スキル本文に書くと呼び出しのたびに会話の
-ツール往復が1つ増え、スキルのネストで積み上がるため。
+欠けた条項とこの文書の所在を示す。
 
 flow:commit-worker は直接起動への防御として、不正コミット防止チェックでも条項1を確認する。
