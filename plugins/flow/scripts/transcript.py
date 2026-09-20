@@ -14,6 +14,7 @@ import json
 import sys
 from pathlib import Path
 
+HANDBACK = "<agent-message"
 SKIP_PREFIXES = ("<system-reminder>", "<ide_opened_file>", "<ide_selection>", "<command-",
                  "<local-command-", "<task-notification>", "<cross-session-message",
                  "[Cross-session", "[Request interrupted")
@@ -87,9 +88,22 @@ def latest_instruction(rows):
     return found
 
 
-def all_instructions(rows):
-    """ユーザー発言の本文すべて。古い順。"""
-    return [spoken_of(row) for row in rows if said_by_user(row)]
+def instructions_after(rows, pattern, wanted):
+    """サブエージェントの応答の末尾の宣言が wanted だった後の、ユーザー発言の本文。無ければ空。
+
+    応答はハーネスが `<agent-message …>` を含む囲みに入れて親の転写へ挿す。道具の結果は見ない。
+    宣言が複数あるときは末尾のものを採る。"""
+    found = None
+    for index, row in enumerate(rows):
+        if row.get("toolUseResult") is not None or not row.get("isMeta"):
+            continue
+        text = "\n".join(text_blocks((row.get("message") or {}).get("content")))
+        declared = [m.group(1) for m in pattern.finditer(text)]
+        if HANDBACK in text and declared and declared[-1].startswith(wanted):
+            found = index
+    if found is None:
+        return []
+    return [spoken_of(row) for row in rows[found + 1:] if said_by_user(row)]
 
 
 def calls_since_last_instruction(rows):
@@ -158,10 +172,35 @@ def selftest():
           "指示")
     check("発言が無ければ None", latest_instruction([assistant(tool="Bash")]), None)
 
-    check("発言の本文を古い順に返す",
-          all_instructions([user("古い指示"), assistant(tool="Bash"), queued("新しい指示")]),
-          ["古い指示", "新しい指示"])
-    check("発言が無ければ空", all_instructions([assistant(tool="Bash")]), [])
+    import re
+
+    mark = re.compile(r"^結末[::](\S+)", re.MULTILINE)
+
+    def handback(text):
+        row = user('<agent-message from="reviewer">\n' + text)
+        row["isMeta"] = True
+        return row
+
+    def result(text):
+        row = user("道具の結果")
+        row["toolUseResult"] = {"prompt": text, "content": text}
+        return row
+
+    check("応答より後の発言だけを返す",
+          instructions_after([user("先の指示"), handback("結末:千日手"), user("後の指示")],
+                             mark, "千日手"),
+          ["後の指示"])
+    check("応答が無ければ空",
+          instructions_after([user("先の指示"), user("後の指示")], mark, "千日手"), [])
+    check("発言の本文にある印は起点にならない",
+          instructions_after([user("結末:千日手"), user("後の指示")], mark, "千日手"), [])
+    check("道具の結果にある印は起点にならない",
+          instructions_after([result("結末:千日手"), user("後の指示")], mark, "千日手"), [])
+    check("宣言が継続なら起点にならない",
+          instructions_after([handback("結末:継続"), user("後の指示")], mark, "千日手"), [])
+    check("末尾の宣言を採る",
+          instructions_after([handback("結末:千日手\n結末:継続"), user("後の指示")],
+                             mark, "千日手"), [])
 
     rows = [
         user("レビューしろ"),

@@ -11,9 +11,9 @@
 原文だけで、その外側に書かれた申告は数えない——申告はレビュアーが出すものであり、呼び出し元の
 地の文は判定の入力ではない。
 
-千日手で終わったレビューは、ユーザーのコミット指示があれば通る(コミットワーカーの千日手経路)。
-この経路は `[[[`/`]]]` で囲んだその指示の原文を伴い、囲みの中が転写のユーザー発言に実在するときだけ
-申告の非0を通す。呼び出し元が自分で書いた文で開くなら、この経路はレビューゲートを無条件に無効化する。
+千日手は止まる結末で、進めてよいと決められるのはユーザーだけである。申告の非0を通すのは、レビュアーが
+`結末: 千日手` を宣言し、**その宣言より後に**ユーザーが出した指示が `[[[`/`]]]` の中に在るときに限る。
+どちらを欠いても通さない。
 
 見るのは `subagent_type` がコミットワーカーの `Agent` 起動だけで、他は何も出力せず通す。
 
@@ -37,11 +37,14 @@ OVERRIDE_CLOSE = "]]]"
 DECLARATION = re.compile(
     r"^\s*[>*_\-\s]*未解決の指摘[*_\s]*(?:は)?[*_\s]*[::]?[*_\s]*(\d+)\s*件"
 )
+OUTCOME = re.compile(r"^\s*[>*_\-\s]*結末[*_\s]*[::][*_\s]*(\S+)", re.MULTILINE)
+STALEMATE = "千日手"
 GUIDANCE = (
     "収束の不在は入力を直して出し直せる不備ではない。レビューがまだ終わっていないなら収束させ、"
-    "千日手で終わっていたならユーザーのコミット指示を囲んで添え、要ユーザー判断なら諮る。"
-    "**申告行も囲みの中身も自分で書いて通すな**——申告はレビュアーが、指示はユーザーが出すもので、"
-    "どちらも呼び出し元の地の文は判定の入力にならない(囲みの中は転写の発言と突き合わせる)。"
+    "千日手で終わっていたなら、レビュアーの `結末: 千日手` を含む応答原文と、**その宣言より後に**"
+    "ユーザーが出したコミット指示を囲んで添える。要ユーザー判断なら諮る。"
+    "**申告行も宣言も囲みの中身も自分で書いて通すな**——申告と宣言はレビュアーが、指示はユーザーが"
+    "出すもので、呼び出し元の地の文は判定の入力にならない。"
 )
 
 
@@ -79,7 +82,7 @@ def flat(text):
 
 
 def user_said(data):
-    """転写にあるユーザー発言の本文。読めなければ None。"""
+    """レビュアーが千日手を宣言した後のユーザー発言の本文。読めなければ None。"""
     try:
         spec = importlib.util.spec_from_file_location("_t", HOOKS.parent / Path(*TRANSCRIPT))
         module = importlib.util.module_from_spec(spec)
@@ -87,11 +90,11 @@ def user_said(data):
     except (OSError, AttributeError, ImportError, SyntaxError, ValueError):
         return None
     rows = module.rows_of(data.get("transcript_path"))
-    return None if rows is None else module.all_instructions(rows)
+    return None if rows is None else module.instructions_after(rows, OUTCOME, STALEMATE)
 
 
 def vouched(said, data):
-    """その文がユーザーの発言に実在するか。転写を読めないときは False。"""
+    """その文が、千日手の宣言より後のユーザー発言に実在するか。読めないときは False。"""
     says = user_said(data)
     return bool(said) and says is not None and any(said in flat(one) for one in says)
 
@@ -123,7 +126,9 @@ def decide(data):
             "(規約が求める形は `未解決の指摘: N件` の1行)。申告の無い応答は、地の文が"
             "「指摘は無い」と読めても結末の証拠にならない。" + GUIDANCE
         )
-    if counts[-1] != 0 and not vouched(override_text(prompt), data):
+    outcomes = [m.group(1) for m in map(OUTCOME.match, block) if m]
+    declared = bool(outcomes) and outcomes[-1].startswith(STALEMATE)
+    if counts[-1] != 0 and not (declared and vouched(override_text(prompt), data)):
         return (
             "[guard-commit-gate] レビュー応答原文の申告が未解決 {}件。収束していない。"
         ).format(counts[-1]) + GUIDANCE
@@ -177,21 +182,28 @@ DEFERRED = """## 反証への認否
 
 STALEMATE_VERDICT = """## 結末
 
-反証を認めない。同じ理由で再掲する。千日手としてユーザーへ諮る。
+反証を認めない。同じ理由で再掲する。
 
 未解決の指摘: 2件
+
+結末: 千日手
 
 実行モデル: Opus 5 (1M context)"""
 
 SAID = "残りの2件は直さなくていい、そのままコミットしろ。"
 
 
-def transcript_file(directory, says):
-    """ユーザーの発言だけを並べた転写を書き、そのパスを返す。"""
-    path = Path(directory, "transcript.jsonl")
-    rows = [{"type": "user", "isSidechain": False, "isMeta": False,
-             "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
-            for text in says]
+def transcript_file(directory, says, name="transcript.jsonl"):
+    """転写を書き、そのパスを返す。`|` で始まる要素はレビュアーの応答の差し込みにする。"""
+    path = Path(directory, name)
+    rows = []
+    for text in says:
+        body, meta = text, False
+        if text.startswith("|"):
+            body, meta = '<agent-message from="reviewer">\n' + text[1:], True
+        row = {"type": "user", "isSidechain": False, "isMeta": meta,
+               "message": {"role": "user", "content": [{"type": "text", "text": body}]}}
+        rows.append(row)
     path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
                     encoding="utf-8")
     return path.as_posix()
@@ -205,7 +217,9 @@ def selftest():
 
 
 def run_selftest(tmp):
-    told = transcript_file(tmp, ["直したら終わったらコミットしろ", "レビューしろ", SAID])
+    told = transcript_file(tmp, ["レビューしろ", "|結末: 千日手", SAID])
+    beforehand = transcript_file(
+        tmp, [SAID, "レビューしろ", "|結末: 千日手"], "beforehand.jsonl")
     missing = Path(tmp, "no.jsonl").as_posix()
     passes = (
         ("申告が0件", launch(wrap("指摘は無い。\n\n未解決の指摘: 0件"))),
@@ -214,10 +228,8 @@ def run_selftest(tmp):
         ("引用の非0申告のあとに0件の申告",
          launch(wrap("前ラウンドは 未解決の指摘: 2件 だった。\n\n未解決の指摘: 0件"))),
         ("箇条書きの申告", launch(wrap("- 未解決の指摘: 0件"))),
-        ("千日手のレビューにユーザーのコミット指示を添える",
+        ("千日手の宣言の後に出たコミット指示を添える",
          launch(wrap(STALEMATE_VERDICT, override=SAID), transcript_path=told)),
-        ("コミット指示がレビューより前の発言にある",
-         launch(wrap(STALEMATE_VERDICT, override="終わったらコミットしろ"), transcript_path=told)),
         ("コミット指示の装飾と空白の違いを畳んで照合する",
          launch(wrap(STALEMATE_VERDICT, override="**そのまま コミットしろ。**"), transcript_path=told)),
         ("レビュー応答原文の中の囲みはコミット指示ではない",
@@ -243,6 +255,14 @@ def run_selftest(tmp):
         ("プラグイン名を伴わないエージェント名", launch(wrap("直した"), "commit-worker"), "申告が無い"),
         ("コミット指示が呼び出し元の代弁",
          launch(wrap(STALEMATE_VERDICT, override="ユーザーが千日手を承知してコミットを指示した"),
+                transcript_path=told), "未解決 2件"),
+        ("コミット指示が千日手の宣言より前に出ていた",
+         launch(wrap(STALEMATE_VERDICT, override=SAID), transcript_path=beforehand), "未解決 2件"),
+        ("レビュアーが千日手を宣言していない",
+         launch(wrap("直らない。\n\n未解決の指摘: 2件", override=SAID), transcript_path=told),
+         "未解決 2件"),
+        ("地の文で宣言の形に触れただけ",
+         launch(wrap("規約は `結末: 千日手` の1行を求める。\n\n未解決の指摘: 2件", override=SAID),
                 transcript_path=told), "未解決 2件"),
         ("コミット指示の囲みが空",
          launch(wrap(STALEMATE_VERDICT, override=""), transcript_path=told), "未解決 2件"),
