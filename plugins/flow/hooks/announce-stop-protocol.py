@@ -16,6 +16,7 @@
 """
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -57,7 +58,8 @@ def build_context():
         f"- {guard.RESPOND} — ユーザーに問われたことへ答えた(問われていないなら使えない)。"
         f"末尾行の前に「{guard.RESPOND_FIELD}: <ユーザーが問うた部分を原文のまま>」の1行を置く"
         "(指示が残っているかどうかは問わない)\n"
-        "完了・要判断・応答は、宣言の前に PushNotification を送る。"
+        + ("完了・要判断・応答は、宣言の前に PushNotification を送る。"
+           if guard.attended() else "")
     )
 
 
@@ -77,11 +79,25 @@ def main():
     }}))
 
 
+def with_env(env, make):
+    """`env` を重ねて `make()` を呼ぶ。呼び出し元の `FLOW_UNATTENDED` は落としてから組む。"""
+    saved = dict(os.environ)
+    os.environ.pop(load_guard().UNATTENDED_VAR, None)
+    os.environ.update(env)
+    try:
+        return make()
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
 def selftest():
     ok, cases = True, 0
-    context = build_context()
+    guard = load_guard()
+    context = with_env({guard.ENTRYPOINT: "claude-vscode"}, build_context)
+    quiet = with_env({guard.ENTRYPOINT: guard.UNATTENDED_ENTRY}, build_context)
     cases += 1
-    missing = [m for m in load_guard().MARKERS if m not in context]
+    missing = [m for m in guard.MARKERS if m not in context]
     if missing:
         ok = False
         print(f"FAIL 正本の宣言が文脈に無い: {missing}")
@@ -95,7 +111,6 @@ def selftest():
         if f"`{marker}`" in context:
             ok = False
             print(f"FAIL 宣言を囲み記号で包んで提示している: {marker}")
-    guard = load_guard()
     for phrase in (guard.DECISION_FIELD, guard.RESPOND_FIELD, *guard.DECISION_KINDS):
         cases += 1
         if phrase not in context:
@@ -110,6 +125,14 @@ def selftest():
     if "末尾行" not in context:
         ok = False
         print("FAIL 末尾行の要求が文脈に無い")
+    cases += 1
+    if "PushNotification" in quiet:
+        ok = False
+        print("FAIL 人が見ていないセッションへ通知の手順を渡している")
+    cases += 1
+    if guard.DONE not in quiet:
+        ok = False
+        print("FAIL 通知を落とした文脈から宣言まで消えている")
     payload = json.dumps({"hook_event_name": "SessionStart"}, ensure_ascii=False).encode("utf-8")
     result = subprocess.run(
         [sys.executable, str(Path(__file__).resolve())],

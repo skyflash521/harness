@@ -3,7 +3,8 @@
 
 宣言は4種。`待機` は終端でない `background_tasks` が在るときだけ通す——手番が戻る経路の無いまま止まるのを
 防ぐ。`応答` は、問われたことに答えた回答を届けるために手番を返す場合に使う——完了を主張しないので
-完了の判定は掛からない。`要判断` と `応答` は音を鳴らす。
+完了の判定は掛からない。`要判断` と `応答` は音を鳴らす——ただし `FLOW_UNATTENDED=1` を渡して
+呼ばれたセッションと、ハーネスが非対話で開いたセッションでは鳴らさない。
 
 併せてこのセッションが起動した背景処理を数え、生存しているものが残ったままの `待機` 以外の宣言と、
 生存している `wait.py` が2つ以上ある `待機` をブロックする。**`wait.py` が1つも無い `待機` も
@@ -73,6 +74,10 @@ WAIT = "[停止: 待機]"
 RESPOND = "[停止: 応答]"
 MARKERS = (DONE, DECISION, WAIT, RESPOND)
 CHIME = (DECISION, RESPOND)
+
+UNATTENDED_VAR = "FLOW_UNATTENDED"
+ENTRYPOINT = "CLAUDE_CODE_ENTRYPOINT"
+UNATTENDED_ENTRY = "sdk-cli"
 
 WAIT_SCRIPT = "wait.py"
 WAIT_CAP_SECS = 900
@@ -369,6 +374,13 @@ def last_line(message):
         if line.strip():
             return line.strip()
     return ""
+
+
+def attended():
+    if os.environ.get(UNATTENDED_VAR) == "1":
+        return False
+    # ハーネスが自分で開いたセッションへ与える入口。親の環境を渡して呼ぶと子は親の値を継ぐ。
+    return os.environ.get(ENTRYPOINT) != UNATTENDED_ENTRY
 
 
 def play_sound():
@@ -787,7 +799,7 @@ def main():
     if reason:
         print(json.dumps({"decision": "block", "reason": f"{TAG} {reason}"}))
         return
-    if marker in CHIME:
+    if marker in CHIME and attended():
         play_sound()
 
 
@@ -1015,7 +1027,9 @@ def selftest():
         ok = False
     if not _deadline_text_ok():
         ok = False
-    total = len(block_cases) + len(pass_cases) + 4
+    if not _attended_ok():
+        ok = False
+    total = len(block_cases) + len(pass_cases) + 5
     print("ALL PASS" if ok else "SOME FAILED", f"({total} cases)")
     sys.exit(0 if ok else 1)
 
@@ -1088,6 +1102,28 @@ def _codex_lookup_ok():
         print(f"FAIL codex lookup: 残骸を名指しする block が出ない: {out!r}")
         return False
     return True
+
+
+def _attended_ok():
+    saved = dict(os.environ)
+    ok = True
+    for env, expected, label in (
+        ({ENTRYPOINT: "claude-vscode"}, True, "対話の端末では出す"),
+        ({ENTRYPOINT: UNATTENDED_ENTRY}, False, "非対話の入口では出さない"),
+        ({}, True, "判る材料が無ければ出す"),
+        ({UNATTENDED_VAR: "1", ENTRYPOINT: "claude-vscode"}, False,
+         "取り決めの変数は、親の値を継いだ子でも黙らせる"),
+        ({UNATTENDED_VAR: "0", ENTRYPOINT: "claude-vscode"}, True,
+         "取り決めの変数が立っていなければ出す"),
+    ):
+        os.environ.clear()
+        os.environ.update(env)
+        if attended() != expected:
+            ok = False
+            print(f"FAIL {label}: {attended()!r} != {expected!r}")
+    os.environ.clear()
+    os.environ.update(saved)
+    return ok
 
 
 def _respond_gate_ok():

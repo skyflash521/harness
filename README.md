@@ -86,6 +86,12 @@ claude plugin update flow@harness
 プラグインの内容が変わっても `version` が上がっていなければ、更新の対象にならない。
 このリポジトリでは刻印スクリプトが `version` を生成し、CI が刻印漏れを検出する。
 
+### claude を非対話で呼ぶとき
+
+flow は完了・要判断・応答の停止で音を鳴らし、PushNotification を送らせる。**答えを受け取るだけで
+誰も画面を見ていないなら、環境変数 `FLOW_UNATTENDED=1` を渡して `claude -p` を呼ぶ。** 渡せば音も
+通知も出ない。
+
 ## harness の開発環境
 
 このリポジトリ自体を開発する場合。開発用の clone で、刻印漏れとコミットメッセージを検査する

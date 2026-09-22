@@ -411,7 +411,7 @@ def announce(data):
     """完了で手番が実際に戻るときだけ音を鳴らす。"""
     guard = load("_guard_idle_stop", GUARD)
     marker, blocked = guard.decide(data, guard.codex_jobs(data))
-    if marker == guard.DONE and blocked is None:
+    if marker == guard.DONE and blocked is None and guard.attended():
         guard.play_sound()
 
 
