@@ -88,6 +88,7 @@ DECISION_FIELD = "要判断の区分"
 DECISION_CONFIRM = "区分外に当たらないことを確かめた"
 DECISION_KINDS = ("要求仕様", "指示不明", "停止規定", "操作承認")
 DECISION_SPEC_KIND = "要求仕様"
+DECISION_UNCLEAR_KIND = "指示不明"
 DECISION_SPEC_FIELD = "変わる要求仕様"
 RESPOND_FIELD = "答えた質問"
 RESPOND_EMPTY = frozenset((
@@ -298,6 +299,22 @@ REASON_DECISION_NO_SPEC = (
     "自分で決めて進み、決めた理由を報告に残すこと。\n"
     "**ユーザーが会話で出した禁止や明示指定が作業を妨げていて、その解除・変更を諮りたいのであれば、"
     "区分は「停止規定」である**——文書に書かれていない指定は名指しできないので、この区分では通らない。"
+)
+REASON_DECISION_UNCLEAR_AFTER_WORK = (
+    f"{DECISION} と区分「{DECISION_UNCLEAR_KIND}」が申告されているが、"
+    "**直近のユーザー発言より後に成果物へ手を出している**"
+    "(編集・サブエージェントへの委譲と継続・書き換えるコマンドのいずれか)。"
+    f"{DECISION_UNCLEAR_KIND}は、対象・入力がユーザーにしか無く、推測で作ると別のものを作る場面である"
+    "——**手を出せたなら、その時点で指示を解釈して作り始めている**。"
+    "作業の途中で出てきた選択は実装の設計であり、選択肢を並べられることも同じく止まる理由にならない。\n"
+    f"**出口は3つある。** (1) 受けたものが済んでいるなら、その記録を残して {DONE}。"
+    "(2) 受けた指示にまだ残りがあるなら、自分で決めて続け、決めた理由を報告に残す。"
+    "(3) 作業の途中で、ユーザーにしか無い入力が欠けていると分かったなら、その部分を推測で埋めずに"
+    f"打ち切り、欠けているものを報告に残して {DONE}——打ち切って理由を残したことは済ませたうちに"
+    "数えるので、その発言の記録を書いてよい。\n"
+    "**続けてよいのは受けた指示の範囲だけである**——弾かれたことは、受けていない作業へ進んでよい"
+    "理由にならない。"
+    "**ユーザーが会話で出した禁止や明示指定が作業を妨げているなら、区分は「停止規定」である。**"
 )
 REASON_RESPOND_UNSUBSTANTIATED = (
     f"{RESPOND} と宣言しているが、**ユーザーに何を問われたのかの復唱が無い**。"
@@ -780,6 +797,8 @@ def decide(data, codex=()):
             return None, REASON_DECISION_UNCONFIRMED.format(kind=kind)
         if kind == DECISION_SPEC_KIND and not spec_named(message, data.get("cwd")):
             return None, REASON_DECISION_NO_SPEC
+        if kind == DECISION_UNCLEAR_KIND and worked_since_instruction(data):
+            return None, REASON_DECISION_UNCLEAR_AFTER_WORK
     if names_instruction(message):
         return None, REASON_FABRICATED_INSTRUCTION
     return found[0], None
@@ -1029,7 +1048,9 @@ def selftest():
         ok = False
     if not _attended_ok():
         ok = False
-    total = len(block_cases) + len(pass_cases) + 5
+    if not _unclear_gate_ok():
+        ok = False
+    total = len(block_cases) + len(pass_cases) + 6
     print("ALL PASS" if ok else "SOME FAILED", f"({total} cases)")
     sys.exit(0 if ok else 1)
 
@@ -1123,6 +1144,38 @@ def _attended_ok():
             print(f"FAIL {label}: {attended()!r} != {expected!r}")
     os.environ.clear()
     os.environ.update(saved)
+    return ok
+
+
+def _unclear_gate_ok():
+    def row(kind, block):
+        return {"type": kind, "isSidechain": False,
+                "message": {"role": kind, "content": [block]}}
+
+    asked = row("user", {"type": "text", "text": "逆にエディタ側の処理と相違しないだろうな"})
+    edited = row("assistant", {"type": "tool_use", "id": "t1", "name": "Write", "input": {}})
+    read = row("assistant", {"type": "tool_use", "id": "t2", "name": "Read", "input": {}})
+    looked = row("assistant", {"type": "tool_use", "id": "t3", "name": "Bash",
+                               "input": {"command": "grep -n mirror src/x.cs"}})
+    message = (f"どれにしますか。\n\n{DECISION_FIELD}: {DECISION_UNCLEAR_KIND}\n"
+               f"{DECISION_CONFIRM}\n\n{DECISION}")
+    ok = True
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp, "transcript.jsonl")
+        for rows, expected, label in (
+            ([asked, edited], REASON_DECISION_UNCLEAR_AFTER_WORK, "手を出した後の指示不明は弾く"),
+            ([asked, read, looked], DECISION, "読み取りだけで止まる指示不明は通す"),
+        ):
+            path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
+                            encoding="utf-8")
+            marker, reason = decide({
+                "hook_event_name": "Stop", "last_assistant_message": message,
+                "transcript_path": path.as_posix(), "background_tasks": [], "session_id": "S1",
+            })
+            actual = reason if reason else marker
+            if actual != expected:
+                ok = False
+                print(f"FAIL {label}: {actual!r}")
     return ok
 
 
