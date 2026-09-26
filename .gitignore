@@ -34,7 +34,7 @@ venv/
 !.vscode/*.code-snippets
 .history/
 
-CLAUDE.local.md
+.claude/rules/local.md
 .claude/settings.local.json
 
 # 除外下のパスは git add が失敗するので、置き場を除外すれば誤コミットは構造的に起きない。

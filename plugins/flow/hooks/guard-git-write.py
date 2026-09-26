@@ -916,11 +916,11 @@ def selftest():
     index_cases = [
         IndexCase("ステージが空なら通る", "git add -- README.md", [], "pass"),
         IndexCase("既にステージ済みのファイルの再 add", "git add -- README.md", ["README.md"], "pass"),
-        IndexCase("既にステージ済みのファイルの再 add", "git add -- README.md CLAUDE.md", ["CLAUDE.md"], "pass"),
-        IndexCase("別のセッションがステージした項目との衝突", "git add -- README.md", ["CLAUDE.md"], "deny"),
+        IndexCase("既にステージ済みのファイルの再 add", "git add -- README.md AGENTS.md", ["AGENTS.md"], "pass"),
+        IndexCase("別のセッションがステージした項目との衝突", "git add -- README.md", ["AGENTS.md"], "deny"),
         IndexCase("別のセッションがステージした項目との衝突", "git add -- README.md", ["README.md", "plugins/flow/.claude-plugin/plugin.json"], "deny"),
-        IndexCase("拒む形はインデックスの中身によらず拒む", "git add -- missing-file.py", ["CLAUDE.md"], "deny"),
-        IndexCase("commit はインデックス全体を取るので対象外", f"git commit -m '件名\n\n本文\n\n{TRAILER}'", ["CLAUDE.md"], "pass"),
+        IndexCase("拒む形はインデックスの中身によらず拒む", "git add -- missing-file.py", ["AGENTS.md"], "deny"),
+        IndexCase("commit はインデックス全体を取るので対象外", f"git commit -m '件名\n\n本文\n\n{TRAILER}'", ["AGENTS.md"], "pass"),
     ]
     OWN = AmendState(index_clean=True, own_head=True, published=False)
     AMEND = f"git commit --amend -m '件名を書き直す\n\n本文\n\n{TRAILER}'"

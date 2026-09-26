@@ -41,7 +41,7 @@ RELATIVE_EN = re.compile(r"\b(?:before|after) this (?:change|fix)\b", re.IGNOREC
 
 INSTRUCTION_LAYER = re.compile(r"(?:^|/)plugins/[^/]+/(?:skills|agents|docs|hooks)/")
 HOOK_LAYER = re.compile(r"(?:^|/)plugins/[^/]+/hooks/")
-INSTRUCTION_NAMES = ("claude.md", "claude.local.md")
+INSTRUCTION_NAMES = ("agents.md", "claude.md", "claude.local.md")
 # ホーム直下の .claude は個人設定と自動メモリの置き場で、実ホームパスを書かないと動かない。
 HOME_CLAUDE = re.compile(r"(?:^[a-z]:)?/(?:users|home)/[^/]+/\.claude(?:/|\.json)")
 VERSION_LOG_PREFIXES = ("changelog", "tuning")
@@ -237,6 +237,7 @@ CASE_GROUPS = (
     CaseGroup("指示ファイル名・テストデータ・バージョン記録の免除", [
         Case(*_write("CLAUDE.md", "改修後の挙動。\n"), "", "allow"),
         Case(*_write("CLAUDE.md", "ログは C:/Users/alice/logs。\n"), "", "deny"),
+        Case(*_write("AGENTS.md", "改修後の挙動。\n"), "", "allow"),
         Case(*_write(TEST_DOC, "改修後 C:/Users/alice/x .scratch/a.md\n"), "", "allow"),
         Case(*_write("TUNING.md", "段階導入の手順。\n"), "", "allow"),
         Case(*_write("CHANGELOG.md", "段階導入の記録。\n"), "", "allow"),
