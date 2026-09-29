@@ -14,6 +14,9 @@
 #             (b) ログは特定できたが WALL_CAP_SECS を超えても終局しない。この回は companion の
 #                 cancel でジョブを止める。止めないと codex はターンを続け、結果を受け取る側が
 #                 居ないまま費用だけが増える。
+#   exit 5  companion が結末を書かずに消えた(ジョブ記録は pid を持ったまま、そのプロセスが無い)。
+#             既知の原因は、同じ作業ディレクトリの別セッションの終了が共有の broker を止めること。
+#             companion は接続を失うと何も出力せず終了コード0で終わるので、停滞を待たずにここで知らせる。
 #
 # 終了前に標準出力へ次を出す。呼び出し側はこれを読めば、どのログに結果があるかを推測せずに済む。
 #     LOG=<選んだログのパス>   (特定できなければ空)
@@ -140,6 +143,41 @@ has_runid() {
   grep -Eq -- "$pat" "$lg" 2>/dev/null
 }
 
+# ジョブ記録が持つ companion の pid。終局時に companion が null へ書き換えるので、数値が残っていれば
+# 記録上はまだ走っている。
+job_pid() {
+  local js="${1%.log}.json"
+  [ -f "$js" ] || return
+  grep -Eo '"pid"[[:space:]]*:[[:space:]]*[0-9]+' "$js" 2>/dev/null | head -n 1 | grep -Eo '[0-9]+$'
+}
+
+# 消えたと確かめられた回だけ真。問い合わせに失敗した回は生きている側へ倒す(誤って消失と報じない)。
+# Windows の pid は Git Bash の kill では問えないので tasklist を使う。
+pid_gone() {
+  local out
+  if command -v tasklist.exe >/dev/null 2>&1; then
+    out=$(MSYS_NO_PATHCONV=1 tasklist.exe /FI "PID eq $1" /NH /FO CSV 2>/dev/null) || return 1
+    case "$out" in *"\"$1\""*) return 1;; esac
+    return 0
+  fi
+  kill -0 "$1" 2>/dev/null && return 1
+  [ -d /proc ] && [ ! -d "/proc/$1" ] && return 0
+  ps -p "$1" >/dev/null 2>&1 && return 1
+  return 0
+}
+
+# companion は終局時に記録の pid を消してからプロセスを終える。消失を確かめた後に記録と終局行を
+# 読み直し、まだ同じ pid が残り終局行も無い回だけを消失とする(正常終了との競合を消失と誤らない)。
+companion_gone() {
+  local lg="$1" p
+  p=$(job_pid "$lg"); [ -n "$p" ] || return 1
+  pid_gone "$p" || return 1
+  [ "$(job_pid "$lg")" = "$p" ] || return 1
+  grep -qE "$done_re|$fail_re" "$lg" 2>/dev/null && return 1
+  gone_pid="$p"
+  return 0
+}
+
 baseline=$(list_logs | sort)
 
 start=$(now)
@@ -181,6 +219,10 @@ while :; do
   if [ -n "$log" ] && [ -f "$log" ]; then
     if grep -qE "$fail_re" "$log" 2>/dev/null; then report "$log" 2 "turn-failed"; exit 2; fi
     if grep -qE "$done_re" "$log" 2>/dev/null; then report "$log" 0 "completed";  exit 0; fi
+    if companion_gone "$log"; then
+      report "$log" 5 "companion-gone (pid ${gone_pid} exited without writing an outcome)"
+      exit 5
+    fi
   fi
   if [ -z "$log" ] && [ $(( $(now) - start )) -ge "$STARTUP_GRACE_SECS" ]; then
     report "$log" 4 "no-start (no job log within ${STARTUP_GRACE_SECS}s)"
