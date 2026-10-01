@@ -19,3 +19,25 @@ description: flow:fable-reviewer(Fableモデル、read-only)にレビューさ�
 
 - **レビュアーエージェント**: `flow:fable-reviewer`(`subagent_type: "flow:fable-reviewer"`)
 - **固定モデル**: `fable`。表示名は Fable(`Fable` / `claude-fable-*`)
+
+## Codex 上で実行するとき
+
+Codex 上では `Agent` ツールの代わりに、[claude_review.py](../../scripts/claude_review.py) が
+Claude Code CLI の非対話セッションを固定モデル `fable` で起動する。起動・照合・結末は
+[flow:review-loop-subagent](../review-loop-subagent/SKILL.md) に従い、
+レビュアーの起動と継続を次の形にする。
+
+- 指示文をファイルに書き、規約ファイルの絶対パスを含める。差分は貼らず、スクリプトが
+  比較の基点から作業ツリーまでの差分と状態を渡す。
+- 初回は `python3 <claude_review.py の絶対パス> --family fable --cwd <リポジトリルート>
+  --base <比較の基点> --prompt-file <指示文のファイル>` を実行し、JSON の `session_id` を控える。
+- 次回以降は `--resume <直前の session_id>` を足し、前回の指摘への対応と今回問うことを渡す。
+  常設観点は毎回すべて適用させる。
+- `status` が `ok` のときだけ `result` を採り、末尾の実行モデル表示名と JSON の `model` が
+  Fable 系統であることを確認する。`unavailable` なら代替せず Fable の使用不可を報告して停止する。
+  `usage_limit` は[使用量上限に当たったとき](../review-loop-subagent/SKILL.md#使用量上限に当たったとき)に従う。`resume_unavailable` は、前ラウンドまでの文脈と
+  指示文一式を渡し、`--resume` を外した新規セッションで取り直す。
+  `timeout` と `failed` は新規セッションで取り直し、2回連続したら
+  [失敗時の扱い](../review-loop-subagent/SKILL.md#失敗時の扱い)に従う。
+- 時間上限はスクリプトが900秒で管理する。`ECONNREFUSED` で失敗した場合も、別のモデルや
+  レビュアーへ切り替えず失敗として扱う。

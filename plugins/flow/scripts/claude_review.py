@@ -36,6 +36,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from review_process import run_review
+
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 FAMILIES = ("opus", "fable")
 DEFAULT_TIMEOUT = 900
@@ -166,7 +168,7 @@ def main(argv):
         return delegate(args, repo, claude, Path(scratch))
 
 
-def delegate(args, repo, claude, out_dir, runner=subprocess.run):
+def delegate(args, repo, claude, out_dir, runner=None):
     try:
         diff, status_file, files = write_inputs(repo, args.base, out_dir)
     except RuntimeError as error:
@@ -176,11 +178,13 @@ def delegate(args, repo, claude, out_dir, runner=subprocess.run):
     definition_file.write_text(definition_body(args.family), encoding="utf-8")
     prompt = preface(args.base, diff, status_file, files, args.resume) + Path(args.prompt_file).read_text(encoding="utf-8")
     try:
-        completed = runner(
-            build_command(claude, args.family, args.resume, definition_file),
-            cwd=repo, input=prompt, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=args.timeout, env={**os.environ, "FLOW_UNATTENDED": "1"},
-        )
+        command = build_command(claude, args.family, args.resume, definition_file)
+        environment = {**os.environ, "FLOW_UNATTENDED": "1"}
+        if runner is None:
+            completed = run_review(command, cwd=repo, input_text=prompt, timeout=args.timeout, env=environment)
+        else:
+            completed = runner(command, cwd=repo, input=prompt, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=args.timeout, env=environment)
     except subprocess.TimeoutExpired:
         emit("timeout", None, args.resume, f"{args.timeout}秒以内に終わらなかった")
         return EXIT_CODES["timeout"]

@@ -5,6 +5,33 @@ description: codex:rescueにレビューさせ、各指摘を実コードで検�
 
 # Codex 反復レビュー・ループ
 
+## Codex 上で実行するとき
+
+Codex 上では Claude Code の `Agent`・`codex:codex-rescue` を使えない。指定された Codex レビューは、
+[codex_review.py](../../scripts/codex_review.py) が起動する独立した `codex exec review` で行う。
+レビュアーは読み取り専用とする。起動の可否は
+[レビュアーの選定](../review-loop-judgement/SKILL.md#レビュアーの選定どのループを使うか)に従う。
+
+起動・照合・結末は [flow:review-loop-judgement](../review-loop-judgement/SKILL.md) に従う。
+レビュアーの起動だけを次の形にする。
+
+- 指示文をファイルに書き、作業ディレクトリ・対象範囲・比較の基点と、規約ファイルの絶対パスを
+  含める。指示文には未コミット差分を取得し、関連する実装・仕様を読んで照合すること、
+  編集・検証ツールを使わないことを明記する。
+  スクリプトが[常設観点](../../docs/criteria/review-viewpoints.md)と
+  [レビュー応答の規約](../../docs/criteria/review-response.md)を指示文に載せる。
+- 初回は `python3 <codex_review.py の絶対パス> --cwd <リポジトリルート>
+  --prompt-file <指示文のファイル>` を実行する。JSON の `session_id` を控える。
+- 次回以降は `--resume <直前の session_id>` を足し、前回の指摘への対応結果と今回問うことを
+  渡す。継続したセッションで常設観点を毎回すべて適用させる。再開先が無い場合は、前ラウンドまでの
+  文脈と指示文一式を渡して新規セッションで取り直す。
+- スクリプトはレビューと継続を読み取り専用サンドボックスで起動し、900秒で打ち切る。
+  `status` が `ok` のときだけ `result` をレビュアーの応答として採る。`unavailable` なら代替せず
+  Codex の使用不可を報告して停止する。`usage_limit` は
+  [使用量上限への応答規約](../../docs/guidance/usage-limit-response.md)に従う。
+  `timeout` と `failed` は新規セッションで取り直し、2回連続したら停止して報告する。
+  観点ごとの確認結果が無い無指摘の結論や、差分と明らかに食い違う母集団・件数は失敗ラウンドとする。
+
 codex:rescue(read-only)にレビューさせ、Claude が各指摘を実コードで検証して
 **修正/反証/受容/保留**に仕分け、再レビューさせる反復ループ。日本語で報告する。
 
