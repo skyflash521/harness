@@ -40,8 +40,8 @@ codex のジョブ記録も同じように見る。進行の実体を失った�
 
 `応答` はさらに、**直近のユーザー発言より後に成果物へ手を出していないこと**を転写で確かめる。
 調べるための読み取りは答えるうちだが、編集・サブエージェントへの委譲と継続・書き換えるコマンドが
-入っていれば、その手番は作業の途中である。コマンドは語の位置で見るので、引用の中の言及・捨て場への
-リダイレクト・空振りの指定(`--dry-run` 等)は当たらない。窓は次のユーザー発言まで閉じないので、
+入っていれば、その手番は作業の途中である。コマンドは語の位置で見るので、引用の中の言及・捨て場や
+一時領域へのリダイレクト・空振りの指定(`--dry-run` 等)は当たらない。窓は次のユーザー発言まで閉じないので、
 **この条件で弾かれたら、そのユーザー発言に対して `応答` はもう使えない**。だから deny は残る出口
 ——受けたものが済んでいるなら `完了`、残りがあるなら続行——を示す。示さないと、止まれなくなった
 エージェントが受けていない作業へ進む。
@@ -110,6 +110,12 @@ WRITE_SCRIPTS = ("stamp_plugin_version.py", "trash.py")
 INTERPRETERS = ("python", "python3", "py", "node", "bash", "sh", "pwsh", "powershell", "perl")
 REDIRECTS = (">", ">>")
 DISCARDS = ("/dev/null", "nul", "$null")
+TEMP_VARIABLES = tuple(
+    form.format(name)
+    for name in ("TMPDIR", "TEMP", "TMP")
+    for form in ("${}", "${{{}}}")
+)
+TEMP_DIRECTORIES = ("/tmp", "/private/tmp")
 SEPARATORS = (";", "&&", "||", "|", "&", "(", ")")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 DRY_RUN = {
@@ -477,12 +483,19 @@ def git_write_hook():
         return None
 
 
+def in_temp(target):
+    if ".." in target.split("/"):
+        return False
+    roots = [*TEMP_VARIABLES, *TEMP_DIRECTORIES, tempfile.gettempdir().replace("\\", "/")]
+    return any(target.startswith(root.rstrip("/") + "/") for root in roots)
+
+
 def discarded(tokens, index):
     """リダイレクト先が捨て場か。記述子の複製と数字は行き先ではないので読み飛ばす。"""
     for token in tokens[index + 1:index + 3]:
         if token == "&" or token.isdigit():
             continue
-        return token.lower() in DISCARDS
+        return token.lower() in DISCARDS or in_temp(token)
     return True
 
 
@@ -1044,6 +1057,8 @@ def selftest():
         ok = False
     if not _respond_gate_ok():
         ok = False
+    if not _temp_redirect_ok():
+        ok = False
     if not _deadline_text_ok():
         ok = False
     if not _attended_ok():
@@ -1176,6 +1191,27 @@ def _unclear_gate_ok():
             if actual != expected:
                 ok = False
                 print(f"FAIL {label}: {actual!r}")
+    return ok
+
+
+def _temp_redirect_ok():
+    ok = True
+    for command, expected, label in (
+        ('gh run view 1 --log-failed > "$TMPDIR/run.log"', False, "環境変数の一時領域への保存は書き換えに数えない"),
+        ("gh run view 1 > ${TMPDIR}/run.log", False, "波括弧つきの一時領域変数も数えない"),
+        ("gh run view 1 > /tmp/run.log", False, "/tmp への保存は数えない"),
+        ("gh run view 1 > " + tempfile.gettempdir().replace("\\", "/") + "/run.log", False,
+         "実際の一時ディレクトリへの保存は数えない"),
+        ('gh run view 1 > "$TMPDIR/../repo/out.md"', True, "一時領域から抜ける指定は書き換えに数える"),
+        ("gh run view 1 > $TMPDIRX/out.md", True, "変数名が前方一致するだけのパスは数える"),
+        ("gh run view 1 > %TEMP%/run.log", True, "cmd 表記の変数は一時領域として扱わない"),
+        ("gh run view 1 > docs/out.md", True, "リポジトリ内への保存は書き換えに数える"),
+        ("gh run view 1 > /tmpfoo/out.md", True, "一時領域と名前が前方一致するだけのパスは数える"),
+        ('echo x >> "$TMPDIR/a" && echo y > docs/b.md', True, "同じ呼び出しに成果物への保存が混じれば数える"),
+    ):
+        if writes(command) != expected:
+            ok = False
+            print(f"FAIL {label}: {command!r}")
     return ok
 
 
