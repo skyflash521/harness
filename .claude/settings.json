@@ -16,7 +16,8 @@
   "sandbox": {
     "excludedCommands": [
       "node \"*codex-companion.mjs\"*",
-      "python3 \"*reap_codex_jobs.py\"*"
+      "python3 \"*reap_codex_jobs.py\"*",
+      "python3 \"*/guard/*scripts/trash.py\"*"
     ]
   }
 }

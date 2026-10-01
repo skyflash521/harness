@@ -19,6 +19,7 @@ import shlex
 import sys
 
 RM_NAMES = ("rm", "rm.exe")
+SANDBOX_EXCLUSION = 'python3 "*/guard/*scripts/trash.py"*'
 # PowerShell では次がいずれも Remove-Item の別名で、同じ削除を行う。
 PS_RM_NAMES = RM_NAMES + ("remove-item", "ri", "del", "erase", "rd", "rmdir")
 
@@ -29,6 +30,17 @@ def trash_script():
     if not roots:
         return "<guard プラグイン同梱の scripts/trash.py>"
     return pathlib.PurePath(roots[0], "scripts", "trash.py").as_posix()
+
+
+def deny_reason(via=""):
+    return (
+        f'ファイルの削除は常に deny します。{via}同じ引数で python3 "{trash_script()}" <path>... を'
+        "使ってください(削除でなくOS標準のごみ箱へ送る可逆な代替です)。"
+        "os.remove/os.unlink/pathlib.Path.unlink・PowerShellのRemove-Item・find -delete等、"
+        "別の手段で同じ削除を回避して実行しないこと。"
+        f"macOS のサンドボックス内ではごみ箱へ送れず失敗する。サンドボックスを切らず、"
+        f"{SANDBOX_EXCLUSION} を sandbox.excludedCommands へ登録するようユーザーに依頼すること。"
+    )
 
 
 def has_rm(command, names=RM_NAMES):
@@ -67,12 +79,7 @@ def main():
     if has_rm(command, PS_RM_NAMES if tool == "PowerShell" else RM_NAMES):
         # プラグインのキャッシュ先は空白を含みうる。引用の無いコマンドは分割されて起動に失敗する。
         via = "Bash ツールへ移り、" if tool == "PowerShell" else ""
-        reason = (
-            f'ファイルの削除は常に deny します。{via}同じ引数で python3 "{trash_script()}" <path>... を'
-            "使ってください(削除でなくOS標準のごみ箱へ送る可逆な代替です)。"
-            "os.remove/os.unlink/pathlib.Path.unlink・PowerShellのRemove-Item・find -delete等、"
-            "別の手段で同じ削除を回避して実行しないこと。"
-        )
+        reason = deny_reason(via)
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
@@ -115,6 +122,9 @@ def selftest():
         "cat <<EOF\nrm x\nEOF",
     ]
     ok = True
+    if SANDBOX_EXCLUSION not in deny_reason():
+        ok = False
+        print("FAIL deny 文がサンドボックスの除外登録を案内しない")
     for case in deny_cases:
         if not has_rm(case):
             ok = False
