@@ -28,6 +28,7 @@ Bash と編集系ツールは渡さず、明示の拒否も併せて渡す。差
 """
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -165,7 +166,7 @@ def delegate(args, repo, claude, out_dir, runner=subprocess.run):
         completed = runner(
             build_command(claude, args.family, args.resume, definition_file),
             cwd=repo, input=prompt, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=args.timeout,
+            errors="replace", timeout=args.timeout, env={**os.environ, "FLOW_UNATTENDED": "1"},
         )
     except subprocess.TimeoutExpired:
         emit("timeout", None, args.resume, f"{args.timeout}秒以内に終わらなかった")
@@ -220,9 +221,11 @@ def selftest():
     check("定義に読み替えを付ける", OVERRIDE in definition_body("opus"), True)
 
     calls = []
+    envs = []
 
     def fake_ok(command, **kwargs):
         calls.append(command)
+        envs.append(kwargs.get("env", {}).get("FLOW_UNATTENDED"))
         return types.SimpleNamespace(
             stdout=json.dumps(payload("未解決の指摘: 1件\n結末: 継続")), stderr="", returncode=0)
 
@@ -251,6 +254,7 @@ def selftest():
     check("通常の結果の status", result["status"], "ok")
     check("指摘が残る結末を変えず返す", result["result"], "未解決の指摘: 1件\n結末: 継続")
     check("通常の結果の session_id", result["session_id"], "s1")
+    check("非対話の起動は音と通知を出さない", envs[-1], "1")
     run_delegate(fake_ok, resume="sid-1")
     check("継続ラウンドの resume 指定", calls[-1][calls[-1].index("--resume") + 1], "sid-1")
     code, result = run_delegate(fake_timeout, resume="sid-1")
