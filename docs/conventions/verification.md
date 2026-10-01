@@ -5,7 +5,7 @@
 
 ## 1. 実行する検査
 
-リポジトリルートで次の6つを実行する。すべてエラー0件で合格とする。
+リポジトリルートで次の7つを実行する。すべてエラー0件で合格とする。
 
 | 検査 | コマンド | 対象 |
 |---|---|---|
@@ -13,6 +13,7 @@
 | 記法検査 | `rumdl check` | Markdown の一般的な記法(見出し・リスト・コードブロックまわりの体裁。gitignore 済みのパスを除く) |
 | 節参照検査 | `python3 scripts/check_section_references.py` | 追跡下の Markdown に平文の節参照・裸のファイル参照が残っていないこと |
 | 循環参照検査 | `python3 scripts/check_reference_cycles.py` | 追跡下の Markdown の参照を辿って元の文書へ戻る経路が無いこと |
+| Codex 配布メタデータ検査 | `python3 scripts/codex_manifest.py --check` | Codex 用 manifest・marketplace が Claude 側の正本からの生成結果と一致し、バージョンが揃い、参照先が実在すること |
 | リンク検査 | `lychee --config lychee.toml .` | Markdown のリンク先の実在 |
 | 自己テスト | `python3 scripts/run_selftests.py` | 追跡下のスクリプトのうち、自己テストを持つものの判定ロジック |
 

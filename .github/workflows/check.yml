@@ -34,6 +34,9 @@ jobs:
       - name: check reference cycles
         run: python3 scripts/check_reference_cycles.py
 
+      - name: check codex manifests
+        run: python3 scripts/codex_manifest.py --check
+
       - name: check adoption
         run: python3 plugins/flow/contract/check_adoption.py .
 
