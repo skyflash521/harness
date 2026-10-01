@@ -319,12 +319,31 @@ def finished(rows):
     return cleared(rows, reader, guard) > launch[0]
 
 
+def written(rows, final):
+    reader = load("_transcript", HOOKS.parent / Path(*TRANSCRIPT))
+    for row in reversed(rows):
+        if row.get("isSidechain"):
+            continue
+        if turned_back(row) or reader.said_by_user(row):
+            return False
+        texts = texts_of(row) if row.get("type") == "assistant" else []
+        if texts:
+            return final.strip() in [text.strip() for text in texts]
+    return False
+
+
+def with_final(rows, final):
+    if not isinstance(final, str) or written(rows, final):
+        return rows
+    return rows + [{"type": "assistant", "isSidechain": False, "message": {
+        "role": "assistant", "content": [{"type": "text", "text": final}]}}]
+
+
 def unsettled(rows):
     """済ませた記録を割り当てられなかったユーザーの発言。古い順。
 
     記録はその発言より後の手番に在るものだけを充て、**1つの記録が済ませるのは1件**とする
     ——短く引いた1行で複数の発言を済ませられると、言われた回数を数えたことにならない。
-    宣言を書いた手番も転写に載ってから Stop フックが走るので、記録はここだけから数える。
     **畳むと何も残らない発言は数えない**——引ける文字列が無く、どう書いても済ませられない。"""
     reader = load("_transcript", HOOKS.parent / Path(*TRANSCRIPT))
     guard = load("_guard_idle_stop", GUARD)
@@ -380,6 +399,8 @@ def decide(data):
     rows = rows_of(data)
     if rows is None:
         return None
+    # Stop フックが走る時点では、宣言を書いた手番が転写にまだ書き込まれていないことがある。
+    rows = with_final(rows, message)
     found = verdict(rows, data.get("cwd"))
     if found is None:
         left = unsettled(rows)
@@ -578,6 +599,28 @@ def selftest():
         write([asked, said(f"{SETTLED_FIELD}: 台帳の重複を整理しろ\n\n{guard.DONE}")])
         check("宣言を書いた手番の記録も数える",
               decide(stop(f"{SETTLED_FIELD}: 台帳の重複を整理しろ\n\n{guard.DONE}")), None)
+        final = f"{SETTLED_FIELD}: 台帳の重複を整理しろ\n\n{guard.DONE}"
+        write([asked])
+        check("転写にまだ載っていない最終手番の記録も数える", decide(stop(final)), None)
+        write([asked, said("作業を済ませた。")])
+        check("最終手番が載っていなくても前の手番を最終として扱わない",
+              decide(stop(final)), None)
+        write([asked, said(final), user("台帳の重複を整理しろ")])
+        check("前の手番と同じ文面でも、間に発言があれば今の手番は未書き込み",
+              decide(stop(final)), None)
+        write([asked, said(f"  {final}  ")])
+        check("前後の空白の差は載っている扱い",
+              decide(stop(final)), None)
+        write([asked, user("台帳の重複を整理しろ"), said(f"{final}\n")])
+        check("前後の空白があっても重ねて数えない", decide(stop(final)) is not None, True)
+        write([skill(), scope13, said(f"{STEP_FIELD}: 1"), said(f"{STEP_FIELD}: 2")])
+        check("転写に載っていない最終手番のステップ完了も数える",
+              decide(stop(f"{STEP_FIELD}: 3\n\n{guard.DONE}")), None)
+        write([asked, user("台帳の重複を整理しろ"), said(final)])
+        check("転写に載った最終手番を重ねて数えない", decide(stop(final)) is not None, True)
+        write([asked, user("台帳の重複を整理しろ")])
+        check("載っていない最終手番の1行で2件は済ませられない",
+              decide(stop(final)) is not None, True)
         write([user("。"), user("台帳の重複を整理しろ"), mark])
         check("畳むと何も残らない発言は数えない", decide(stop(done)), None)
         write([asked, said(f"済みました。\n\n{guard.DONE}"), injected(),
