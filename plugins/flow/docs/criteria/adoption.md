@@ -69,9 +69,18 @@ flow プラグインを有効化するリポジトリが満たす条件と、そ
    `--scope` の既定は `user` で、そのマシンの全リポジトリでフックが発火する。対象を1つに絞るなら
    `project` を明示する。
 
-   Codex CLI へは `codex plugin marketplace add <harness の所在>` と `codex plugin add flow@harness` で導入し、
-   Codex の `/hooks` でプラグイン同梱のフックを信頼する。**ユーザー操作なので、エージェントは依頼して待つ。**
-   信頼を済ませた環境では、フックがシェルからの直接のコミットを拒否する。
+   Codex CLI へは `codex plugin marketplace add <harness の所在>` と `codex plugin add flow@harness` で導入する。
+   新しい Codex CLI セッションで `/hooks` を開き、`Plugin - flow@harness` の `PreToolUse` フックの内容を確認して
+   信頼し、有効化する。信頼はフック定義の内容ごとに記録されるため、プラグインの更新で定義が変わったら
+   再度確認する。エージェントが操作する場合は、ユーザーの明示指示を受けてから対話式の Codex CLI で
+   `/hooks` を開き、表示されたフックを確認して信頼・有効化する。指示が無ければ、ユーザーに操作を
+   依頼して待つ。信頼の記録を設定ファイルへ直接書き込まない。
+   `codex plugin list` の `installed, enabled` だけではフックの動作は確認できない。
+   `/hooks` で `Plugin - flow@harness` のフックが有効と表示されることを確かめる。
+   さらに Codex CLI のシェルツールへ `git commit --dry-run --no-verify` を渡し、
+   `codex-guard-git-write` による `PreToolUse Blocked` が返ることを確かめる。
+   この確認は実際のコミットを作らない。Codex CLI の外のシェルで実行してもフックは発火しない。
+   これらを確認してから、flow のレビューとコミットを実変更へ適用する。
 5. [検証](#導入の検証)を実行し、終了コード0を確認する。
 
 ## 導入の検証

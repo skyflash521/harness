@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "version": "2026.1001.173727",
+  "version": "2026.1001.184726",
   "description": "開発ワークフロー。スキル・エージェント・コミットゲート・リポジトリ横断の共通規約。導入契約を満たすリポジトリで有効化する",
   "skills": "./skills/",
   "hooks": "./hooks/codex-hooks.json"
