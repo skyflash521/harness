@@ -12,8 +12,8 @@ Codex のフックは呼び出し元のエージェントを識別できない�
 
 - review-file: レビュアーの最終応答の原文。末尾の `未解決の指摘: 0件` の申告が無ければ拒否する。
   千日手を押して通す経路は Codex 上には無い
-- message-file: 起草済みのコミットメッセージ。件名に日本語が無い・Claude 名義のトレーラがある・
-  作業過程参照を含むときは拒否する
+- message-file: 起草済みのコミットメッセージ。件名に日本語が無い・末尾に Codex 名義の
+  Co-Authored-By トレーラが無い・作業過程参照を含むときは拒否する
 - files: ステージする個別ファイル(リポジトリ内の相対パス)。ステージ済みがこの集合と一致しなければ拒否する
 
 終了コード: 0 はコミットした。3 は検査で拒否した(何もコミットしていない)。1 は git の失敗、2 は引数の誤り。
@@ -30,7 +30,8 @@ from pathlib import Path
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 GLOB_CHARS = set("*?[]")
 JAPANESE = re.compile(r"[぀-ヿ㐀-鿿]")
-TRAILER = re.compile(r"^co-authored-by:.*(?:claude|anthropic)", re.IGNORECASE | re.MULTILINE)
+CODEX_TRAILER = "Co-Authored-By: Codex <noreply@openai.com>"
+TRAILER = re.compile(r"^\s*co-authored-by:", re.IGNORECASE)
 NUMBERED_STEP = re.compile(r"Step\s*[0-9]|ステップ\s*[0-9]|(?<!グ)ラウンド")
 
 
@@ -66,8 +67,12 @@ def check_message(message):
     subject = message.strip().splitlines()[0] if message.strip() else ""
     if not JAPANESE.search(subject):
         return "件名に日本語が無い"
-    if TRAILER.search(message):
-        return "Claude 名義の Co-Authored-By トレーラを付けてはならない"
+    lines = message.rstrip().splitlines()
+    trailers = [line for line in lines if TRAILER.match(line)]
+    if trailers != [CODEX_TRAILER] or not lines or lines[-1] != CODEX_TRAILER:
+        return "末尾の独立行に Co-Authored-By: Codex <noreply@openai.com> を1行だけ付ける"
+    if len(lines) < 2 or lines[-2].strip():
+        return "Co-Authored-By の前に空行が必要"
     hygiene = load_hook("guard-artifact-hygiene")
     relative = [atom.label for atom in hygiene.ATOMS if atom.exempt_group == "P2" and atom.pattern.search(message)]
     found = NUMBERED_STEP.search(message)
@@ -158,7 +163,7 @@ def run_selftest():
     hygiene = load_hook("guard-artifact-hygiene")
     relative_word = next(atom.label for atom in hygiene.ATOMS if atom.exempt_group == "P2")
     good_review = "指摘なし。\n\n未解決の指摘: 0件\n"
-    good_message = "a.txt を追加する\n\n- 初期内容を置く\n"
+    good_message = "a.txt を追加する\n\n- 初期内容を置く\n\n" + CODEX_TRAILER + "\n"
 
     def must_git(repo, *args):
         result = git(repo, *args)
@@ -206,8 +211,14 @@ def run_selftest():
         ("未解決が残る", "未解決の指摘: 2件\n", good_message, ["a.txt"]),
         ("申告が末尾で非0へ戻る", "未解決の指摘: 0件\n\n追加で見つかった。\n\n未解決の指摘: 3件\n", good_message, ["a.txt"]),
         ("件名に日本語が無い", good_review, "add a.txt\n", ["a.txt"]),
-        ("Claude 名義のトレーラ", good_review, good_message + "\nCo-Authored-By: Claude Opus <someone@example.com>\n", ["a.txt"]),
-        ("製品名を含まない名義でも Anthropic のアドレス", good_review, good_message + "\nCo-Authored-By: X <noreply@anthropic.com>\n", ["a.txt"]),
+        ("トレーラ無し", good_review, "a.txt を追加する\n", ["a.txt"]),
+        ("Claude 名義のトレーラ", good_review, good_message.replace(CODEX_TRAILER, "Co-Authored-By: Claude Opus <someone@example.com>"), ["a.txt"]),
+        ("製品名を含まない名義でも Anthropic のアドレス", good_review, good_message.replace(CODEX_TRAILER, "Co-Authored-By: X <noreply@anthropic.com>"), ["a.txt"]),
+        ("Codex トレーラの重複", good_review, good_message + "\n" + CODEX_TRAILER + "\n", ["a.txt"]),
+        ("字下げされたトレーラの重複", good_review, good_message + "\n " + CODEX_TRAILER + "\n", ["a.txt"]),
+        ("Codex トレーラのアドレス違い", good_review, good_message.replace("noreply@openai.com", "other@example.com"), ["a.txt"]),
+        ("Codex トレーラが末尾でない", good_review, good_message + "本文\n", ["a.txt"]),
+        ("Codex トレーラの前に空行無し", good_review, good_message.replace("\n\n" + CODEX_TRAILER, "\n" + CODEX_TRAILER), ["a.txt"]),
         ("番号付きの作業工程の参照", good_review, "Step 3 で a.txt を追加する\n", ["a.txt"]),
         ("ラウンド番号の参照", good_review, "ラウンド2の指摘に対応して a.txt を追加する\n", ["a.txt"]),
         ("相対参照の語", good_review, relative_word + "の値を変えて a.txt を追加する\n", ["a.txt"]),
@@ -250,8 +261,8 @@ def run_selftest():
             failures.append(f"起草したメッセージと記録されたメッセージが違う: {recorded!r}")
         if must_git(repo, "show", "HEAD:a.txt") != "a\n":
             failures.append("記録された a.txt の内容が作業ツリーと違う")
-        if "Co-Authored-By" in recorded:
-            failures.append("トレーラが入っている")
+        if recorded.rstrip().splitlines()[-1] != CODEX_TRAILER:
+            failures.append("Codex のトレーラが末尾に無い")
         if history_length(repo) != 1 or staged_names(repo):
             failures.append("コミットの後にステージが残った")
         if "b.txt" in must_git(repo, "show", "--name-only", "--format=", "HEAD"):
