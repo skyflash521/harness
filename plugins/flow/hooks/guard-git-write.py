@@ -349,6 +349,21 @@ def _staged_paths(root):
     return [entry.decode("utf-8", "replace") for entry in result.stdout.split(b"\0") if entry]
 
 
+def _staged_deletions(args, root):
+    try:
+        root = Path(root).resolve()
+        result = subprocess.run(
+            ["git", "-C", str(root), "diff", "--cached", "--name-only", "--diff-filter=D", "-z"],
+            capture_output=True,
+            check=False,
+        )
+        deleted = {entry.decode("utf-8", "replace") for entry in result.stdout.split(b"\0") if entry}
+        named = [(root / raw).resolve(strict=False).relative_to(root).as_posix() for raw in args[1:]]
+    except (OSError, ValueError):
+        return []
+    return [path for path in named if path in deleted]
+
+
 def _unnamed_staged(named, staged):
     """この add が名指ししていないステージ済みパス。staged が None なら空。"""
     if staged is None:
@@ -693,6 +708,13 @@ def classify(command, root=None, staged=None, worker=False, amend=None):
         return _classify_message(args[1])
     named = _safe_add(args, root)
     if named is None:
+        gone = _staged_deletions(args, root)
+        if gone:
+            return "deny", (
+                "Retry with git add -- <explicit-file>... without the paths whose deletion is "
+                "already staged (git add cannot name a path the index no longer holds, and "
+                "the staged deletion is committed as it is): " + ", ".join(gone)
+            )
         return "deny", "Retry with git add -- <explicit-file>..."
     unnamed = _unnamed_staged(named, staged)
     if unnamed:
@@ -1021,6 +1043,7 @@ def selftest():
         for word in ("$", "log/diff/show", *sorted(REPOSITION_READONLY)):
             if word not in reason:
                 failures.append((f"再配置の deny 文が条件を述べる: {command}", word, "欠落"))
+    failures += staged_deletion_failures()
     if not roundtrip_denies_main_thread():
         failures.append(("ハーネスと同じ形の起動でメインモデルの commit が deny されない",
                          "deny", "pass"))
@@ -1034,6 +1057,39 @@ def selftest():
     total = (sum(len(group.cases) for group in case_groups + powershell_cases)
              + len(index_cases) + len(amend_cases) + len(caller_cases) + 1)
     print(f"ALL PASS ({total} cases + non-ASCII tracked-path check)")
+
+
+def staged_deletion_failures():
+    import tempfile
+
+    failures = []
+    with tempfile.TemporaryDirectory() as tmp:
+        def git(*args):
+            subprocess.run(
+                ["git", "-C", tmp, "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+                capture_output=True, check=True)
+
+        git("init", "-q")
+        for name in ("gone.txt", "kept.txt"):
+            Path(tmp, name).write_text("x\n", encoding="utf-8")
+        git("add", "--", "gone.txt", "kept.txt")
+        git("commit", "-q", "-m", "init")
+        git("rm", "-q", "--", "gone.txt")
+        Path(tmp, "kept.txt").write_text("y\n", encoding="utf-8")
+        for command, expected_word in (
+            ("git add -- gone.txt", "gone.txt"),
+            ("git add -- kept.txt gone.txt", "gone.txt"),
+        ):
+            decision, reason = classify(command, tmp, worker=True)
+            if decision != "deny" or expected_word not in reason or "staged" not in reason:
+                failures.append((f"削除済みパスを名指した add: {command}", "deny+パス名指し", reason))
+        decision, reason = classify("git add -- kept.txt", tmp, worker=True)
+        if decision != "pass":
+            failures.append(("削除済みパスを含まない add", "pass", decision))
+        decision, reason = classify("git add -- nothere.txt", tmp, worker=True)
+        if decision != "deny" or "already staged" in reason:
+            failures.append(("追跡下に無いパスの add は削除の案内を出さない", "deny", reason))
+    return failures
 
 
 def roundtrip_denies_main_thread():
