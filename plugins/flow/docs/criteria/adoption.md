@@ -20,8 +20,7 @@ flow プラグインを有効化するリポジトリが満たす条件と、そ
 
 同梱の [required-settings.json](../../contract/required-settings.json) が持つ
 `sandbox.excludedCommands` の全エントリを、`.claude/settings.json`・`.claude/settings.local.json`・
-`~/.claude/settings.json` のいずれかに登録する。サンドボックスの無いネイティブ Windows では、この除外が
-働く場面が無いので確認しない。
+`~/.claude/settings.json` のいずれかに登録する。サンドボックスの無いネイティブ Windows では確認しない。
 
 ## 任意条項
 
@@ -38,6 +37,17 @@ flow プラグインを有効化するリポジトリが満たす条件と、そ
 - 各マシンに python3 と(Windows では)Git Bash が必要。
 - codex 系スキルを使う場合は Node.js・Codex CLI・Codex プラグインの導入が別途必要。セットアップ
   未完了は実行時に検知して報告する機構を codex 系スキルが持つ。
+- Codex CLI 上で flow を使う場合は、Claude Code CLI も別途必要になる。加えて Codex の設定(`config.toml`)に
+  次の2つを加える。
+  - `sandbox_workspace_write.network_access = true`: 委譲した Claude Code CLI の外部接続に必要。
+  - `sandbox_workspace_write.writable_roots` に、そのリポジトリの管理ディレクトリ(`<リポジトリ>/.git`)を加える:
+    コミット時の管理ディレクトリへの書き込みに必要。
+
+  Windows の Codex のサンドボックスには、次の制約がある。
+  - Python の一時ディレクトリを後始末できず(権限エラー)、一時ディレクトリを使う自己テストを含む検証がサンドボックスの
+    中では通らない。
+  - 委譲した Claude Code CLI の Glob と Grep が権限エラーで使えない。
+  - 委譲した Claude Code CLI のセッションを保存できず、`--resume` で継続できない(`resume_unavailable`)。
 
 ## 導入手順
 
@@ -58,6 +68,10 @@ flow プラグインを有効化するリポジトリが満たす条件と、そ
 
    `--scope` の既定は `user` で、そのマシンの全リポジトリでフックが発火する。対象を1つに絞るなら
    `project` を明示する。
+
+   Codex CLI へは `codex plugin marketplace add <harness の所在>` と `codex plugin add flow@harness` で導入し、
+   Codex の `/hooks` でプラグイン同梱のフックを信頼する。**ユーザー操作なので、エージェントは依頼して待つ。**
+   信頼を済ませた環境では、フックがシェルからの直接のコミットを拒否する。
 5. [検証](#導入の検証)を実行し、終了コード0を確認する。
 
 ## 導入の検証

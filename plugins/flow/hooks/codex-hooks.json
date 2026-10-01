@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ./hooks/codex-guard-git-write.py"
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/codex-guard-git-write.py\""
           }
         ]
       }
