@@ -20,6 +20,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CODEX_PLUGINS = ["flow"]
+CODEX_HOOKS = {"flow": "./hooks/codex-hooks.json"}
 CLAUDE_MARKETPLACE = ".claude-plugin/marketplace.json"
 CODEX_MARKETPLACE = ".agents/plugins/marketplace.json"
 
@@ -43,12 +44,15 @@ def write_json(rel, data):
 
 
 def build_manifest(claude):
-    return {
+    manifest = {
         "name": claude["name"],
         "version": claude["version"],
         "description": claude["description"],
         "skills": "./skills/",
     }
+    if claude["name"] in CODEX_HOOKS:
+        manifest["hooks"] = CODEX_HOOKS[claude["name"]]
+    return manifest
 
 
 def build_marketplace(claude_marketplace, names):

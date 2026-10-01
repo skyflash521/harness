@@ -159,6 +159,8 @@ description: gitコミットをflow:commit-workerエージェントに委譲し�
   見て `../../agents/commit-worker.md`)を最初に開いて全文に従うこと、`Co-Authored-By` トレーラを付けないこと
   (記録者は git の author 情報)、定義の Bash ツールをこの環境のシェル実行ツールに読み替えること。
 - その後ろに[ワーカーへ渡すプロンプトの型](#ワーカーへ渡すプロンプトの型)をそのまま続ける。
+- Codex 上のコミットは、直接発行できず、[codex_commit.py](../../scripts/codex_commit.py) だけが成立させる。
+  ワーカーがこれを実行するので、依頼文にそのことも添える。
 
 ## 対象外
 
