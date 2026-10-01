@@ -101,7 +101,15 @@ def selftest():
                 ok = False
                 print(f"FAIL {why}: want_deny={want_deny} got={got!r}")
 
-        repo = Path(__file__).resolve().parents[3]
+        repo = Path(unmet, "satisfied")
+        (repo / "docs" / "conventions").mkdir(parents=True)
+        (repo / "docs" / "conventions" / "verification.md").write_text("x\n", encoding="utf-8")
+        (repo / ".claude").mkdir()
+        (repo / ".claude" / "settings.json").write_text(
+            Path(__file__).resolve().parents[1].joinpath("contract", "required-settings.json")
+            .read_text(encoding="utf-8"), encoding="utf-8")
+        (repo / ".gitignore").write_text(".scratch/\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True, capture_output=True)
         if reason_for("flow:commit", repo) is not None:
             ok = False
             print("FAIL 契約を満たすリポジトリで deny になる")

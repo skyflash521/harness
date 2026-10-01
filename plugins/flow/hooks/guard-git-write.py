@@ -47,8 +47,8 @@ git reset はどの形も deny する。インデックスと HEAD を書き換�
 行かれる——書いた側からは見えない。コミットが取るステージ集合は、意図して名指ししたものだけでなければ
 ならない。
 
-使い方: Bash と PowerShell の PreToolUse フックとして登録する。--selftest で自己テスト——追跡下のファイルを
-検査に使うので、フィクスチャをステージするかコミットしてから実行する。
+使い方: Bash と PowerShell の PreToolUse フックとして登録する。--selftest で自己テスト——検査に使う
+追跡下のファイルは一時リポジトリへ自分で用意するので、置き場所とカレントディレクトリを選ばない。
 """
 
 import hashlib
@@ -1013,7 +1013,7 @@ def selftest():
                    "git add -A", {}, "deny"),
         CallerCase("メインモデルの reset は形で deny する", "git reset --hard", {}, "deny"),
     ]
-    repo = Path(__file__).resolve().parents[3]
+    repo = fixture_repo()
     failures = []
     for group in case_groups:
         for command, expected in group.cases:
@@ -1057,6 +1057,26 @@ def selftest():
     total = (sum(len(group.cases) for group in case_groups + powershell_cases)
              + len(index_cases) + len(amend_cases) + len(caller_cases) + 1)
     print(f"ALL PASS ({total} cases + non-ASCII tracked-path check)")
+
+
+def fixture_repo():
+    import atexit
+    import tempfile
+
+    holder = tempfile.TemporaryDirectory()
+    atexit.register(holder.cleanup)
+    root = Path(holder.name)
+    tracked = (
+        "README.md", "AGENTS.md", "plugins/flow/hooks/guard-git-write.py",
+        "plugins/flow/tests/fixtures/日本語パス検査.txt",
+    )
+    for relative in tracked:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "add", "--", *tracked], check=True, capture_output=True)
+    return root
 
 
 def staged_deletion_failures():
