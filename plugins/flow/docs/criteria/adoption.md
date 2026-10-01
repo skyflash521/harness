@@ -20,7 +20,8 @@ flow プラグインを有効化するリポジトリが満たす条件と、そ
 
 同梱の [required-settings.json](../../contract/required-settings.json) が持つ
 `sandbox.excludedCommands` の全エントリを、`.claude/settings.json`・`.claude/settings.local.json`・
-`~/.claude/settings.json` のいずれかに登録する。
+`~/.claude/settings.json` のいずれかに登録する。サンドボックスの無いネイティブ Windows では、この除外が
+働く場面が無いので確認しない。
 
 ## 任意条項
 
@@ -46,7 +47,8 @@ flow プラグインを有効化するリポジトリが満たす条件と、そ
    一覧と合格条件を書く。
 2. **条項2**: 除外設定に `.scratch/` を加える。
 3. **条項3**: [required-settings.json](../../contract/required-settings.json) を読み、その
-   `sandbox.excludedCommands` の各エントリを設定の同じキーへ加える。
+   `sandbox.excludedCommands` の各エントリを設定の同じキーへ加える。サンドボックスの無い
+   ネイティブ Windows では不要。
 4. marketplace を登録して flow を導入する。harness の所在(リポジトリの URL)は、エージェントが
    ユーザーに尋ねて依頼文へ入れる。経路は2つある。
    - `/plugin marketplace add <harness の所在>` と `/plugin install`。**ユーザー操作なので、

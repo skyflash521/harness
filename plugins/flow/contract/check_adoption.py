@@ -10,6 +10,7 @@ flow スキルの起動を受けるフックがこれを起動し、欠けた条
     1. 検証手順書が存在すること
     2. スクラッチ置き場が除外設定に入っていること
     3. 必須エントリの定義が持つエントリが設定に登録されていること
+       (サンドボックスの無い Windows では sandbox.excludedCommands を確認しない)
 
 使い方: python3 <このスクリプトの絶対パス> [対象リポジトリのルート]
        ルートを省いた場合は CLAUDE_PROJECT_DIR、それも無ければカレントディレクトリを使う。
@@ -38,14 +39,13 @@ def load_json(path):
         return None
 
 
-def missing_entries(settings, required):
+def missing_entries(settings, required, sandboxed=True):
     """設定に足りない必須エントリを {キーの説明: [エントリ]} で返す。空なら充足。"""
     settings = settings or {}
     missing = {}
-    pairs = [
-        ("permissions.allow", ("permissions", "allow")),
-        ("sandbox.excludedCommands", ("sandbox", "excludedCommands")),
-    ]
+    pairs = [("permissions.allow", ("permissions", "allow"))]
+    if sandboxed:
+        pairs.append(("sandbox.excludedCommands", ("sandbox", "excludedCommands")))
     for label, (outer, inner) in pairs:
         want = ((required.get(outer) or {}).get(inner)) or []
         have = set(((settings.get(outer) or {}).get(inner)) or [])
@@ -101,7 +101,8 @@ def check(root):
     if required is None:
         problems.append(f"条項3: 必須エントリの定義 {REQUIRED_SETTINGS} を読めない")
     else:
-        for label, lacking in missing_entries(registered, required).items():
+        for label, lacking in missing_entries(
+                registered, required, sandboxed=sys.platform != "win32").items():
             listed = "\n      ".join(lacking)
             problems.append(f"条項3: {label} に不足がある\n      {listed}{note}")
     return problems
@@ -148,6 +149,10 @@ def _selftest():
         if got != want:
             ok = False
             print(f"FAIL {name}: want={want} got={got}")
+    got = missing_entries({}, required, sandboxed=False)
+    if got != {"permissions.allow": ["Bash(git add *)", "Bash(git commit *)"]}:
+        ok = False
+        print(f"FAIL サンドボックスの無い環境は sandbox を確認しない: got={got}")
 
     with tempfile.TemporaryDirectory() as root:
         root = Path(root)
