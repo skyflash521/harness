@@ -38,6 +38,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import codex_manifest  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLUGINS_DIR = "plugins"
 HOOKS_DIR = ".githooks"
@@ -146,7 +149,14 @@ def stamp_and_stage(name, now, head):
     data["version"] = format_version(version)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     run_git("add", "--", rel)
+    sync_codex_manifest(name)
     return version
+
+
+def sync_codex_manifest(name):
+    """Codex 用 manifest を Claude 側の plugin.json から書き直してステージする(対象外のプラグインは何もしない)。"""
+    if name in codex_manifest.CODEX_PLUGINS:
+        run_git("add", "--", codex_manifest.sync_manifest(name))
 
 
 def head_baseline(name, head):
@@ -207,6 +217,7 @@ def cmd_stamp():
         baseline = head_baseline(name, head)
         staged = version_of(f":{rel}")
         if is_increased(staged, baseline):
+            sync_codex_manifest(name)
             print(
                 f"{name}: 刻印済み({format_version(staged)})のためスキップ"
                 "(この刻印に身に覚えが無いなら、同じ作業ツリーで別のセッションが動いている疑い。"
