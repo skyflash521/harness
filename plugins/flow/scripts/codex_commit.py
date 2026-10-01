@@ -8,6 +8,7 @@ Codex のフックは呼び出し元のエージェントを識別できない�
 呼び出し形:
 
     codex_commit.py --repo REPO --review-file FILE --message-file FILE --files PATH [PATH ...]
+    codex_commit.py --selftest
 
 - review-file: レビュアーの最終応答の原文。末尾の `未解決の指摘: 0件` の申告が無ければ拒否する。
   千日手を押して通す経路は Codex 上には無い
@@ -91,6 +92,8 @@ def staged_names(repo):
 
 
 def main(argv):
+    if argv == ["--selftest"]:
+        return selftest()
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--repo", required=True)
     parser.add_argument("--review-file", required=True)
@@ -128,6 +131,139 @@ def main(argv):
     head = git(repo, "log", "-1", "--format=%h%n%s").stdout.splitlines()
     print(json.dumps({"status": "committed", "hash": head[0], "subject": head[1]}))
     return 0
+
+
+def selftest():
+    import os
+
+    isolated = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    saved = {name: os.environ.get(name) for name in isolated}
+    os.environ.update(isolated)
+    try:
+        return run_selftest()
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def run_selftest():
+    import contextlib
+    import io
+    import tempfile
+
+    failures = []
+    hygiene = load_hook("guard-artifact-hygiene")
+    relative_word = next(atom.label for atom in hygiene.ATOMS if atom.exempt_group == "P2")
+    good_review = "指摘なし。\n\n未解決の指摘: 0件\n"
+    good_message = "a.txt を追加する\n\n- 初期内容を置く\n"
+
+    def must_git(repo, *args):
+        result = git(repo, *args)
+        if result.returncode != 0:
+            raise RuntimeError(f"git {' '.join(args)}: {result.stderr}")
+        return result.stdout
+
+    def run(repo, review, message, files):
+        review_file = repo.parent / "review.md"
+        message_file = repo.parent / "message.txt"
+        review_file.write_text(review, encoding="utf-8")
+        message_file.write_text(message, encoding="utf-8")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = main(["--repo", str(repo), "--review-file", str(review_file),
+                         "--message-file", str(message_file), "--files", *files])
+        return code, json.loads(buffer.getvalue())
+
+    def fresh(base, with_manual=True):
+        repo = base / "repo"
+        (repo / "docs" / "conventions").mkdir(parents=True)
+        must_git(repo, "init", "-q")
+        must_git(repo, "config", "user.email", "t@example.com")
+        must_git(repo, "config", "user.name", "t")
+        must_git(repo, "config", "commit.gpgsign", "false")
+        must_git(repo, "config", "core.hooksPath", str(base / "no-hooks"))
+        if with_manual:
+            (repo / "docs" / "conventions" / "verification.md").write_text("# 検証\n", encoding="utf-8")
+        (repo / "a.txt").write_text("a\n", encoding="utf-8")
+        (repo / "b.txt").write_text("b\n", encoding="utf-8")
+        return repo
+
+    def history_length(repo):
+        return len(git(repo, "log", "--oneline").stdout.splitlines())
+
+    def expect(label, outcome, want_code, want_status, repo=None, kept_history=True):
+        code, result = outcome
+        if (code, result["status"]) != (want_code, want_status):
+            failures.append(f"{label}: want={(want_code, want_status)} got={(code, result['status'])}")
+        if repo is not None and kept_history and history_length(repo) != 0:
+            failures.append(f"{label}: 拒否したのにコミットが増えた")
+
+    refusals = (
+        ("申告が無い", "指摘なし。\n", good_message, ["a.txt"]),
+        ("未解決が残る", "未解決の指摘: 2件\n", good_message, ["a.txt"]),
+        ("申告が末尾で非0へ戻る", "未解決の指摘: 0件\n\n追加で見つかった。\n\n未解決の指摘: 3件\n", good_message, ["a.txt"]),
+        ("件名に日本語が無い", good_review, "add a.txt\n", ["a.txt"]),
+        ("Claude 名義のトレーラ", good_review, good_message + "\nCo-Authored-By: Claude Opus <someone@example.com>\n", ["a.txt"]),
+        ("製品名を含まない名義でも Anthropic のアドレス", good_review, good_message + "\nCo-Authored-By: X <noreply@anthropic.com>\n", ["a.txt"]),
+        ("番号付きの作業工程の参照", good_review, "Step 3 で a.txt を追加する\n", ["a.txt"]),
+        ("ラウンド番号の参照", good_review, "ラウンド2の指摘に対応して a.txt を追加する\n", ["a.txt"]),
+        ("相対参照の語", good_review, relative_word + "の値を変えて a.txt を追加する\n", ["a.txt"]),
+        ("ディレクトリ指定", good_review, good_message, ["docs"]),
+        ("親ディレクトリ", good_review, good_message, ["../a.txt"]),
+        ("グロブ", good_review, good_message, ["*.txt"]),
+        ("ドット", good_review, good_message, ["."]),
+    )
+    for label, review, message, files in refusals:
+        with tempfile.TemporaryDirectory() as scratch:
+            repo = fresh(Path(scratch))
+            expect(label, run(repo, review, message, files), 3, "refused", repo)
+
+    with tempfile.TemporaryDirectory() as scratch:
+        repo = fresh(Path(scratch))
+        absolute = str(repo / "a.txt")
+        expect("絶対パス", run(repo, good_review, good_message, [absolute]), 3, "refused", repo)
+
+    with tempfile.TemporaryDirectory() as scratch:
+        repo = fresh(Path(scratch), with_manual=False)
+        expect("検証手順書が無い", run(repo, good_review, good_message, ["a.txt"]), 3, "refused", repo)
+
+    with tempfile.TemporaryDirectory() as scratch:
+        repo = fresh(Path(scratch))
+        must_git(repo, "add", "--", "b.txt")
+        expect("指定外が既にステージ済み", run(repo, good_review, good_message, ["a.txt"]), 3, "refused", repo)
+        if staged_names(repo) != {"b.txt"}:
+            failures.append("既存のステージを書き換えた")
+
+    with tempfile.TemporaryDirectory() as scratch:
+        repo = fresh(Path(scratch))
+        expect("ステージが空になる指定", run(repo, good_review, good_message, ["missing.txt"]), 1, "failed", repo)
+
+    with tempfile.TemporaryDirectory() as scratch:
+        repo = fresh(Path(scratch))
+        outcome = run(repo, good_review, good_message, ["a.txt"])
+        expect("収束した対象", outcome, 0, "committed")
+        recorded = must_git(repo, "log", "-1", "--format=%B")
+        if recorded.strip() != good_message.strip():
+            failures.append(f"起草したメッセージと記録されたメッセージが違う: {recorded!r}")
+        if must_git(repo, "show", "HEAD:a.txt") != "a\n":
+            failures.append("記録された a.txt の内容が作業ツリーと違う")
+        if "Co-Authored-By" in recorded:
+            failures.append("トレーラが入っている")
+        if history_length(repo) != 1 or staged_names(repo):
+            failures.append("コミットの後にステージが残った")
+        if "b.txt" in must_git(repo, "show", "--name-only", "--format=", "HEAD"):
+            failures.append("指定外のファイルがコミットに入った")
+        expect("変更の無いファイルの指定", run(repo, good_review, good_message, ["a.txt"]), 3, "refused")
+        if history_length(repo) != 1:
+            failures.append("変更の無い指定でコミットが増えた")
+
+    for failure in failures:
+        print(f"FAIL {failure}")
+    print("ALL PASS" if not failures else "SOME FAILED")
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

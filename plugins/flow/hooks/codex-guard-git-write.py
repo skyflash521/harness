@@ -10,10 +10,11 @@ scripts/codex_commit.py だけが成立させ、このフックはそれ以外�
 混ざらない。シェルが文字列を命令として読む呼び出し(bash -c・pwsh -Command・cmd /c・eval)に
 渡された語だけを、命令として読み直す。
 
-使い方: Codex の PreToolUse フックとして登録する(matcher は Bash)。
+使い方: Codex の PreToolUse フックとして登録する(matcher は Bash)。--selftest で自己テスト。
 """
 import json
 import re
+import subprocess
 import sys
 
 BLOCKED = frozenset((
@@ -199,5 +200,115 @@ def main():
     }}))
 
 
+def shell(command):
+    return {"tool_name": "Bash", "tool_input": {"command": command}}
+
+
+DENIES = (
+    ("コミット", "git commit -m x"),
+    ("リセット", "git reset --hard"),
+    ("リベース", "git rebase main"),
+    ("スタッシュ", "git stash"),
+    ("履歴の削除", "git rm a.txt"),
+    ("-C を挟む", "git -C /repo commit -m x"),
+    ("-c を挟む", "git -c user.name=a commit -m x"),
+    ("空白を含む引用符付きの -C", 'git -C "C:\\Work Projects\\repo" commit -m x'),
+    ("空白と & を含むディレクトリ名", 'git -C "Research & Development" commit -m x'),
+    ("バックスラッシュのエスケープ", "git -C Research\\ \\&\\ Development commit -m x"),
+    ("バッククォートのエスケープ", "git -C Research` Development commit -m x"),
+    ("値を取る長いオプション", "git --git-dir /a/.git commit -m x"),
+    ("単引用符の空白を含む値", "git --git-dir='/a b/.git' commit -m x"),
+    ("二重引用符内のエスケープされた引用符", 'git -C "a\\"b" commit -m x'),
+    ("拡張子付きの実行名", "git.exe commit -m x"),
+    ("引用符付きの実行名", '"git" commit -m x'),
+    ("パス付きの拡張子付き", '"C:/Program Files/Git/cmd/git.exe" commit -m x'),
+    ("バックスラッシュのパス", "C:\\PF\\Git\\cmd\\git.exe commit -m x"),
+    ("絶対パスの実行名", "/usr/bin/git commit -m x"),
+    ("PowerShell の呼び出し演算子", '& "C:/Program Files/Git/cmd/git.exe" commit -m x'),
+    ("連結", "git status && git commit -m x"),
+    ("セミコロンの後", "git status; git commit -m x"),
+    ("パイプの後", "echo x | git commit -F -"),
+    ("改行の後", "git status\ngit commit -m x"),
+    ("env を前置", "env GIT_TRACE=1 git commit -m x"),
+    ("環境変数の代入を前置", "FOO=1 git commit -m x"),
+    ("sudo を前置", "sudo git reset --hard"),
+    ("前置きの後の絶対パス", "sudo /usr/bin/git commit -m x"),
+    ("time を前置", "time git commit -m x"),
+    ("xargs 経由", "echo a | xargs git rm"),
+    ("then の後", "if true; then git commit -m x; fi"),
+    ("do の後", "for f in a b; do git rm x; done"),
+    ("find の実行オプション", "find . -name x -exec git rm {} +"),
+    ("bash -c の入れ子", 'bash -c "git commit -m x"'),
+    ("入れ子の中の2命令", 'bash -c "echo a; git commit -m x"'),
+    ("pwsh -Command の入れ子", 'pwsh -Command "git commit -m x"'),
+    ("単引用符の入れ子", "pwsh -Command 'git commit -m x'"),
+    ("eval", 'eval "git commit -m x"'),
+    ("拡張子付きのシェル", 'bash.exe -c "git reset --hard"'),
+    ("絶対パスのシェル", '/bin/bash -c "git commit -m x"'),
+    ("cmd /c の引用符なし", "cmd /c git commit -m x"),
+    ("cmd /c の引用符つき", 'cmd /c "git commit -m x"'),
+    ("構文として読めないコマンド", "git commit -m 'unbalanced"),
+)
+PASSES = (
+    ("ファイルを指定するステージ", "git add -- a.txt"),
+    ("状態の確認", "git status --short"),
+    ("差分の確認", "git diff --cached"),
+    ("ログ", "git log --oneline -1"),
+    ("ログの検索", "git log --grep=commit"),
+    ("引用符内の禁止語を含む検索", 'git log --grep="fix commit"'),
+    ("引用符で囲んだ禁止語の引数", 'git diff -- "commit"'),
+    ("ファイル名に禁止語を含む差分", "git diff commit-worker.md"),
+    ("別の命令にだけ禁止語がある", "git status && echo commit"),
+    ("区切り文字を含む -C の値での読み取り", 'git -C "a & b" status --short'),
+    ("エスケープされた引用符を含む値での読み取り", 'git -C "a\\"b" status'),
+    ("絶対パスの読み取り", "/usr/bin/git status --short"),
+    ("専用経路の起動", "python3 plugins/flow/scripts/codex_commit.py --repo . --files a"),
+    ("表示の引数", 'echo "git commit -m x"'),
+    ("表示の空白なしの引数", "echo git commit"),
+    ("検索の引数", 'rg "git commit" .'),
+    ("検索の空白なしの引数", "rg git commit"),
+    ("grep の引数", 'grep -r "git reset" docs'),
+    ("絶対パスの別コマンドの引数", "/usr/bin/rg git commit"),
+)
+
+
+def selftest():
+    failures = []
+    for label, command in DENIES:
+        if decide(shell(command)) is None:
+            failures.append(f"deny するはずが通した: {label}")
+    for label, command in PASSES:
+        if decide(shell(command)) is not None:
+            failures.append(f"通すはずが deny: {label}")
+    others = (
+        ("シェル以外のツール", {"tool_name": "apply_patch", "tool_input": {"command": "git commit"}}),
+        ("辞書でない入力", []),
+        ("tool_input が無い", {"tool_name": "Bash"}),
+        ("command が文字列でない", {"tool_name": "Bash", "tool_input": {"command": 1}}),
+    )
+    for label, data in others:
+        if decide(data) is not None:
+            failures.append(f"通すはずが deny: {label}")
+    payload = json.dumps(shell(DENIES[0][1]), ensure_ascii=False).encode("utf-8")
+    result = subprocess.run([sys.executable, __file__], input=payload, stdout=subprocess.PIPE, check=False)
+    try:
+        decision = json.loads(result.stdout.decode("utf-8"))["hookSpecificOutput"]["permissionDecision"]
+    except (json.JSONDecodeError, UnicodeDecodeError, KeyError):
+        decision = None
+    if decision != "deny":
+        failures.append("ハーネスと同じ形の入力で deny が出ない")
+    quiet = subprocess.run(
+        [sys.executable, __file__], input=json.dumps(shell(PASSES[1][1])).encode("utf-8"),
+        stdout=subprocess.PIPE, check=False)
+    if quiet.stdout.strip():
+        failures.append("通す入力で標準出力に何か出た")
+    for failure in failures:
+        print(f"FAIL {failure}")
+    print("ALL PASS" if not failures else "SOME FAILED")
+    return 1 if failures else 0
+
+
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        sys.exit(selftest())
     main()
