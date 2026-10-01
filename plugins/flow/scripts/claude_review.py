@@ -9,6 +9,7 @@ Codex 上の反復レビュー・ループ(flow:opus-review-loop・flow:fable-re
 
     claude_review.py --family opus --cwd REPO --base REV --prompt-file FILE [--resume SESSION_ID]
                      [--timeout SECS] [--out-dir DIR]
+    claude_review.py --selftest
 
 - family: opus か fable。実行モデルの系統でもあり、定義 agents/<family>-reviewer.md を選ぶ。
   実際に応答したモデルが系統と一致しなければ、結果を採らず status を unavailable にする(代替しない)
@@ -126,6 +127,8 @@ def emit(outcome, model, session_id, text):
 
 
 def main(argv):
+    if argv == ["--selftest"]:
+        return selftest()
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--family", required=True, choices=FAMILIES)
     parser.add_argument("--cwd", required=True)
@@ -149,7 +152,7 @@ def main(argv):
         return delegate(args, repo, claude, Path(scratch))
 
 
-def delegate(args, repo, claude, out_dir):
+def delegate(args, repo, claude, out_dir, runner=subprocess.run):
     try:
         diff, status_file = write_inputs(repo, args.base, out_dir)
     except RuntimeError as error:
@@ -159,7 +162,7 @@ def delegate(args, repo, claude, out_dir):
     definition_file.write_text(definition_body(args.family), encoding="utf-8")
     prompt = preface(args.base, diff, status_file, args.resume) + Path(args.prompt_file).read_text(encoding="utf-8")
     try:
-        completed = subprocess.run(
+        completed = runner(
             build_command(claude, args.family, args.resume, definition_file),
             cwd=repo, input=prompt, capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=args.timeout,
@@ -174,6 +177,94 @@ def delegate(args, repo, claude, out_dir):
     outcome, model, session_id, text = classify(payload, args.family, completed.returncode, completed.stderr)
     emit(outcome, model, session_id, text)
     return EXIT_CODES[outcome]
+
+
+def selftest():
+    import contextlib
+    import io
+    import types
+
+    failures = []
+
+    def check(name, got, want):
+        if got != want:
+            failures.append(f"{name}: want={want!r} got={got!r}")
+
+    def payload(text="x", model="claude-opus-5-5", is_error=False, session="s1"):
+        return {
+            "is_error": is_error, "result": text, "session_id": session,
+            "modelUsage": {model: {"outputTokens": 100}, "claude-haiku-4-5": {"outputTokens": 3}},
+        }
+
+    check("ok", classify(payload(), "opus", 0, "")[0], "ok")
+    check("系統の不一致は代替せず unavailable", classify(payload(model="claude-sonnet-5"), "opus", 0, "")[0], "unavailable")
+    check("系統が違う Fable も unavailable", classify(payload(), "fable", 0, "")[0], "unavailable")
+    check("使用量上限", classify(payload("Usage limit reached", is_error=True), "opus", 1, "")[0], "usage_limit")
+    check("モデル利用不可", classify(payload("model not available", is_error=True), "opus", 1, "")[0], "unavailable")
+    check("その他の失敗", classify(payload("boom", is_error=True), "opus", 1, "")[0], "failed")
+    check("JSON でない出力", classify(None, "opus", 1, "err")[0], "failed")
+    check("モデル情報が無い応答は採らない", classify({"result": "x", "session_id": "s"}, "opus", 0, "")[0], "unavailable")
+    check("未解決が残る応答も本文を変えず返す", classify(payload("未解決の指摘: 2件"), "opus", 0, "")[3], "未解決の指摘: 2件")
+    check("終了コードは区別される", len(set(EXIT_CODES.values())), len(EXIT_CODES))
+
+    first_round = build_command("claude", "opus", None, Path("d.md"))
+    next_round = build_command("claude", "opus", "sid-1", Path("d.md"))
+    check("モデル固定", first_round[first_round.index("--model") + 1], "opus")
+    check("隔離", "--safe-mode" in first_round, True)
+    check("ツールの限定", first_round[first_round.index("--tools") + 1], "Read,Grep,Glob")
+    denied = first_round[first_round.index("--disallowedTools") + 1:first_round.index("--output-format")]
+    check("書き込み系の明示拒否", {"Edit", "Write", "Bash"} <= set(denied), True)
+    check("ラウンド1は定義を渡す", "--append-system-prompt-file" in first_round and "--resume" not in first_round, True)
+    check("継続は resume で定義を再付与しない", "--resume" in next_round and "--append-system-prompt-file" not in next_round, True)
+    check("継続の session_id", next_round[next_round.index("--resume") + 1], "sid-1")
+    check("定義に読み替えを付ける", OVERRIDE in definition_body("opus"), True)
+
+    calls = []
+
+    def fake_ok(command, **kwargs):
+        calls.append(command)
+        return types.SimpleNamespace(
+            stdout=json.dumps(payload("未解決の指摘: 1件\n結末: 継続")), stderr="", returncode=0)
+
+    def fake_timeout(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    def run_delegate(runner, base=None, resume=None):
+        with tempfile.TemporaryDirectory() as scratch:
+            repo = Path(scratch) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            base = base or run_git(repo, "write-tree").strip()
+            (repo / "a.txt").write_text("a", encoding="utf-8")
+            subprocess.run(["git", "add", "a.txt"], cwd=repo, check=True)
+            prompt = Path(scratch) / "prompt.md"
+            prompt.write_text("p", encoding="utf-8")
+            args = types.SimpleNamespace(
+                family="opus", base=base, resume=resume, timeout=5, prompt_file=str(prompt))
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                code = delegate(args, repo, "claude", Path(scratch) / "out", runner)
+            return code, json.loads(buffer.getvalue())
+
+    code, result = run_delegate(fake_ok)
+    check("通常の結果の終了コード", code, 0)
+    check("通常の結果の status", result["status"], "ok")
+    check("指摘が残る結末を変えず返す", result["result"], "未解決の指摘: 1件\n結末: 継続")
+    check("通常の結果の session_id", result["session_id"], "s1")
+    run_delegate(fake_ok, resume="sid-1")
+    check("継続ラウンドの resume 指定", calls[-1][calls[-1].index("--resume") + 1], "sid-1")
+    code, result = run_delegate(fake_timeout, resume="sid-1")
+    check("時間上限の終了コード", code, EXIT_CODES["timeout"])
+    check("時間上限の status", result["status"], "timeout")
+    calls.clear()
+    code, result = run_delegate(fake_ok, "no-such-rev")
+    check("差分を作れなければ失敗", (code, result["status"]), (EXIT_CODES["failed"], "failed"))
+    check("差分を作れなければレビューを起動しない", calls, [])
+
+    for failure in failures:
+        print(f"FAIL {failure}")
+    print("ALL PASS" if not failures else "SOME FAILED")
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":
