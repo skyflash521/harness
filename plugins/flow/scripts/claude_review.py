@@ -218,6 +218,7 @@ def selftest():
     check("ok", classify(payload(), "opus", 0, "")[0], "ok")
     check("系統の不一致は代替せず unavailable", classify(payload(model="claude-sonnet-5"), "opus", 0, "")[0], "unavailable")
     check("系統が違う Fable も unavailable", classify(payload(), "fable", 0, "")[0], "unavailable")
+    check("Fable 固定モデルの応答", classify(payload(model="claude-fable-5-5"), "fable", 0, "")[0], "ok")
     check("使用量上限", classify(payload("Usage limit reached", is_error=True), "opus", 1, "")[0], "usage_limit")
     check("モデル利用不可", classify(payload("model not available", is_error=True), "opus", 1, "")[0], "unavailable")
     check("その他の失敗", classify(payload("boom", is_error=True), "opus", 1, "")[0], "failed")
@@ -242,6 +243,9 @@ def selftest():
     check("ラウンド1は定義を渡す", "--append-system-prompt-file" in first_round and "--resume" not in first_round, True)
     check("継続は resume で定義を再付与しない", "--resume" in next_round and "--append-system-prompt-file" not in next_round, True)
     check("継続の session_id", next_round[next_round.index("--resume") + 1], "sid-1")
+    fable_round = build_command("claude", "fable", None, Path("d.md"))
+    check("Fable 起動でモデルを固定", fable_round[fable_round.index("--model") + 1], "fable")
+    check("Fable も読み取り専用", "Bash" in fable_round[fable_round.index("--disallowedTools") + 1:], True)
     check("定義に読み替えを付ける", OVERRIDE in definition_body("opus"), True)
 
     calls = []
@@ -258,7 +262,7 @@ def selftest():
     def fake_timeout(command, **kwargs):
         raise subprocess.TimeoutExpired(command, kwargs["timeout"])
 
-    def run_delegate(runner, base=None, resume=None):
+    def run_delegate(runner, base=None, resume=None, family="opus"):
         with tempfile.TemporaryDirectory() as scratch:
             repo = Path(scratch) / "repo"
             repo.mkdir()
@@ -271,7 +275,7 @@ def selftest():
             prompt = Path(scratch) / "prompt.md"
             prompt.write_text("p", encoding="utf-8")
             args = types.SimpleNamespace(
-                family="opus", base=base, resume=resume, timeout=5, prompt_file=str(prompt))
+                family=family, base=base, resume=resume, timeout=5, prompt_file=str(prompt))
             buffer = io.StringIO()
             with contextlib.redirect_stdout(buffer):
                 code = delegate(args, repo, "claude", Path(scratch) / "out", runner)
@@ -286,6 +290,15 @@ def selftest():
     check("追跡下ファイル一覧を渡す", "files.txt" in prompts[-1], True)
     run_delegate(fake_ok, resume="sid-1")
     check("継続ラウンドの resume 指定", calls[-1][calls[-1].index("--resume") + 1], "sid-1")
+    def fake_fable(command, **kwargs):
+        calls.append(command)
+        return types.SimpleNamespace(
+            stdout=json.dumps(payload("未解決の指摘: 0件", model="claude-fable-5-5")), stderr="", returncode=0)
+
+    code, result = run_delegate(fake_fable, family="fable")
+    check("Fable 指定の結果", (code, result["status"], result["model"]),
+          (0, "ok", "claude-fable-5-5"))
+    check("Fable 経路は代替しない", calls[-1][calls[-1].index("--model") + 1], "fable")
     code, result = run_delegate(fake_timeout, resume="sid-1")
     check("時間上限の終了コード", code, EXIT_CODES["timeout"])
     check("時間上限の status", result["status"], "timeout")

@@ -71,6 +71,8 @@ def emit(status, session_id, result):
 
 
 def main(argv):
+    if argv == ["--selftest"]:
+        return selftest()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--cwd", required=True)
     parser.add_argument("--prompt-file", required=True)
@@ -105,6 +107,76 @@ def main(argv):
         if not message or not session_id:
             return emit("failed", session_id, "完了したレビューの本文またはセッション ID が無い")
         return emit("ok", session_id, message)
+
+
+def selftest():
+    import contextlib
+    import io
+    import types
+    from unittest.mock import patch
+
+    failures = []
+
+    def check(name, got, want):
+        if got != want:
+            failures.append(f"{name}: want={want!r} got={got!r}")
+
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        prompt_file = root / "prompt.md"
+        prompt_file.write_text("未コミット差分を調べる", encoding="utf-8")
+        calls = []
+
+        def execute(events, *, resume=None, code=0, stderr=""):
+            def fake_runner(command, **kwargs):
+                calls.append((command, kwargs))
+                Path(command[command.index("-o") + 1]).write_text("レビュー本文", encoding="utf-8")
+                return types.SimpleNamespace(stdout=events, stderr=stderr, returncode=code)
+
+            arguments = ["--cwd", str(root), "--prompt-file", str(prompt_file)]
+            if resume:
+                arguments += ["--resume", resume]
+            output = io.StringIO()
+            with patch(__name__ + ".run_review", fake_runner), patch(__name__ + ".shutil.which", return_value="codex"):
+                with contextlib.redirect_stdout(output):
+                    exit_code = main(arguments)
+            return exit_code, json.loads(output.getvalue())
+
+        success = "\n".join((json.dumps({"type": "thread.started", "thread_id": "s1"}),
+                             json.dumps({"type": "turn.completed"})))
+        code, result = execute(success)
+        check("初回の結果", (code, result["status"], result["session_id"], result["result"]),
+              (0, "ok", "s1", "レビュー本文"))
+        check("初回のレビュアー", calls[-1][0][1:3], ["exec", "review"])
+        check("読み取り専用", "sandbox_mode=read-only" in calls[-1][0], True)
+        check("規約本文の受け渡し", "[レビュー規約の正本]" in calls[-1][1]["input_text"], True)
+        code, result = execute(success, resume="s1")
+        check("継続の結果", (code, result["status"], result["session_id"]), (0, "ok", "s1"))
+        check("継続先", calls[-1][0][1:3] == ["exec", "resume"] and "s1" in calls[-1][0], True)
+        check("継続も読み取り専用", "sandbox_mode=read-only" in calls[-1][0], True)
+        error = json.dumps({"type": "turn.failed", "error": {"message": "model not found"}})
+        code, result = execute(error, code=1)
+        check("モデル利用不可で代替しない", (code, result["status"], len(calls)), (5, "unavailable", 3))
+        code, result = execute("", code=1, stderr="usage limit reached")
+        check("利用上限", (code, result["status"]), (3, "usage_limit"))
+        code, result = execute("", resume="missing", code=1, stderr="No conversation found")
+        check("再開先なし", (code, result["status"]), (6, "resume_unavailable"))
+        code, result = execute(json.dumps({"type": "thread.started", "thread_id": "s2"}))
+        check("完了イベントなし", (code, result["status"]), (1, "failed"))
+
+        def fake_timeout(command, **kwargs):
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+        output = io.StringIO()
+        with patch(__name__ + ".run_review", fake_timeout), patch(__name__ + ".shutil.which", return_value="codex"):
+            with contextlib.redirect_stdout(output):
+                code = main(["--cwd", str(root), "--prompt-file", str(prompt_file), "--timeout", "1"])
+        check("時間上限", (code, json.loads(output.getvalue())["status"]), (4, "timeout"))
+
+    for failure in failures:
+        print("FAIL " + failure)
+    print("ALL PASS" if not failures else "SOME FAILED")
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":
