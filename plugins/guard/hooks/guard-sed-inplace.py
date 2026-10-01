@@ -14,6 +14,8 @@ import re
 import shlex
 import sys
 
+from hook_input import read_command
+
 
 def is_inplace_flag(flag):
     """sed のフラグが in-place 編集(-i・-i.bak・-ni・--in-place)か。"""
@@ -50,17 +52,13 @@ def has_sed_inplace(command):
 def main():
     # ハーネスが渡す JSON は UTF-8。既定の符号化で読むと非ASCII が化けて素通りする。
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
-    try:
-        data = json.load(sys.stdin)
-    except (json.JSONDecodeError, EOFError, UnicodeDecodeError):
+    tool, command = read_command("--codex" in sys.argv)
+    if tool is None:
         return
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
-        return
-    command = (data.get("tool_input") or {}).get("command") or ""
     if has_sed_inplace(command):
+        editor = "apply_patch" if "--codex" in sys.argv else "Edit ツール"
         reason = (
-            "ファイルのインプレース書き換え(sed -i)は Edit ツールで行ってください。"
+            f"ファイルのインプレース書き換え(sed -i)は {editor} で行ってください。"
             "awk -i inplace・perl -i・python -c での読み書き等、別の手段で同じ書き換えを"
             "回避して実行しないこと。"
         )

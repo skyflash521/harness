@@ -24,6 +24,8 @@ import re
 import shlex
 import sys
 
+from hook_input import read_command
+
 ALWAYS_RECURSIVE = {"find", "rg", "ripgrep", "fd", "fdfind", "ag", "ack", "tree", "du"}
 # ls の `-r` は逆順であって再帰ではないので、大文字だけを見る。
 RECURSIVE_LETTERS = {"grep": "rR", "egrep": "rR", "fgrep": "rR", "ls": "R"}
@@ -155,21 +157,18 @@ def scans_root(command):
 def main():
     # ハーネスが渡す JSON は UTF-8。既定の符号化で読むと非ASCII が化けて素通りする。
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
-    try:
-        data = json.load(sys.stdin)
-    except (json.JSONDecodeError, EOFError, UnicodeDecodeError):
+    tool, command = read_command("--codex" in sys.argv)
+    if tool is None:
         return
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
-        return
-    command = (data.get("tool_input") or {}).get("command") or ""
     if scans_root(command):
+        search_guidance = (
+            "ファイル名を探すなら git ls-files・rg --files、内容を探すなら rg を使い、"
+            if "--codex" in sys.argv else
+            "ファイル名を探すなら Glob ツール・git ls-files・rg --files、内容を探すなら Grep ツールを使い、"
+        )
         reason = (
-            "ドライブルート起点の再帰探索は禁止。Git Bash の / は全ドライブを自動マウントするため"
-            "走査対象に全ドライブが入り、実測ではこの形が数時間経っても終わりませんでした。親が"
-            "終了しても子は回収されず、CPU を1コア占有し続けます。"
-            "ファイル名を探すなら Glob ツール・git ls-files・rg --files、"
-            "内容を探すなら Grep ツールを使い、探索範囲はリポジトリ配下に限ってください。"
+            "ドライブルート起点の再帰探索は禁止。"
+            f"{search_guidance}探索範囲はリポジトリ配下に限ってください。"
             "PowerShell の Get-ChildItem -Recurse・python の os.walk・cd でルートへ移ってからの"
             "走査等、別の手段で同じ全走査を回避して実行しないこと。ルート直下だけを見たい場合は"
             "find に -maxdepth 2 以下を付けてください。"

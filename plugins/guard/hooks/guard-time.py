@@ -15,6 +15,8 @@ import re
 import shlex
 import sys
 
+from hook_input import read_command
+
 # 次のトークンを引数として食う date のフラグ。いずれも読み取り専用。
 TAKES_ARG = {"-d", "--date", "-r", "--reference", "-f", "--file"}
 PS_CLOCK_SETTERS = ("set-date", "w32tm", "w32tm.exe")
@@ -73,24 +75,49 @@ def decide_powershell(cmd):
     return None
 
 
+def decide_cmd(cmd):
+    if not isinstance(cmd, str) or not cmd.strip():
+        return None
+    if decide_powershell(cmd) == "deny":
+        return "deny"
+    lexer = shlex.shlex(cmd.replace("\n", "\n;"), posix=True, punctuation_chars=";&|")
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    segments = []
+    current = []
+    for token in tokens + [";"]:
+        if token[:1] in ";&|":
+            if current:
+                segments.append(current)
+            current = []
+        else:
+            current.append(token)
+    for segment in segments:
+        name = segment[0].replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+        if name in ("date", "time") and [arg.lower() for arg in segment[1:]] != ["/t"]:
+            return "deny"
+    return None
+
+
 def main():
     # ハーネスが渡す JSON は UTF-8。既定の符号化で読むと非ASCII が化けて素通りする。
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
-    try:
-        data = json.load(sys.stdin)
-    except Exception:
+    tool, command = read_command("--codex" in sys.argv)
+    if tool is None:
         sys.exit(0)
-    tool = data.get("tool_name")
-    if tool not in ("Bash", "PowerShell"):
-        sys.exit(0)
-
-    command = (data.get("tool_input") or {}).get("command")
-    decision = decide_powershell(command) if tool == "PowerShell" else decide(command)
+    if tool == "CommandPrompt":
+        decision = decide_cmd(command)
+    elif tool == "PowerShell":
+        decision = decide_powershell(command)
+    else:
+        decision = decide(command)
     if decision != "deny":
         sys.exit(0)
 
-    reader = "Get-Date" if tool == "PowerShell" else "date"
+    reader = {"PowerShell": "Get-Date", "CommandPrompt": "date /t または time /t"}.get(tool, "date")
     breadth = "w32tm は状態を見るだけの形も deny する。" if tool == "PowerShell" else ""
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",

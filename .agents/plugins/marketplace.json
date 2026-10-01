@@ -2,6 +2,18 @@
   "name": "harness",
   "plugins": [
     {
+      "name": "guard",
+      "source": {
+        "source": "local",
+        "path": "./plugins/guard"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    },
+    {
       "name": "flow",
       "source": {
         "source": "local",

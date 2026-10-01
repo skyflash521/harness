@@ -18,6 +18,8 @@ import pathlib
 import shlex
 import sys
 
+from hook_input import read_command
+
 RM_NAMES = ("rm", "rm.exe")
 SANDBOX_EXCLUSION = 'python3 "*/guard/*scripts/trash.py"*'
 # PowerShell では次がいずれも Remove-Item の別名で、同じ削除を行う。
@@ -26,20 +28,25 @@ PS_RM_NAMES = RM_NAMES + ("remove-item", "ri", "del", "erase", "rd", "rmdir")
 
 def trash_script():
     """誘導先 trash.py の絶対パス。"""
-    roots = [arg for arg in sys.argv[1:] if arg != "--selftest"]
+    roots = [arg for arg in sys.argv[1:] if arg not in ("--selftest", "--codex")]
     if not roots:
         return "<guard プラグイン同梱の scripts/trash.py>"
     return pathlib.PurePath(roots[0], "scripts", "trash.py").as_posix()
 
 
-def deny_reason(via=""):
+def deny_reason(via="", codex=False):
+    sandbox_guidance = (
+        ""
+        if codex else
+        "macOS のサンドボックス内ではごみ箱へ送れず失敗する。サンドボックスを切らず、"
+        f"{SANDBOX_EXCLUSION} を sandbox.excludedCommands へ登録するようユーザーに依頼すること。"
+    )
     return (
         f'ファイルの削除は常に deny します。{via}同じ引数で python3 "{trash_script()}" <path>... を'
         "使ってください(削除でなくOS標準のごみ箱へ送る可逆な代替です)。"
         "os.remove/os.unlink/pathlib.Path.unlink・PowerShellのRemove-Item・find -delete等、"
         "別の手段で同じ削除を回避して実行しないこと。"
-        f"macOS のサンドボックス内ではごみ箱へ送れず失敗する。サンドボックスを切らず、"
-        f"{SANDBOX_EXCLUSION} を sandbox.excludedCommands へ登録するようユーザーに依頼すること。"
+        f"{sandbox_guidance}"
     )
 
 
@@ -67,19 +74,14 @@ def has_rm(command, names=RM_NAMES):
 def main():
     # ハーネスが渡す JSON は UTF-8。既定の符号化で読むと非ASCII が化けて素通りする。
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
-    try:
-        data = json.load(sys.stdin)
-    except (json.JSONDecodeError, EOFError, UnicodeDecodeError):
+    tool, command = read_command("--codex" in sys.argv)
+    if tool is None:
         return
-    tool = data.get("tool_name")
-    if tool not in ("Bash", "PowerShell"):
-        return
-    command = (data.get("tool_input") or {}).get("command") or ""
-    if has_rm(command, PS_RM_NAMES if tool == "PowerShell" else RM_NAMES):
+    if has_rm(command, PS_RM_NAMES if tool in ("PowerShell", "CommandPrompt") else RM_NAMES):
         # プラグインのキャッシュ先は空白を含みうる。引用の無いコマンドは分割されて起動に失敗する。
-        via = "Bash ツールへ移り、" if tool == "PowerShell" else ""
-        reason = deny_reason(via)
+        codex = "--codex" in sys.argv
+        via = "Bash ツールへ移り、" if tool == "PowerShell" and not codex else ""
+        reason = deny_reason(via, codex)
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",

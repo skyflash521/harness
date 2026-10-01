@@ -1,6 +1,6 @@
 # harness
 
-複数リポジトリで共有するAIハーネスを提供する Claude Code 用のプラグイン。
+複数リポジトリで共有する AI ハーネスを提供する Claude Code・Codex 用のプラグイン。
 
 - **guard**: 言語非依存の安全装置。取り返しのつかない操作と暴走する操作を拒否し、可逆で
   安全な代替へ誘導する。
@@ -19,7 +19,9 @@ Windows では bash を Git Bash が提供する。プラグインを使うマ�
 
 ## プラグインの利用
 
-### リポジトリへの導入
+### Claude Code
+
+#### リポジトリへの導入
 
 プラグインの実体はマシンのキャッシュに置かれ、有効化はリポジトリの追跡される
 `.claude/settings.json` の `enabledPlugins` が決める。**そのマシンで user スコープの導入を済ませて
@@ -43,7 +45,7 @@ marketplace の登録先はマシン側の状態なので、`marketplace add` �
 
 プラグインが読み込まれるのはセッションの開始時なので、有効化の反映は次のセッションからになる。
 
-#### 導入したのに読み込まれない場合
+##### 導入したのに読み込まれない場合
 
 project スコープの導入記録はプロジェクトの絶対パスで引き当てられ、照合はドライブ文字の大小を
 区別する。**導入をターミナルの CLI で行い、利用は VSCode 拡張のセッション**という組み合わせでは、
@@ -69,7 +71,7 @@ claude plugin disable flow@harness --scope user
 満たしていないと flow のスキルは起動時に停止する。guard だけなら契約は要らない。満たしているかを
 確かめる手順は、その文書が定める。
 
-### 更新の反映
+#### 更新の反映
 
 各マシンで実行する。marketplace のカタログを取り直しても、導入済みプラグインは古いバージョンの
 ままなので、プラグインごとに更新する。一括で更新する手段は無い。反映は次のセッションから。
@@ -86,11 +88,46 @@ claude plugin update flow@harness
 プラグインの内容が変わっても `version` が上がっていなければ、更新の対象にならない。
 このリポジトリでは刻印スクリプトが `version` を生成し、CI が刻印漏れを検出する。
 
-### claude を非対話で呼ぶとき
+#### claude を非対話で呼ぶとき
 
 flow は完了・要判断・応答の停止で音を鳴らし、PushNotification を送らせる。**答えを受け取るだけで
 誰も画面を見ていないなら、環境変数 `FLOW_UNATTENDED=1` を渡して `claude -p` を呼ぶ。** 渡せば音も
 通知も出ない。
+
+### Codex
+
+#### リポジトリへの導入
+
+対象リポジトリの `.codex/config.toml` に次を設定する。
+
+```toml
+[marketplaces.harness]
+source_type = "git"
+source = "https://github.com/skyflash521/harness.git"
+
+[plugins."guard@harness"]
+enabled = true
+
+[plugins."flow@harness"]
+enabled = true
+```
+
+Codex は信頼済みリポジトリの設定を読み込む。この設定による有効化は対象リポジトリに限られる。
+Codex の `/hooks` で `guard@harness` の `PreToolUse` フックを開き、定義を確認して信頼する。
+新規・変更後のフックは信頼されるまで実行されない。`codex plugin list` の
+`installed, enabled` だけではフックの発火を確認できない。新しいセッションでフックを使用する。
+`flow` を有効にするリポジトリは[導入契約](plugins/flow/docs/criteria/adoption.md)も満たす。
+
+#### 更新の反映
+
+対象リポジトリで GitHub 上の marketplace を更新する。
+
+```sh
+codex plugin marketplace upgrade harness
+```
+
+更新されたフックは Codex の `/hooks` で再度確認して信頼する。変更は新しいセッションで使う。
+プラグインの内容が変わっても `version` が上がっていなければ、新しい版として導入されない。
 
 ## harness の開発環境
 

@@ -19,8 +19,9 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-CODEX_PLUGINS = ["flow"]
-CODEX_HOOKS = {"flow": "./hooks/codex-hooks.json"}
+CODEX_PLUGINS = ["guard", "flow"]
+CODEX_SKILLS = {"flow"}
+CODEX_HOOKS = {name: "./hooks/codex-hooks.json" for name in CODEX_PLUGINS}
 CLAUDE_MARKETPLACE = ".claude-plugin/marketplace.json"
 CODEX_MARKETPLACE = ".agents/plugins/marketplace.json"
 
@@ -48,8 +49,9 @@ def build_manifest(claude):
         "name": claude["name"],
         "version": claude["version"],
         "description": claude["description"],
-        "skills": "./skills/",
     }
+    if claude["name"] in CODEX_SKILLS:
+        manifest["skills"] = "./skills/"
     if claude["name"] in CODEX_HOOKS:
         manifest["hooks"] = CODEX_HOOKS[claude["name"]]
     return manifest
@@ -110,8 +112,10 @@ def find_problems(read, exists):
             )
         if actual != build_manifest(claude):
             problems.append(f"{codex_manifest_path(name)} が生成結果と異なる(手で編集していないか)")
-        if not exists(f"plugins/{name}/skills"):
+        if name in CODEX_SKILLS and not exists(f"plugins/{name}/skills"):
             problems.append(f"{name}: manifest の skills の参照先 plugins/{name}/skills が無い")
+        if name in CODEX_HOOKS and not exists(f"plugins/{name}/hooks/codex-hooks.json"):
+            problems.append(f"{name}: manifest の hooks の参照先 plugins/{name}/hooks/codex-hooks.json が無い")
     actual_marketplace = read(CODEX_MARKETPLACE)
     if actual_marketplace is None:
         problems.append(f"{CODEX_MARKETPLACE} が無い(生成すること)")
@@ -145,14 +149,18 @@ def cmd_check():
 def _selftest():
     ok = True
     claude_mp = {"name": "m", "plugins": [
+        {"name": "guard", "source": "./plugins/guard", "description": "d"},
         {"name": "flow", "source": "./plugins/flow", "description": "d"},
         {"name": "other", "source": "./plugins/other", "description": "d"},
     ]}
     claude = {"name": "flow", "version": "1.2.3", "description": "d"}
+    guard = {"name": "guard", "version": "1.2.3", "description": "d"}
 
     def files(**overrides):
         data = {
             CLAUDE_MARKETPLACE: claude_mp,
+            claude_manifest_path("guard"): guard,
+            codex_manifest_path("guard"): build_manifest(guard),
             claude_manifest_path("flow"): claude,
             codex_manifest_path("flow"): build_manifest(claude),
             CODEX_MARKETPLACE: build_marketplace(claude_mp, CODEX_PLUGINS),
@@ -161,17 +169,21 @@ def _selftest():
         return {k: v for k, v in data.items() if v is not None}
 
     def run(data, absent=()):
-        present = set(data) | {"plugins/flow/skills", "plugins/flow/.codex-plugin/plugin.json"}
+        present = set(data) | {"plugins/flow/skills", "plugins/flow/hooks/codex-hooks.json",
+                               "plugins/guard/hooks/codex-hooks.json"}
         return find_problems(data.get, lambda rel: rel in present and rel not in absent)
 
     marketplace = build_marketplace(claude_mp, CODEX_PLUGINS)
-    if [p["name"] for p in marketplace["plugins"]] != ["flow"]:
+    if [p["name"] for p in marketplace["plugins"]] != CODEX_PLUGINS:
         ok = False
         print("FAIL build_marketplace: Codex manifest を持つプラグインだけを登録しない")
+    if "skills" in build_manifest(guard) or build_manifest(guard).get("hooks") != CODEX_HOOKS["guard"]:
+        ok = False
+        print("FAIL build_manifest: guard に存在しない skills を登録するか hooks を欠く")
     cases = [
         ("正常", files(), 0),
         ("バージョン不一致", files(**{codex_manifest_path("flow"): {**build_manifest(claude), "version": "1.2.2"}}), 2),
-        ("manifest 欠落", files(**{codex_manifest_path("flow"): None}), 1),
+        ("manifest 欠落", files(**{codex_manifest_path("flow"): None}), 2),
         ("marketplace 欠落", files(**{CODEX_MARKETPLACE: None}), 1),
         ("手編集", files(**{codex_manifest_path("flow"): {**build_manifest(claude), "keywords": ["x"]}}), 1),
         ("marketplace 不一致", files(**{CODEX_MARKETPLACE: {"name": "m", "plugins": []}}), 1),
@@ -180,6 +192,7 @@ def _selftest():
     for name, data, absent, want in [(n, d, (), w) for n, d, w in cases] + [
         ("marketplace 参照先欠落", files(), (manifest_target,), 1),
         ("skills 参照先欠落", files(), ("plugins/flow/skills",), 1),
+        ("guard hooks 参照先欠落", files(), ("plugins/guard/hooks/codex-hooks.json",), 1),
     ]:
         got = len(run(data, absent))
         if got != want:
