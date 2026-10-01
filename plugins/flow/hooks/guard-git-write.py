@@ -649,10 +649,16 @@ def classify(command, root=None, staged=None, worker=False, amend=None):
 
     if _mentions_repositioned_git(command, tokens):
         return "deny", (
-            "Repositioned git (-C/--git-dir/--work-tree) is allowed only for read-only "
-            "subcommands. Do not work around this by cd-ing into that other repository (or any "
-            "other method) to run the write command there instead -- run write commands only in "
-            "THIS repository's cwd."
+            "Repositioned git (-C/--git-dir/--work-tree) is allowed only as one plain "
+            "invocation -- no shell variables or expansion ($, backticks), no control operators, "
+            "no wrapper -- whose subcommand is one of "
+            + ", ".join(sorted(REPOSITION_READONLY))
+            + " and which carries no external-helper option (--textconv, --filters, "
+            "--open-files-in-pager, -O). Anything else is denied, read-only log/diff/show "
+            "included: write the literal path instead of a variable, or read the files of that "
+            "other repository directly. Do not work around this by cd-ing into that other "
+            "repository (or any other method) to run the write command there instead -- run "
+            "write commands only in THIS repository's cwd."
         )
 
     plain_target = (
@@ -1010,6 +1016,11 @@ def selftest():
         actual, _ = classify(case.command, repo, worker=_from_commit_worker(case.data))
         if actual != case.expected:
             failures.append((f"呼び出し元の検査 / {case.why}", case.expected, actual))
+    for command in ('git -C "$R" status', "git -C ../other log --oneline -1"):
+        _, reason = classify(command, repo, worker=True)
+        for word in ("$", "log/diff/show", *sorted(REPOSITION_READONLY)):
+            if word not in reason:
+                failures.append((f"再配置の deny 文が条件を述べる: {command}", word, "欠落"))
     if not roundtrip_denies_main_thread():
         failures.append(("ハーネスと同じ形の起動でメインモデルの commit が deny されない",
                          "deny", "pass"))

@@ -366,7 +366,7 @@ deny 理由ごとの対処。**いずれもメッセージから内容を削ら�
   `git restore --staged` 等で外すのも同じく禁止。同じ作業ツリーで別の作業が動いている
   可能性を、報告に添える。
 - `Use plain git add/commit from the repository cwd`、または
-  `Repositioned git ... is allowed only for read-only subcommands` — `cd ... &&`・`env`/`time` 等の
+  `Repositioned git ... is allowed only as one plain invocation` — `cd ... &&`・`env`/`time` 等の
   ラッパー・絶対パスの git・`git -C` を使った。リポジトリ cwd で `git` を単独で実行する。
 - `The only amend this guard allows is git commit --amend -m <message>` — `--amend` の形が違う。
   [許可される git コマンド形](#許可される-git-コマンド形)の `--amend -m '<メッセージ>'` へ直す。
