@@ -56,6 +56,10 @@ def remaining_seconds(target, now):
 
 
 def selftest():
+    import contextlib
+    import io
+    from unittest.mock import Mock, patch
+
     base = datetime.datetime(2026, 8, 29, 1, 47)
     cases = [
         ("2026-08-29 01:47", datetime.datetime(2026, 8, 29, 1, 47)),
@@ -82,6 +86,34 @@ def selftest():
         failures.append("remaining_seconds: 未来の目標で残り秒数が合わない")
     if remaining_seconds(base, base + datetime.timedelta(seconds=90)) != 0:
         failures.append("remaining_seconds: 過ぎた目標で 0 にならない")
+
+    class Clock:
+        timedelta = datetime.timedelta
+        datetime = datetime.datetime
+
+    for name, argv, moments, expected_code, expected_sleeps in (
+        ("途中で戻った sleep", ["2"], [base, base + datetime.timedelta(seconds=1),
+                                          base + datetime.timedelta(seconds=2),
+                                          base + datetime.timedelta(seconds=2)], 0, [2.0, 1.0]),
+        ("過去の目標", ["2026-08-28 01:47"], [base, base], 0, []),
+        ("上限ちょうど", [str(MAX_SECONDS)], [base, base + datetime.timedelta(seconds=MAX_SECONDS),
+                                              base + datetime.timedelta(seconds=MAX_SECONDS)], 0, [MAX_SECONDS]),
+        ("上限超過", [str(MAX_SECONDS + 1)], [base], 3, []),
+        ("曖昧な時刻", ["明日"], [base], 2, []),
+        ("引数なし", [], [], 2, []),
+    ):
+        clock = Clock()
+        clock.datetime = Mock(wraps=datetime.datetime)
+        clock.datetime.now.side_effect = moments
+        output = io.StringIO()
+        with patch(__name__ + ".datetime", clock), patch(__name__ + ".time.sleep") as sleep:
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                code = main(argv)
+        sleeps = [call.args[0] for call in sleep.call_args_list]
+        if (code, sleeps) != (expected_code, expected_sleeps):
+            failures.append(f"{name}: exit={code}, sleep={sleeps}")
+        if ("到達:" in output.getvalue()) != (expected_code == 0):
+            failures.append(f"{name}: 到達の申告が終了状態と合わない")
 
     for line in failures:
         print(f"FAIL {line}")
