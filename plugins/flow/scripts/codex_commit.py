@@ -7,12 +7,13 @@ Codex のフックは呼び出し元のエージェントを識別できない�
 
 呼び出し形:
 
-    codex_commit.py --repo REPO --review-file FILE --message-file FILE --files PATH [PATH ...]
+    codex_commit.py --repo REPO --files PATH [PATH ...]
     codex_commit.py --selftest
 
-- review-file: レビュアーの最終応答の原文。末尾の `未解決の指摘: 0件` の申告が無ければ拒否する。
+標準入力: UTF-8 の JSON オブジェクト {"review": "レビュー原文", "message": "起草済みメッセージ"}。
+- review: レビュアーの最終応答の原文。末尾の `未解決の指摘: 0件` の申告が無ければ拒否する。
   千日手を押して通す経路は Codex 上には無い
-- message-file: 起草済みのコミットメッセージ。件名に日本語が無い・末尾に Codex 名義の
+- message: 起草済みのコミットメッセージ。件名に日本語が無い・末尾に Codex 名義の
   Co-Authored-By トレーラが無い・作業過程参照を含むときは拒否する
 - files: ステージする個別ファイル(リポジトリ内の相対パス)。ステージ済みがこの集合と一致しなければ拒否する
 
@@ -42,9 +43,10 @@ def load_hook(name):
     return module
 
 
-def git(repo, *args):
+def git(repo, *args, input_text=None):
     return subprocess.run(
         ["git", *args], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        input=input_text,
     )
 
 
@@ -92,7 +94,7 @@ def check_paths(repo, files):
 
 
 def staged_names(repo):
-    result = git(repo, "diff", "--cached", "--name-only", "-z")
+    result = git(repo, "diff", "--cached", "--no-renames", "--name-only", "-z")
     return {name for name in result.stdout.split("\0") if name}
 
 
@@ -101,35 +103,43 @@ def main(argv):
         return selftest()
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--repo", required=True)
-    parser.add_argument("--review-file", required=True)
-    parser.add_argument("--message-file", required=True)
     parser.add_argument("--files", nargs="+", required=True)
     try:
         args = parser.parse_args(argv)
     except SystemExit:
         return 2
+    try:
+        payload = json.load(sys.stdin)
+    except (json.JSONDecodeError, UnicodeError, OSError) as error:
+        return refusal(f"標準入力の JSON を読めない: {error}")
+    if (not isinstance(payload, dict) or set(payload) != {"review", "message"}
+            or not all(isinstance(payload[key], str) for key in ("review", "message"))):
+        return refusal("標準入力は review・message の文字列を持つ JSON オブジェクトを渡す")
     repo = Path(args.repo).resolve()
     if not (repo / "docs" / "conventions" / "verification.md").is_file():
         return refusal("導入契約の検証手順書 docs/conventions/verification.md が無い")
-    reason = check_review(Path(args.review_file).read_text(encoding="utf-8"))
+    reason = check_review(payload["review"])
     if reason:
         return refusal(reason)
-    message = Path(args.message_file).read_text(encoding="utf-8")
+    message = payload["message"]
     reason = check_message(message) or check_paths(repo, args.files)
     if reason:
         return refusal(reason)
-    outside = staged_names(repo) - set(args.files)
+    staged = staged_names(repo)
+    outside = staged - set(args.files)
     if outside:
         return refusal("指定外のファイルが既にステージされている: " + ", ".join(sorted(outside)))
-    added = git(repo, "add", "--", *args.files)
-    if added.returncode != 0:
-        print(json.dumps({"status": "failed", "reason": added.stderr.strip()[-300:]}))
-        return 1
+    to_add = [name for name in args.files if (repo / name).exists() or name not in staged]
+    if to_add:
+        added = git(repo, "add", "--", *to_add)
+        if added.returncode != 0:
+            print(json.dumps({"status": "failed", "reason": added.stderr.strip()[-300:]}))
+            return 1
     if staged_names(repo) != set(args.files):
         return refusal("ステージ済みの集合が指定ファイルと一致しない(変更の無いファイルを指定していないか)")
     if git(repo, "diff", "--name-only", "--", *args.files).stdout.strip():
         return refusal("指定ファイルに未ステージの変更が残っている")
-    made = git(repo, "commit", "-q", "-F", str(Path(args.message_file).resolve()))
+    made = git(repo, "commit", "-q", "-F", "-", input_text=message)
     if made.returncode != 0:
         print(json.dumps({"status": "failed", "reason": made.stderr.strip()[-300:]}))
         return 1
@@ -155,8 +165,6 @@ def selftest():
 
 
 def run_selftest():
-    import contextlib
-    import io
     import tempfile
 
     failures = []
@@ -172,15 +180,13 @@ def run_selftest():
         return result.stdout
 
     def run(repo, review, message, files):
-        review_file = repo.parent / "review.md"
-        message_file = repo.parent / "message.txt"
-        review_file.write_text(review, encoding="utf-8")
-        message_file.write_text(message, encoding="utf-8")
-        buffer = io.StringIO()
-        with contextlib.redirect_stdout(buffer):
-            code = main(["--repo", str(repo), "--review-file", str(review_file),
-                         "--message-file", str(message_file), "--files", *files])
-        return code, json.loads(buffer.getvalue())
+        return run_input(repo, json.dumps({"review": review, "message": message}, ensure_ascii=False), files)
+
+    def run_input(repo, text, files):
+        result = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--repo", str(repo),
+                                 "--files", *files], input=text, capture_output=True,
+                                text=True, encoding="utf-8")
+        return result.returncode, json.loads(result.stdout)
 
     def fresh(base, with_manual=True):
         repo = base / "repo"
@@ -232,6 +238,14 @@ def run_selftest():
             repo = fresh(Path(scratch))
             expect(label, run(repo, review, message, files), 3, "refused", repo)
 
+    for invalid in ("", "{", "[]", "null", '{"review":0,"message":"本文"}',
+                    '{"review":"原文"}', '{"review":"原文","message":"本文","extra":1}'):
+        with tempfile.TemporaryDirectory() as scratch:
+            repo = fresh(Path(scratch))
+            expect("不正な標準入力", run_input(repo, invalid, ["a.txt"]), 3, "refused", repo)
+            if staged_names(repo):
+                failures.append("不正な標準入力でステージが変わった")
+
     with tempfile.TemporaryDirectory() as scratch:
         repo = fresh(Path(scratch))
         absolute = str(repo / "a.txt")
@@ -265,11 +279,49 @@ def run_selftest():
             failures.append("Codex のトレーラが末尾に無い")
         if history_length(repo) != 1 or staged_names(repo):
             failures.append("コミットの後にステージが残った")
+        if {p.name for p in repo.parent.iterdir()} != {"repo"}:
+            failures.append("コミットの入力ファイルが作られた")
         if "b.txt" in must_git(repo, "show", "--name-only", "--format=", "HEAD"):
             failures.append("指定外のファイルがコミットに入った")
         expect("変更の無いファイルの指定", run(repo, good_review, good_message, ["a.txt"]), 3, "refused")
         if history_length(repo) != 1:
             failures.append("変更の無い指定でコミットが増えた")
+
+    for mixed in (False, True):
+        with tempfile.TemporaryDirectory() as scratch:
+            repo = fresh(Path(scratch))
+            expect("削除ケースの初期コミット", run(repo, good_review, good_message, ["a.txt", "b.txt"]), 0, "committed")
+            must_git(repo, "rm", "--", "a.txt")
+            files = ["a.txt"]
+            if mixed:
+                (repo / "b.txt").write_text("変更\n", encoding="utf-8")
+                files.append("b.txt")
+            message = "a.txt を削除する\n\n" + CODEX_TRAILER + "\n"
+            expect("ステージ済み削除を含む対象", run(repo, good_review, message, files), 0, "committed")
+            committed = set(must_git(repo, "show", "--name-only", "--format=", "HEAD").splitlines())
+            if history_length(repo) != 2 or staged_names(repo) or committed != set(files):
+                failures.append("ステージ済み削除を含む対象が過不足なくコミットされない")
+            if git(repo, "cat-file", "-e", "HEAD:a.txt").returncode == 0:
+                failures.append("削除したファイルがコミットに残る")
+
+    for complete in (False, True):
+        with tempfile.TemporaryDirectory() as scratch:
+            repo = fresh(Path(scratch))
+            expect("名前変更ケースの初期コミット", run(repo, good_review, good_message, ["a.txt", "b.txt"]), 0, "committed")
+            must_git(repo, "mv", "--", "a.txt", "c.txt")
+            files = ["a.txt", "c.txt"] if complete else ["c.txt"]
+            message = "a.txt を c.txt へ改名する\n\n" + CODEX_TRAILER + "\n"
+            outcome = run(repo, good_review, message, files)
+            if complete:
+                expect("名前変更の両パスを指定", outcome, 0, "committed")
+                if (history_length(repo) != 2 or staged_names(repo)
+                        or git(repo, "cat-file", "-e", "HEAD:a.txt").returncode == 0
+                        or must_git(repo, "show", "HEAD:c.txt") != "a\n"):
+                    failures.append("名前変更の両パスが正しくコミットされない")
+            else:
+                expect("名前変更の元パスを省略", outcome, 3, "refused")
+                if history_length(repo) != 1 or staged_names(repo) != {"a.txt", "c.txt"}:
+                    failures.append("名前変更の元パスを省略した拒否で履歴・ステージが変わる")
 
     for failure in failures:
         print(f"FAIL {failure}")
@@ -278,4 +330,6 @@ def run_selftest():
 
 
 if __name__ == "__main__":
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")
     sys.exit(main(sys.argv[1:]))

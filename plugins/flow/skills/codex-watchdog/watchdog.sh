@@ -89,34 +89,25 @@ report() { printf 'LOG=%s\nOUTCOME=%s %s\n' "$1" "$2" "$3"; }
 # WALL_CAP の保証そのものが消えるため、待ちには上限を置く。
 CANCEL_WAIT_SECS=60
 cancel_job() {
-  local lg="$1" id out np rc waited=0
+  local lg="$1" id out rc runner
   [ -n "$lg" ] || { printf 'cancel-failed'; return; }
   id=$(basename "$lg"); id="${id%.log}"
-  out=$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/codex-watchdog-cancel.$$")
-  node "$COMPANION" cancel "$id" --json >"$out" 2>/dev/null &
-  np=$!
-  while kill -0 "$np" 2>/dev/null && [ "$waited" -lt "$CANCEL_WAIT_SECS" ]; do
-    sleep 1
-    waited=$((waited + 1))
-  done
-  if kill -0 "$np" 2>/dev/null; then
-    kill "$np" 2>/dev/null
-    rm -f "$out"
+  runner="$(dirname "${BASH_SOURCE[0]}")/../run-and-bench/run_capped.py"
+  out=$(python3 "$runner" "$CANCEL_WAIT_SECS" -- node "$COMPANION" cancel "$id" --json 2>/dev/null)
+  rc=$?
+  if [ "$rc" -eq 124 ]; then
     printf 'cancel-timeout'
     return
   fi
-  wait "$np"; rc=$?
   if [ "$rc" -ne 0 ]; then
-    rm -f "$out"
     printf 'cancel-failed'
     return
   fi
-  if grep -Eq '"turnInterrupted"[[:space:]]*:[[:space:]]*true' "$out" 2>/dev/null; then
+  if printf '%s\n' "$out" | grep -Eq '"turnInterrupted"[[:space:]]*:[[:space:]]*true'; then
     printf 'cancelled'
   else
     printf 'cancelled-record-only'
   fi
-  rm -f "$out"
 }
 
 # companion はリポジトリ名を接頭辞にした状態ディレクトリを作る。合わなければ何も見つからない。

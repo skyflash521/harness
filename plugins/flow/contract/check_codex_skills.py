@@ -14,11 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 EXECUTION = "docs/guidance/codex-execution.md"
 REQUIREMENTS = {
     EXECUTION: (
-        "`ok`", "`failed`", "`timeout`", "`unavailable`", "`usage_limit`", "wait.py",
+        "終了コード", "modelUsage", "turn.completed", "wait.py",
     ),
     "skills/codex-consult/SKILL.md": (
-        "codex-execution.md", "codex_consult.py", "--cwd", "--prompt-file",
-        "`--write`", "`ok`", "`failed`", "`timeout`", "usage-limit-response.md",
+        "codex-execution.md", "codex exec", "作業ディレクトリ", "標準入力",
+        "workspace-write", "正常終了", "起動失敗", "時間上限", "usage-limit-response.md",
     ),
     "skills/codex-watchdog/SKILL.md": (
         "codex-execution.md",

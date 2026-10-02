@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
-"""レビュー起動スクリプトが共有するプロセス管理モジュール。"""
+"""導入検査が CLI の応答を時間上限付きで取得するプロセス管理モジュール。"""
 
 import os
 import signal
 import subprocess
 import sys
-
-DEFAULT_TIMEOUT = 900
-
 
 def run_review(command, *, cwd, input_text, timeout, env=None):
     options = {"start_new_session": True} if sys.platform != "win32" else {}
