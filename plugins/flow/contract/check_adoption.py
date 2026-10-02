@@ -167,6 +167,7 @@ def main(argv):
 
 def _selftest():
     import tempfile
+    from unittest.mock import Mock, patch
 
     required = {
         "permissions": {"allow": ["Bash(git add *)", "Bash(git commit *)"]},
@@ -216,6 +217,39 @@ def _selftest():
         if [path.name for path in unreadable] != [Path(SETTINGS_FILES[1]).name]:
             ok = False
             print(f"FAIL 読めない設定の報告: {unreadable}")
+
+    plugin = {"pluginId": "flow@harness", "installed": True, "enabled": True}
+    for payload, returncode, accepted in (
+        ({"installed": [plugin]}, 0, True),
+        ({"installed": [{**plugin, "enabled": False}]}, 0, False),
+        ({"installed": [{**plugin, "installed": False}]}, 0, False),
+        ({"installed": [{**plugin, "pluginId": "guard@harness"}]}, 0, False),
+        ({"installed": []}, 0, False),
+        ({"installed": None}, 0, False),
+        ([], 0, False),
+        ({"installed": [plugin]}, 1, False),
+    ):
+        process = Mock(returncode=returncode)
+        process.communicate.return_value = (json.dumps(payload).encode("utf-8"), b"failure")
+        with patch("shutil.which", return_value="codex"), patch("subprocess.Popen", return_value=process):
+            problems = codex_settings(HERE)
+        if bool(problems) == accepted:
+            ok = False
+            print(f"FAIL Codex の導入・有効化: payload={payload} returncode={returncode}")
+    process = Mock(returncode=0)
+    process.communicate.return_value = (b"{", b"")
+    with patch("shutil.which", return_value="codex"), patch("subprocess.Popen", return_value=process):
+        if not codex_settings(HERE):
+            ok = False
+            print("FAIL Codex の一覧が不正 JSON でも通す")
+    with patch("shutil.which", return_value=None):
+        if not codex_settings(HERE):
+            ok = False
+            print("FAIL Codex CLI が無くても通す")
+    with patch("shutil.which", return_value="codex"), patch("subprocess.Popen", side_effect=OSError("fixture")):
+        if not codex_settings(HERE):
+            ok = False
+            print("FAIL Codex CLI の起動失敗でも通す")
 
     if load_json(REQUIRED_SETTINGS) is None:
         ok = False

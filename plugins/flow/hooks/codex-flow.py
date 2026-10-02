@@ -3,7 +3,7 @@
 
 呼び出し形: python3 codex-flow.py
 標準入力: Codex のフック JSON。標準出力: 同じイベントのフック応答 JSON または空。
---selftest で CLI 起動の許可・拒否を検査する。
+--selftest で CLI 起動とフックイベントの判定を検査する。
 """
 
 import importlib.util
@@ -45,23 +45,26 @@ def flow_entrypoint(command):
         words = parser.words(command_text(command, parser))
     except ValueError:
         return False
-    python = False
-    cli = None
-    for token, _ in words:
-        if token in parser.OPERATORS:
-            python = False
-            cli = None
-        name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
-        for suffix in (".exe", ".cmd", ".ps1"):
-            name = name.removesuffix(suffix)
-        if name in ("python", "python3", "py"):
-            python = True
-        if python and name in ("codex_commit.py",):
-            return True
-        if name in ("claude", "codex"):
-            cli = name
-        elif (cli == "claude" and token in ("-p", "--print")) or (cli == "codex" and token == "exec"):
-            return True
+    segment = []
+    for token, quoted in words + [("\n", False)]:
+        if quoted or token not in parser.OPERATORS:
+            segment.append(token)
+            continue
+        for position in parser.command_positions(segment):
+            args = segment[position:]
+            name = parser.program(args[0]).removesuffix(".cmd").removesuffix(".ps1")
+            if name in parser.SHELLS and any(flow_entrypoint(text) for text in parser.shell_commands(args)):
+                return True
+            if name in ("python", "python3", "py"):
+                if any(Path(value).name == "codex_commit.py" for value in args[1:]):
+                    return True
+                if len(args) > 4 and Path(args[1]).name == "run_capped.py" and args[3] == "--":
+                    args = args[4:]
+                    name = parser.program(args[0]).removesuffix(".cmd").removesuffix(".ps1")
+            if ((name == "claude" and any(value in ("-p", "--print") for value in args[1:]))
+                    or (name == "codex" and "exec" in args[1:])):
+                return True
+        segment = []
     return False
 
 
@@ -118,10 +121,9 @@ def cli_reason(command):
             args = segment[position:]
             name = parser.program(args[0]).removesuffix(".cmd").removesuffix(".ps1")
             if name in parser.SHELLS:
-                nested = next((args[i + 1] for i, value in enumerate(args[:-1])
-                               if value.lower() in ("-c", "-command", "/c")), None)
-                if nested and (reason := cli_reason(nested)):
-                    return reason
+                for nested in parser.shell_commands(args):
+                    if reason := cli_reason(nested):
+                        return reason
             capped = False
             if name in ("python", "python3", "py") and len(args) > 4:
                 runner = Path(args[1]).resolve()
@@ -322,6 +324,11 @@ def main():
 
 
 def selftest():
+    import os
+    import subprocess
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
     runner = ROOT / "skills" / "run-and-bench" / "run_capped.py"
     prefix = f'python3 "{runner}" 900 -- '
     valid = ('claude -p --model opus --permission-mode dontAsk --tools Read,Grep,Glob '
@@ -342,6 +349,89 @@ def selftest():
              ("$prompt=@'\nClaude's\ncodex exec を調べる\n'@\n" + prefix + valid, False),
              ("cat <<EOF\ncodex exec を調べる\nEOF\ncodex exec -\n", True)]
     failures = [command for command, denied in cases if bool(cli_reason(command)) != denied]
+    for shell in ("bash -lc", "eval", "powershell", "powershell -ExecutionPolicy Bypass -Command"):
+        if cli_reason(shell + " '" + prefix + valid + "'") is not None:
+            failures.append(f"入れ子の正規 CLI を拒否: {shell}")
+        if cli_reason(shell + " 'claude -p --model sonnet --tools Bash'") is None:
+            failures.append(f"入れ子の無保護 CLI を通す: {shell}")
+    for shell in ("powershell -ExecutionPolicy Bypass -Command ", "powershell -exec bypass -c ",
+                  "powershell -exec bypass -com ", "powershell -exec bypass "):
+        if cli_reason(shell + prefix + valid) is not None:
+            failures.append("オプション値の後の正規 CLI を拒否する")
+        if cli_reason(shell + "claude -p --model sonnet --tools Bash") is None:
+            failures.append("オプション値の後の無保護 CLI を通す")
+    if flow_entrypoint("echo pwsh -Command 'python3 scripts/codex_commit.py --help'"):
+        failures.append("シェル名を出力するだけの命令を起動と誤認する")
+    for event in ("SessionStart", "PreToolUse", "Stop"):
+        registered = json.loads((ROOT / "hooks" / "codex-hooks.json").read_text(encoding="utf-8"))["hooks"]
+        if not any("codex-flow.py" in item["command"] for group in registered.get(event, [])
+                   for item in group.get("hooks", [])):
+            failures.append(f"{event}: フックが登録されていない")
+
+    context = decide({"hook_event_name": "SessionStart"})["hookSpecificOutput"]
+    if context["hookEventName"] != "SessionStart" or any(
+            clause not in context["additionalContext"] for clause in (
+                "[停止: 完了]", "着手範囲", "codex-execution.md", "adoption.md", "手番を終了しない")):
+        failures.append("SessionStart: Codex の実行・停止・導入の文脈が不足する")
+
+    for message, expected in (
+        ("確認しました。\n[停止: 完了]", None),
+        ("確認しました。", "末尾行"),
+        ("結果を待ちます。\n[停止: 待機]", "同じ実行セッション"),
+        ("I have completed the task.\n[停止: 完了]", "guard-reply-language"),
+    ):
+        result = decide({"hook_event_name": "Stop", "last_assistant_message": message})
+        if (expected is None and result is not None) or (expected is not None and (
+                not result or result.get("decision") != "block" or expected not in result.get("reason", ""))):
+            failures.append(f"Stop: {message}")
+
+    actual_load = load
+    for problems in ([], ["条項1: 検証手順書が無い"], ["条項2: 除外されていない"],
+                     ["条項3(Codex): flow が無効"]):
+        received = []
+
+        def check(root, host):
+            received.append((root, host))
+            return problems
+
+        contract = SimpleNamespace(check=check, ADOPTION_DOC=ROOT / "docs" / "criteria" / "adoption.md")
+        for command in (prefix + valid, 'pwsh -Command "python3 scripts/codex_commit.py --help"',
+                        'bash -c "python3 scripts/codex_commit.py --help"',
+                        'cmd /c "python3 scripts/codex_commit.py --help"',
+                        'bash -lc "python3 scripts/codex_commit.py --help"',
+                        'eval "python3 scripts/codex_commit.py --help"',
+                        'powershell "python3 scripts/codex_commit.py --help"',
+                        'powershell -ExecutionPolicy Bypass -Command python3 scripts/codex_commit.py --help',
+                        'powershell -exec bypass -Command python3 scripts/codex_commit.py --help',
+                        'powershell -exec bypass -com python3 scripts/codex_commit.py --help',
+                        'powershell -exec bypass python3 scripts/codex_commit.py --help'):
+            received.clear()
+            with patch(__name__ + ".load", side_effect=lambda name, path:
+                       contract if name == "check_adoption" else actual_load(name, path)):
+                result = decide({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(ROOT),
+                                 "tool_input": {"command": command}})
+            if received != [(str(ROOT), "codex")]:
+                failures.append("PreToolUse: Codex の導入検査に cwd と host を渡していない")
+            if (not problems and result is not None) or (problems and (
+                    not result or result["hookSpecificOutput"].get("permissionDecision") != "deny"
+                    or problems[0] not in result["hookSpecificOutput"].get("permissionDecisionReason", ""))):
+                failures.append("PreToolUse: 導入検査の結果を許可・拒否へ接続していない")
+
+    for content, denied in (("確認できます。", False), ("今回の変更です。", True)):
+        command = f"*** Begin Patch\n*** Add File: docs/sample.md\n+{content}\n*** End Patch"
+        result = decide({"hook_event_name": "PreToolUse", "tool_name": "apply_patch", "cwd": str(ROOT.parents[1]),
+                         "tool_input": {"command": command}})
+        if bool(result) != denied:
+            failures.append("PreToolUse: apply_patch の成果物衛生")
+
+    for payload, expected in (("{", None), ("[]", None), ("{}", None),
+                              (json.dumps({"hook_event_name": "SessionStart"}), "additionalContext"),
+                              (json.dumps({"hook_event_name": "Stop", "last_assistant_message": "確認しました。"}), "block")):
+        result = subprocess.run([sys.executable, __file__], input=payload.encode("utf-8"),
+                                capture_output=True, env={**os.environ, "FLOW_UNATTENDED": "1"})
+        if result.returncode or (expected is None and result.stdout.strip()) or (
+                expected is not None and expected not in result.stdout.decode("utf-8")):
+            failures.append("フック JSON 入出力の往復")
     for command in failures:
         print("FAIL " + command)
     print("SOME FAILED" if failures else "ALL PASS")

@@ -25,6 +25,14 @@ OPTIONS_WITH_VALUE = frozenset(("-C", "-c", "--git-dir", "--work-tree", "--names
 SHELLS = frozenset((
     "bash", "sh", "zsh", "dash", "ksh", "fish", "pwsh", "powershell", "cmd", "eval",
 ))
+POWERSHELL_VALUES = (
+    ("executionpolicy", "ex"), ("windowstyle", "w"), ("outputformat", "o"),
+    ("inputformat", "inp"), ("configurationname", "config"),
+    ("configurationfile", "configurationfile"), ("custompipename", "cus"),
+    ("settingsfile", "settings"), ("workingdirectory", "wo"),
+    ("psconsolefile", "ps"), ("encodedarguments", "encodeda"),
+    ("ep", "ep"), ("of", "of"), ("if", "if"), ("wd", "wd"), ("ea", "ea"),
+)
 WRAPPERS = frozenset((
     "env", "sudo", "xargs", "nohup", "command", "exec", "builtin", "nice", "timeout", "time", "stdbuf",
     "call", "start",
@@ -135,6 +143,35 @@ def command_positions(segment):
             expecting = True
 
 
+def shell_commands(args):
+    following = args[1:]
+    name = program(args[0])
+    if name in ("pwsh", "powershell"):
+        index = 1
+        while index < len(args) and args[index].startswith(("-", "/")):
+            key = args[index].lstrip("-/").lower()
+            if key and ("command".startswith(key) or key in ("commandwithargs", "cwa")):
+                index += 1
+                break
+            if key and "file".startswith(key):
+                return
+            takes_value = any(len(key) >= len(short) and full.startswith(key)
+                              for full, short in POWERSHELL_VALUES)
+            if name == "powershell" and key and "version".startswith(key):
+                takes_value = True
+            index += 2 if takes_value else 1
+        following = args[index:]
+    elif name != "eval":
+        for index, value in enumerate(args[1:], 1):
+            if value.lower() in ("/c", "/k") or re.fullmatch(r"-[a-z]*c", value):
+                following = args[index + 1:]
+                break
+    for value in following:
+        if any(char.isspace() for char in value):
+            yield value
+    yield " ".join(following)
+
+
 def scan_segment(segment, depth):
     for index in command_positions(segment):
         name = program(segment[index])
@@ -150,13 +187,10 @@ def scan_segment(segment, depth):
             if position < len(segment) and segment[position] in BLOCKED:
                 return segment[position]
         elif name in SHELLS and depth < MAX_DEPTH:
-            for word in segment[index + 1:]:
-                found = blocked_subcommand(word, depth + 1) if " " in word else None
+            for command in shell_commands(segment[index:]):
+                found = blocked_subcommand(command, depth + 1)
                 if found:
                     return found
-            found = scan_segment(segment[index + 1:], depth + 1)
-            if found:
-                return found
     return None
 
 
@@ -247,6 +281,10 @@ DENIES = (
     ("絶対パスのシェル", '/bin/bash -c "git commit -m x"'),
     ("cmd /c の引用符なし", "cmd /c git commit -m x"),
     ("cmd /c の引用符つき", 'cmd /c "git commit -m x"'),
+    ("PowerShell のオプション値の後", "powershell -ExecutionPolicy Bypass -Command git commit -m x"),
+    ("PowerShell の省略オプション値の後", "powershell -exec bypass -Command git commit -m x"),
+    ("PowerShell の省略命令フラグ", "powershell -exec bypass -com git commit -m x"),
+    ("PowerShell の位置引数", "powershell -exec bypass git commit -m x"),
     ("構文として読めないコマンド", "git commit -m 'unbalanced"),
 )
 PASSES = (
@@ -269,6 +307,10 @@ PASSES = (
     ("検索の空白なしの引数", "rg git commit"),
     ("grep の引数", 'grep -r "git reset" docs'),
     ("絶対パスの別コマンドの引数", "/usr/bin/rg git commit"),
+    ("PowerShell のオプション値の後の表示", "powershell -ExecutionPolicy Bypass -Command echo git commit"),
+    ("PowerShell の省略オプション値の後の表示", "powershell -exec bypass -c echo git commit"),
+    ("PowerShell の位置引数での表示", "powershell -exec bypass echo git commit"),
+    ("PowerShell の設定値は命令ではない", 'powershell -ConfigurationName "git commit" -Command echo ok'),
 )
 
 
