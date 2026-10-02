@@ -15,9 +15,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from review_process import run_review
+from review_process import DEFAULT_TIMEOUT, run_review
 
-DEFAULT_TIMEOUT = 900
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 EXIT_CODES = {"ok": 0, "failed": 1, "usage_limit": 3, "timeout": 4, "unavailable": 5, "resume_unavailable": 6}
 

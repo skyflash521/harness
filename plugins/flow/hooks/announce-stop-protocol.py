@@ -41,7 +41,7 @@ def load_completion():
     return load("_guard_goal_completion", COMPLETION)
 
 
-def build_context():
+def build_context(codex=False):
     guard = load_guard()
     completion = load_completion()
     return (
@@ -53,12 +53,12 @@ def build_context():
         f"- {guard.DECISION} — ユーザーの判断が要る。末尾行の前に"
         f"「{guard.DECISION_FIELD}: <区分>」の1行を置く"
         f"(区分は {'・'.join(guard.DECISION_KINDS)} のいずれか)\n"
-        f"- {guard.WAIT} — 完了を待つ\n"
-        f"- {guard.RESPOND} — ユーザーに問われたことへ答えた(問われていないなら使えない)。"
+        + (f"- {guard.WAIT} — 完了を待つ\n" if not codex else "")
+        + f"- {guard.RESPOND} — ユーザーに問われたことへ答えた(問われていないなら使えない)。"
         f"末尾行の前に「{guard.RESPOND_FIELD}: <直近のユーザー発言から、問うた部分を原文のまま>」の1行を置く"
         "(指示が残っているかどうかは問わない)\n"
         + ("完了・要判断・応答は、宣言の前に PushNotification を送る。"
-           if guard.attended() else "")
+           if guard.attended() and not codex else "")
     )
 
 

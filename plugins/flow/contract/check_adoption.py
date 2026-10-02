@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """導入契約の必須条項を機械確認する。
 
-flow スキルの起動を受けるフックがこれを起動し、欠けた条項があれば起動を deny して adoption.md へ案内する。
+フックまたはスキルの入口から起動し、欠けた条項を報告する。
 確認をスクリプトへ寄せるのは、各スキルが個別に手順を書くと判定が食い違い、条項が増えたときに
 追随漏れが出るため。
 
@@ -9,15 +9,19 @@ flow スキルの起動を受けるフックがこれを起動し、欠けた条
 
     1. 検証手順書が存在すること
     2. スクラッチ置き場が除外設定に入っていること
-    3. 必須エントリの定義が持つエントリが設定に登録されていること
-       (サンドボックスの無い Windows では sandbox.excludedCommands を確認しない)
+    3. Claude Code は必須設定の登録、Codex は flow の導入・有効化
+       (Claude Code のネイティブ Windows では sandbox.excludedCommands を確認しない)
 
-使い方: python3 <このスクリプトの絶対パス> [対象リポジトリのルート]
-       ルートを省いた場合は CLAUDE_PROJECT_DIR、それも無ければカレントディレクトリを使う。
+使い方: python3 <このスクリプトの絶対パス> [--host claude|codex] [対象リポジトリのルート]
+       ルート省略時は Claude Code のみ CLAUDE_PROJECT_DIR を使い、未設定または Codex は現在のディレクトリ。
+       Codex の一覧取得は、公式フック既定上限600秒の半分300秒を実行に割り当てる。
+       残りは判定とプロセス停止に残す。https://learn.chatgpt.com/docs/hooks
 終了コード: 全条項を満たせば 0、1つでも欠ければ 1。
 """
+import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -30,6 +34,7 @@ VERIFICATION_DOC = "docs/conventions/verification.md"
 SETTINGS_FILES = (".claude/settings.json", ".claude/settings.local.json")
 USER_SETTINGS = Path.home() / ".claude" / "settings.json"
 SCRATCH_DIR = ".scratch"
+CODEX_SETTINGS_TIMEOUT = 600 / 2
 
 
 def load_json(path):
@@ -81,7 +86,32 @@ def registered_entries(root, user_settings=None):
     return merged, unreadable
 
 
-def check(root):
+def codex_settings(root):
+    codex = shutil.which("codex")
+    if codex is None:
+        return ["条項3(Codex): codex コマンドが見つからない"]
+    try:
+        spec = importlib.util.spec_from_file_location("_review_process", HERE.parent / "scripts" / "review_process.py")
+        process = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(process)
+        result = process.run_review([codex, "plugin", "list", "--marketplace", "harness", "--json"],
+                                    cwd=root, input_text="", timeout=CODEX_SETTINGS_TIMEOUT)
+        payload = json.loads(result.stdout)
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
+        return [f"条項3(Codex): プラグイン設定を確認できない: {error}"]
+    if result.returncode != 0 or not isinstance(payload, dict):
+        return ["条項3(Codex): プラグイン設定の取得が失敗した: " + result.stderr.strip()]
+    installed = payload.get("installed")
+    if not isinstance(installed, list):
+        return ["条項3(Codex): 導入済みプラグインの一覧が無い"]
+    for plugin in installed:
+        if isinstance(plugin, dict) and plugin.get("pluginId") == "flow@harness":
+            if plugin.get("installed") is True and plugin.get("enabled") is True:
+                return []
+    return ["条項3(Codex): 対象リポジトリで flow@harness が導入・有効化されていない"]
+
+
+def check(root, host="claude"):
     """欠けている条項の説明を並べて返す。空なら全条項を満たす。"""
     root = Path(root).resolve()
     problems = []
@@ -91,6 +121,9 @@ def check(root):
 
     if not ignored(root, SCRATCH_DIR):
         problems.append(f"条項2: スクラッチ置き場 {SCRATCH_DIR}/ が除外設定に入っていない")
+
+    if host == "codex":
+        return problems + codex_settings(root)
 
     registered, unreadable = registered_entries(root)
     note = ""
@@ -111,8 +144,17 @@ def check(root):
 def main(argv):
     if "--selftest" in argv:
         return _selftest()
-    root = argv[0] if argv else os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-    problems = check(root)
+    host = "claude"
+    if argv[:1] == ["--host"]:
+        if len(argv) < 2 or argv[1] not in ("claude", "codex"):
+            print("--host は claude または codex を指定する")
+            return 1
+        host, argv = argv[1], argv[2:]
+    if len(argv) > 1:
+        print("対象リポジトリは1つだけ指定する")
+        return 1
+    root = argv[0] if argv else (os.environ.get("CLAUDE_PROJECT_DIR") if host == "claude" else None) or os.getcwd()
+    problems = check(root, host=host)
     if problems:
         print("導入契約を満たしていない条項がある:")
         for problem in problems:

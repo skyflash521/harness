@@ -145,12 +145,21 @@ def launch_of(rows):
     ——弾かれた起動は走行を始めていないので、走行の中でしか掛からない判定をそこから始めない。"""
     failed = rejected_ids(rows)
     found = None
+    codex_boundary = -1
+    if any(row.get("codex") for row in rows):
+        reader = load("_transcript", HOOKS.parent / Path(*TRANSCRIPT))
+        guard = load("_guard_idle_stop", GUARD)
+        codex_boundary = cleared(rows, reader, guard)
     for index, row in enumerate(rows):
         if row.get("isSidechain") or row.get("type") != "assistant":
             continue
         content = (row.get("message") or {}).get("content")
         if not isinstance(content, list):
             continue
+        if row.get("codex") and index > codex_boundary and any(scope_of(b.get("text", "")) for b in content
+                                    if isinstance(b, dict) and b.get("type") == "text"):
+            if found is None or found[0] < codex_boundary:
+                found = (index - 1, "")
         for block in content:
             if not isinstance(block, dict) or block.get("name") != SKILL_TOOL:
                 continue

@@ -118,6 +118,9 @@ def tail_rows(path, module):
                     row = parse(line)
                     if row is None:
                         continue
+                    row = module.normalize_row(row)
+                    if row is None:
+                        continue
                     if module.said_by_user(row):
                         return rows[::-1]
                     rows.append(row)

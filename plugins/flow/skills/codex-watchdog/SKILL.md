@@ -34,7 +34,7 @@ companion・エージェント・watchdog.sh による起動と監視は適用�
 
 - codex 起動: companion 起動([標準形](#codex-起動の作法誤起動防止)。呼び出し元エージェント
   内部で実行する)。**パスを二重引用符で囲む標準形で組み立てる**——
-  [導入契約 3](../../docs/criteria/adoption.md#3-sandbox) が要求するサンドボックス除外はこの形に
+  [導入契約 3](../../docs/criteria/adoption.md#claude-code) が要求するサンドボックス除外はこの形に
   一致するので、引用符を落とすと除外が効かない
 - watchdog 起動: **このスキルファイルと同じディレクトリにある [watchdog.sh](watchdog.sh) を絶対パスで
   bash 起動する**
@@ -45,7 +45,7 @@ companion・エージェント・watchdog.sh による起動と監視は適用�
   [reap_codex_jobs.py](../../scripts/reap_codex_jobs.py)(このスキルファイルの2つ上のディレクトリの
   `scripts/`)を絶対パスで python3 起動する**。[完了の判定](#完了の判定機械的な部分)で使う。
   このスクリプトは `~/.claude/plugins` 配下の記録を書き換えるので、既定のサンドボックスでは書けない。
-  [導入契約 3](../../docs/criteria/adoption.md#3-sandbox) が要求するサンドボックス除外は、パスを
+  [導入契約 3](../../docs/criteria/adoption.md#claude-code) が要求するサンドボックス除外は、パスを
   二重引用符で囲む `python3 "<絶対パス>" …` の形に一致する。引用符を落とすと除外が効かない
 
 必要なロジックは上の同梱スクリプトに寄せ、**複合コマンド(`A && B`、`until …; do …; done`)や

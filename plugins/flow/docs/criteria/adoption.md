@@ -1,7 +1,7 @@
 # 導入契約(flow を有効化する条件)
 
 flow プラグインを有効化するリポジトリが満たす条件と、その導入手順の正本。flow のスキル・エージェントはこの文書を
-参照し、同梱のフックが必須条項をスキルの起動時に機械確認する。
+参照する。
 
 ## 必須条項
 
@@ -16,11 +16,19 @@ flow プラグインを有効化するリポジトリが満たす条件と、そ
 リポジトリ直下の `.scratch/` を除外設定に加える。使い捨てのスクリプト・一時ドキュメントの置き場と
 する。判定は `git check-ignore` で行う。
 
-### 3. sandbox
+### 3. 製品別の設定
+
+#### Claude Code
 
 同梱の [required-settings.json](../../contract/required-settings.json) が持つ
 `sandbox.excludedCommands` の全エントリを、`.claude/settings.json`・`.claude/settings.local.json`・
 `~/.claude/settings.json` のいずれかに登録する。サンドボックスの無いネイティブ Windows では確認しない。
+
+#### Codex
+
+対象リポジトリで `flow@harness` が導入済み・有効であることを、`codex plugin list --marketplace harness --json`
+の `installed` 一覧の `pluginId`・`installed`・`enabled` で確認する。設定はユーザー設定と
+信頼済みリポジトリの `.codex/config.toml` の解決結果を使う。
 
 ## 任意条項
 
@@ -33,8 +41,8 @@ flow プラグインを有効化するリポジトリが満たす条件と、そ
 契約条項ではなく実行環境の前提。[起動時の契約確認](#起動時の契約確認)の対象には含めない。
 
 - guard・flow が動作するOSは Windows・macOS・Linux とする。
-- 許可モードは `auto` を前提とする。auto は Bash の実行を無条件に通すわけではなく、分類器が危険と判断した形は止まる。
-- 各マシンに python3 と(Windows では)Git Bash が必要。
+- Claude Code の許可モードは `auto` を前提とする。auto は Bash の実行を無条件に通すわけではなく、分類器が危険と判断した形は止まる。
+- 各マシンに python3 が必要。Claude Code を使う Windows では Git Bash も必要。
 - codex 系スキルを使う場合は Node.js・Codex CLI・Codex プラグインの導入が別途必要。セットアップ
   未完了は実行時に検知して報告する機構を codex 系スキルが持つ。
 - Codex CLI 上で flow を使う場合は、Claude Code CLI も別途必要になる。加えて Codex の設定(`config.toml`)に
@@ -56,7 +64,7 @@ flow プラグインを有効化するリポジトリが満たす条件と、そ
 1. **条項1**: 検証手順書 `docs/conventions/verification.md` を作る。そのリポジトリで通す検査の
    一覧と合格条件を書く。
 2. **条項2**: 除外設定に `.scratch/` を加える。
-3. **条項3**: [required-settings.json](../../contract/required-settings.json) を読み、その
+3. **条項3(Claude Code)**: [required-settings.json](../../contract/required-settings.json) を読み、その
    `sandbox.excludedCommands` の各エントリを設定の同じキーへ加える。サンドボックスの無い
    ネイティブ Windows では不要。
 4. marketplace を登録して flow を導入する。harness の所在(リポジトリの URL)は、エージェントが
@@ -81,13 +89,13 @@ flow プラグインを有効化するリポジトリが満たす条件と、そ
    ```
 
    Codex は信頼済みリポジトリの設定を読み込む。この設定は他のリポジトリでは有効にならない。
-   新しい Codex CLI セッションで `/hooks` を開き、`Plugin - flow@harness` の `PreToolUse` フックの内容を確認して
+   新しい Codex CLI セッションで `/hooks` を開き、`Plugin - flow@harness` のフック定義の内容を確認して
    信頼し、有効化する。信頼はフック定義の内容ごとに記録されるため、プラグインの更新で定義が変わったら
    再度確認する。エージェントが操作する場合は、ユーザーの明示指示を受けてから対話式の Codex CLI で
    `/hooks` を開き、表示されたフックを確認して信頼・有効化する。指示が無ければ、ユーザーに操作を
    依頼して待つ。信頼の記録を設定ファイルへ直接書き込まない。
    `codex plugin list` の `installed, enabled` だけではフックの動作は確認できない。
-   `/hooks` で `Plugin - flow@harness` のフックが有効と表示されることを確かめる。
+   `/hooks` で `Plugin - flow@harness` の `SessionStart`・`PreToolUse`・`Stop` が有効と表示されることを確かめる。
    さらに Codex CLI のシェルツールへ `git commit --dry-run --no-verify` を渡し、
    `codex-guard-git-write` による `PreToolUse Blocked` が返ることを確かめる。
    この確認は実際のコミットを作らない。Codex CLI の外のシェルで実行してもフックは発火しない。
@@ -104,7 +112,15 @@ flow プラグインを有効化するリポジトリが満たす条件と、そ
 python3 <flow プラグインの contract/check_adoption.py の絶対パス> [対象リポジトリのルート]
 ```
 
-ルートを省いた場合は `CLAUDE_PROJECT_DIR`、それも無ければカレントディレクトリを対象にする。
+Codex では `--host codex` を付ける。
+
+```sh
+python3 <flow プラグインの contract/check_adoption.py の絶対パス> --host codex [対象リポジトリのルート]
+```
+
+`--host` の既定は `claude`。Claude Code でルートを省いた場合は `CLAUDE_PROJECT_DIR`、それも無ければ
+カレントディレクトリを対象にする。Codex で省いた場合はカレントディレクトリを対象にする。
+Codex 用の機械検査は条項1・2と、条項3のプラグイン導入・有効化を扱う。
 
 ## 起動時の契約確認
 
@@ -113,3 +129,8 @@ PreToolUse フックで受け、[この確認スクリプト](#導入の検証)�
 欠けた条項とこの文書の所在を示す。
 
 flow:commit-worker は直接起動への防御として、不正コミット防止チェックでも条項1を確認する。
+
+Codex は `Skill` イベントを持たない。スキルの着手前に
+[導入の検証](#導入の検証)の Codex 用コマンドを実行する。
+レビュー・相談・コミットの同梱エントリポイントをシェルから起動する場合は
+[codex-flow.py](../../hooks/codex-flow.py) が `PreToolUse` で Codex 用の導入検査を行い、不足を deny する。

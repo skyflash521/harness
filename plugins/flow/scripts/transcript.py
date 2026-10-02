@@ -17,7 +17,8 @@ from pathlib import Path
 HANDBACK = "<agent-message"
 SKIP_PREFIXES = ("<system-reminder>", "<ide_opened_file>", "<ide_selection>", "<command-",
                  "<local-command-", "<task-notification>", "<cross-session-message",
-                 "[Cross-session", "[Request interrupted")
+                 "[Cross-session", "[Request interrupted", "<hook_prompt",
+                 "# AGENTS.md instructions", "<environment_context>", "<user_instructions>")
 
 
 def text_blocks(content):
@@ -50,8 +51,87 @@ def rows_of(path):
         except json.JSONDecodeError:
             continue
         if isinstance(row, dict):
-            rows.append(row)
+            normalized = normalize_row(row)
+            if normalized is not None:
+                rows.append(normalized)
     return rows
+
+
+def normalize_row(row):
+    if row.get("type") == "response_item":
+        item = row.get("payload") or {}
+        if not isinstance(item, dict):
+            return None
+        if item.get("type") == "message" and item.get("role") in ("user", "assistant"):
+            role = item["role"]
+            blocks = item.get("content")
+            if not isinstance(blocks, list):
+                return None
+            content = [{"type": "text", "text": block.get("text", "")}
+                       for block in blocks if isinstance(block, dict) and isinstance(block.get("text"), str)
+                       and block.get("type") in ("text", "input_text", "output_text")]
+            text = "\n".join(block["text"] for block in content)
+            hook_feedback = role == "user" and text.lstrip().startswith((
+                "[codex-flow]", "[guard-idle-stop]", "[guard-goal-completion]", "[guard-reply-language]",
+                "Stop hook feedback",
+                '<hook_prompt hook_run_id="stop:',
+            ))
+            if hook_feedback:
+                content = "Stop hook feedback\n" + text
+            meta = role == "user" and text.lstrip().startswith((
+                "# AGENTS.md instructions", "<environment_context>", "<user_instructions>",
+                "<skills_instructions>", "<turn_aborted>", "<summary>", "<hook_prompt",
+            ))
+            return {"type": role, "isMeta": meta or hook_feedback, "codex": True,
+                    "message": {"role": role, "content": content}}
+        if item.get("type") in ("function_call", "custom_tool_call"):
+            name = item.get("name", "").rsplit(".", 1)[-1]
+            try:
+                arguments = json.loads(item.get("arguments", "{}"))
+            except (TypeError, json.JSONDecodeError):
+                arguments = {}
+            if not isinstance(arguments, dict):
+                arguments = {}
+            if "cmd" in arguments:
+                arguments["command"] = arguments["cmd"]
+            names = {"apply_patch": "Write", "spawn_agent": "Agent", "send_message": "SendMessage",
+                     "followup_task": "SendMessage", "request_user_input": "AskUserQuestion",
+                     "request_user_input_async": "AskUserQuestion"}
+            return {"type": "assistant", "codex": True, "message": {"content": [
+                {"type": "tool_use", "name": names.get(name, name), "input": arguments}
+            ]}}
+        if item.get("type") in ("function_call_output", "custom_tool_call_output"):
+            output = item.get("output")
+            if isinstance(output, list):
+                output = "\n".join(block["text"] for block in output if isinstance(block, dict)
+                                   and block.get("type") in ("text", "input_text", "output_text")
+                                   and isinstance(block.get("text"), str))
+            if isinstance(output, str) and "[guard-reply-language]" in output:
+                return {"type": "user", "isMeta": True, "codex": True,
+                        "message": {"content": output}}
+        return None
+    if row.get("type") == "event_msg":
+        payload = row.get("payload") or {}
+        if not isinstance(payload, dict):
+            return None
+        item = payload.get("item") or {}
+        if not isinstance(item, dict):
+            return None
+        if payload.get("type") == "item_completed" and item.get("type") == "CommandExecution":
+            command = item.get("command") or []
+            if not isinstance(command, list) or not command:
+                return None
+            return {"type": "assistant", "codex": True, "message": {"content": [
+                {"type": "tool_use", "name": "Bash", "input": {"command": command[-1]}}
+            ]}}
+        if payload.get("type") == "item_completed" and item.get("type") in (
+            "FileChange", "CollabAgentSpawn", "CollabAgentSendMessage",
+        ):
+            return {"type": "assistant", "codex": True, "message": {"content": [
+                {"type": "tool_use", "name": "Write" if item["type"] == "FileChange" else "Agent", "input": {}}
+            ]}}
+        return None
+    return row
 
 
 def said_by_user(row):
