@@ -1,0 +1,9 @@
+[marketplaces.harness]
+source_type = "git"
+source = "https://github.com/skyflash521/harness.git"
+
+[plugins."guard@harness"]
+enabled = true
+
+[plugins."flow@harness"]
+enabled = true
