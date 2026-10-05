@@ -11,26 +11,29 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-EXECUTION = "docs/guidance/codex-execution.md"
+EXECUTION = "docs/guidance/execution.md"
 REQUIREMENTS = {
     EXECUTION: (
-        "終了コード", "modelUsage", "turn.completed", "wait.py",
+        "Claude Code 上", "Codex 上", "終了コード", "turn.completed", "wait.py",
     ),
+    "skills/opus-review-loop/SKILL.md": ("modelUsage", "出力トークン数が最大", "claude-opus-*"),
+    "skills/fable-review-loop/SKILL.md": ("modelUsage", "出力トークン数が最大", "claude-fable-*"),
     "skills/codex-consult/SKILL.md": (
-        "codex-execution.md", "codex exec", "作業ディレクトリ", "標準入力",
+        "execution.md", "codex exec", "作業ディレクトリ", "標準入力",
         "workspace-write", "正常終了", "起動失敗", "時間上限", "usage-limit-response.md",
+        "モデルが利用不可なら代替せず停止して報告する",
     ),
     "skills/codex-watchdog/SKILL.md": (
-        "codex-execution.md",
+        "execution.md",
     ),
     "skills/run-and-bench/SKILL.md": (
-        "codex-execution.md",
+        "execution.md",
     ),
     "skills/autonomous-dev/SKILL.md": (
-        "codex-execution.md", "review-loop-judgement/SKILL.md", "commit/SKILL.md",
+        "execution.md", "review-loop-judgement/SKILL.md", "commit/SKILL.md",
     ),
     "docs/guidance/usage-limit-response.md": (
-        "codex-execution.md#4-",
+        "execution.md#4-",
     ),
 }
 
@@ -49,13 +52,15 @@ def check_documents(documents):
         if text is None:
             problems.append(f"{path}: 文書が無い")
             continue
+        full_text = text
         if path.startswith("skills/"):
             text = codex_section(text)
             if text is None:
                 problems.append(f"{path}: Codex 分岐が無い")
                 continue
         for clause in required:
-            if clause not in text:
+            contract_text = full_text if clause == "execution.md" else text
+            if clause not in contract_text:
                 problems.append(f"{path}: 契約の記述が無い: {clause}")
     return problems
 

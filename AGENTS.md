@@ -15,9 +15,11 @@
 配布物は `plugins/<プラグイン名>/` に1つずつ置く。どのプラグインを配布するかの正本は
 [marketplace.json](.claude-plugin/marketplace.json)。プラグインの中身は次の役割で分かれる。
 
-- `.claude-plugin/plugin.json` — manifest。`version` は刻印スクリプトが生成する
-- `hooks/` — フック本体と、それを登録する `hooks.json`
-- `skills/`・`agents/` — スキルとエージェント。個々の役割は各ファイルの frontmatter の `description`
+- `.claude-plugin/plugin.json` — manifest の正本。`version` は刻印スクリプトが生成する
+- `.codex-plugin/plugin.json` — Codex 用 manifest。Claude 側の正本から生成する
+- `hooks/` — 共用するフック本体と、Claude Code 用の `hooks.json`・Codex 用の `codex-hooks.json`
+- `skills/`・`agents/` — 共用するスキルとエージェント手順。Claude Code はエージェント定義を起動し、
+  Codex はスキルが指定する定義を委譲先に読ませる。個々の役割は frontmatter の `description`
 - `docs/criteria/` — そのプラグインが課す規約・契約の正本のうち、レビューの常設観点または機械の
   検査で適用されるもの
 - `docs/guidance/` — エージェントが自分で読んだ場合にだけ適用される規約。差分に現れない振る舞い
@@ -34,6 +36,8 @@
   [検証手順](docs/conventions/verification.md)が定める
 - `.githooks/` — コミット時に走る検査
 - `.github/workflows/` — CI
+- `.agents/plugins/marketplace.json` — Codex 用 marketplace。Claude 側の正本から生成する
+- `.codex/config.toml` — Codex 用の marketplace 登録とプラグインの有効化
 - `.claude/settings.json` — permissions・sandbox・プラグインの有効化。フックの動作確認のための
   一時的な登録先は `.claude/settings.local.json`。**要らなくなったら直ちに消す**
 - `.scratch/` — コミットしない使い捨てのスクリプト・一時ドキュメントの置き場。除外設定済みで

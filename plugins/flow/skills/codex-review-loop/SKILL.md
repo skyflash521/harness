@@ -1,9 +1,17 @@
 ---
 name: codex-review-loop
-description: codex:rescueにレビューさせ、各指摘を実コードで検証して修正/反証/受容/保留に仕分け、再レビューを反復する。未解決ゼロ・千日手・要ユーザー判断のいずれかで終了。コードレビューを回したいときに使う。その時点で有効なレビュアーの指定が無いときの既定のレビューループで、有効な指定が無ければ他のループではなくこれを使う。
+description: codex:rescueにレビューさせ、各指摘を実コードで検証して修正/反証/受容/保留に仕分け、再レビューを反復する。未解決ゼロ・千日手・要ユーザー判断のいずれかで終了。コードレビューを回したいときに使う。有効なレビュアーの指定と実行元ごとの既定に従い、Codex が選ばれるときに使う。
 ---
 
 # Codex 反復レビュー・ループ
+
+Codex のレビュー結果を呼び出し元が実コード・仕様書と照合し、
+修正/反証/受容/保留に仕分け、再レビューさせる反復ループ。Codex は編集しない。日本語で報告する。
+判断・選定・終了条件は [flow:review-loop-judgement](../review-loop-judgement/SKILL.md) が正本。
+
+## Claude Code 上で実行するとき
+
+[flow:codex-watchdog](../codex-watchdog/SKILL.md) の契約で `codex:codex-rescue` を起動する。
 
 ## Codex 上で実行するとき
 
@@ -17,25 +25,11 @@ Codex 上では独立した `codex exec review --json -c sandbox_mode=read-only 
 編集・機械検査をしないことを含める。
 
 起動可否・照合・結末は [レビューループの判断](../review-loop-judgement/SKILL.md) に従う。
-時間上限・監視・応答の取得は [Codex 上の実行と待機](../../docs/guidance/codex-execution.md)に従う。
+時間上限・監視・応答の取得は [共通の実行と待機の契約](../../docs/guidance/execution.md)に従う。
 全常設観点と応答規約を毎ラウンド適用させる。再開先が無い場合は、前ラウンドまでの文脈と指示文一式を
 渡して新規セッションで取り直す。起動失敗・時間上限は新規セッションで取り直し、2回連続したら停止する。
 指定モデルが利用できない場合は代替せず停止し、使用量上限は
 [使用量上限への応答規約](../../docs/guidance/usage-limit-response.md)に従う。
-
-codex:rescue(read-only)にレビューさせ、Claude が各指摘を実コードで検証して
-**修正/反証/受容/保留**に仕分け、再レビューさせる反復ループ。日本語で報告する。
-
-- **前段(レビュー)**: `codex:codex-rescue` サブエージェント(read-only)が指摘を出す
-- **後段(判断)**: Claude が各指摘を実コード・仕様書と照合し、修正/反証/受容/保留に仕分ける
-  (判断ロジックの正本は [flow:review-loop-judgement](../review-loop-judgement/SKILL.md) スキル)
-- **Codex は編集しない**(修正は Claude が行う)。Codex 出力はそのまま信じず裏取りする
-
-レビュアーの正体に依らない判断ロジックは [flow:review-loop-judgement](../review-loop-judgement/SKILL.md) スキルを見よ。
-どのループを使うかの選定(既定と、ユーザーの指定の扱い)は
-[flow:review-loop-judgement のレビュアーの選定](../review-loop-judgement/SKILL.md#レビュアーの選定どのループを使うか) が正本。
-codex を起動してから結果を受け取るまでのハング防止契約は [flow:codex-watchdog](../codex-watchdog/SKILL.md) スキルを見よ。
-このスキルはその上に、レビューループ固有の合否解釈・再試行上限・終了判定を定める。
 
 ## ユーザー待ちを出さない(発行するコマンド)
 
@@ -57,6 +51,9 @@ codex を起動してから結果を受け取るまでのハング防止契約�
 ## 手順
 
 ### 手順0: 起動可否ゲート・対象確認・可用性確認
+
+以下の手順1にあるエージェント・companion・RUNID の実行手順は Claude Code 上の経路に適用する。
+Codex 上では [Codex 上で実行するとき](#codex-上で実行するとき)の起動・継続・結果取得を使う。
 
 `flow:review-loop-judgement` スキルの[手順0](../review-loop-judgement/SKILL.md#手順0-起動可否ゲート対象確認)のとおり
 起動可否ゲートと対象を確認する。あわせて `flow:codex-watchdog` スキルの[使用不可の検知と再試行](../codex-watchdog/SKILL.md#使用不可の検知と再試行セッション内で記憶)の

@@ -35,3 +35,10 @@
 
 `.github/workflows/` のワークフローが、全ブランチへの push でこの検査を走らせる。検査を増減させた
 ときは、この文書とワークフローの両方を合わせる。
+
+CI は次のリポジトリ設定と履歴も検査する。どちらも終了コード0で合格とする。
+
+| 検査 | コマンド | 対象 |
+|---|---|---|
+| 導入契約 | `python3 plugins/flow/contract/check_adoption.py --host claude .` | リポジトリ自身の検証手順書・スクラッチ除外・Claude Code 用設定 |
+| バージョン刻印 | `python3 scripts/stamp_plugin_version.py --check` | プラグイン変更のコミット履歴と最後の刻印 |

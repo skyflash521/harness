@@ -38,7 +38,7 @@ jobs:
         run: python3 scripts/codex_manifest.py --check
 
       - name: check adoption
-        run: python3 plugins/flow/contract/check_adoption.py .
+        run: python3 plugins/flow/contract/check_adoption.py --host claude .
 
   lychee:
     runs-on: ubuntu-latest

@@ -78,12 +78,12 @@ claude plugin disable flow@harness --scope user
 
 ```sh
 claude plugin marketplace update harness
-claude plugin update guard@harness
-claude plugin update flow@harness
+claude plugin update guard@harness --scope project
+claude plugin update flow@harness --scope project
 ```
 
-`update` の `--scope` は導入したスコープに合わせる(既定は `user`)。`marketplace update` に
-このオプションは無い。
+user スコープで導入した場合は、2つの `plugin update` の `--scope project` を `--scope user` に
+置き換える。`marketplace update` にこのオプションは無い。
 
 プラグインの内容が変わっても `version` が上がっていなければ、更新の対象にならない。
 このリポジトリでは刻印スクリプトが `version` を生成し、CI が刻印漏れを検出する。
@@ -113,7 +113,8 @@ enabled = true
 ```
 
 Codex は信頼済みリポジトリの設定を読み込む。この設定による有効化は対象リポジトリに限られる。
-Codex の `/hooks` で `guard@harness` の `PreToolUse` フックを開き、定義を確認して信頼する。
+Codex の `/hooks` で、導入した両プラグインのフック定義を確認して信頼し、有効にする。
+guard の `PreToolUse` と、flow の `SessionStart`・`PreToolUse`・`Stop` を確認する。
 新規・変更後のフックは信頼されるまで実行されない。`codex plugin list` の
 `installed, enabled` だけではフックの発火を確認できない。新しいセッションでフックを使用する。
 `flow` を有効にするリポジトリは[導入契約](plugins/flow/docs/criteria/adoption.md)も満たす。

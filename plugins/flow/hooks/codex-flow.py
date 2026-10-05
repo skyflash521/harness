@@ -30,7 +30,7 @@ def hook(name):
 def session_context():
     stop = hook("announce-stop-protocol")
     usage = hook("announce-usage-limit-response")
-    execution = ROOT / "docs" / "guidance" / "codex-execution.md"
+    execution = ROOT / "docs" / "guidance" / "execution.md"
     adoption = ROOT / "docs" / "criteria" / "adoption.md"
     return (stop.build_context(codex=True) + "\n" + usage.build_context() + "\n"
             f"Codex の起動・監視・停止は {execution} に従う。"
@@ -271,7 +271,7 @@ def decide(data):
         idle = hook("guard-idle-stop")
         if reason is None:
             if isinstance(data.get("last_assistant_message"), str) and idle.last_line(data["last_assistant_message"]) == idle.WAIT:
-                reason = f"待機は {ROOT / 'docs' / 'guidance' / 'codex-execution.md'} に従い、同じ実行セッションで続ける。"
+                reason = f"待機は {ROOT / 'docs' / 'guidance' / 'execution.md'} に従い、同じ実行セッションで続ける。"
             else:
                 _, reason = idle.decide(data)
                 if reason == idle.REASON_NO_MARKER:
@@ -371,7 +371,7 @@ def selftest():
     context = decide({"hook_event_name": "SessionStart"})["hookSpecificOutput"]
     if context["hookEventName"] != "SessionStart" or any(
             clause not in context["additionalContext"] for clause in (
-                "[停止: 完了]", "着手範囲", "codex-execution.md", "adoption.md", "手番を終了しない")):
+                "[停止: 完了]", "着手範囲", "execution.md", "adoption.md", "手番を終了しない")):
         failures.append("SessionStart: Codex の実行・停止・導入の文脈が不足する")
 
     for message, expected in (

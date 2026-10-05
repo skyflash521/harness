@@ -1,13 +1,21 @@
 ---
 name: codex-consult
-description: Codexへの単発の相談・調査・診断依頼を、ハング防止(watchdog)付きで実行する。反復・収束判定・コミットゲートは持たない。行き詰まって一回だけCodexに相談・調査を依頼したいときに使う。コミット前のレビュー収束が目的ならflow:codex-review-loopを使う。
+description: Codexへの単発の相談・調査・診断依頼を、ハング防止(watchdog)付きで実行する。反復・収束判定・コミットゲートは持たない。行き詰まって一回だけCodexに相談・調査を依頼したいときに使う。コミット前のレビュー収束が目的なら反復レビュー・ループを使う。
 ---
 
 # Codex 単発相談(ハング防止付き)
 
+Codex への**一回限りの相談・調査・診断・修正方針のヒアリング**を行う。
+`flow:codex-review-loop` と異なり、**反復・収束判定・コミットゲートは持たない**。
+
+## Claude Code 上で実行するとき
+
+[flow:codex-watchdog](../codex-watchdog/SKILL.md) の契約に従って、
+`codex:codex-rescue` エージェントを起動する。
+
 ## Codex 上で実行するとき
 
-Codex 上の相談は [共通の実行と待機の契約](../../docs/guidance/codex-execution.md) に従い、
+Codex 上の相談は [共通の実行と待機の契約](../../docs/guidance/execution.md) に従い、
 単発相談の時間上限は900秒とし、独立した `codex exec --json -c sandbox_mode=read-only -c approval_policy=never -` を直接起動する。
 [相談内容の整理](#手順1-相談内容の整理)で定める目的・論点と
 [実行モードの決定](#手順2-実行モードの決定)を指示文に書き、実行ツールの作業ディレクトリを対象リポジトリに設定して標準入力へ渡す。
@@ -16,23 +24,21 @@ Codex 上の相談は [共通の実行と待機の契約](../../docs/guidance/co
 Codex 上では使わない。
 
 正常終了と完了イベントを確認した回答は[報告](#手順4-報告日本語)に従って提示する。起動失敗・時間上限は新規実行で1回だけ取り直し、
-再び失敗したら試みた内容と原因を報告して停止する。利用不可は共通契約に従い、使用量上限は
+再び失敗したら試みた内容と原因を報告して停止する。モデルが利用不可なら代替せず停止して報告する。使用量上限は
 [使用量上限への応答規約](../../docs/guidance/usage-limit-response.md) に従う。
 書き込みを許可した相談でも、その変更をレビュー済みとみなしてコミットしない。
-
-Codex への**一回限りの相談・調査・診断・修正方針のヒアリング**を、[flow:codex-watchdog](../codex-watchdog/SKILL.md) スキルの契約で
-ハングを防ぎながら実行する。`flow:codex-review-loop` と異なり、**反復・収束判定・コミットゲートは
-持たない**。
 
 ## いつ使うか
 
 - 行き詰まって Codex に一回相談したい、調査・診断を依頼したい場面。
-- コミット前のレビュー収束を取りに行く場面は対象外(`flow:codex-review-loop` を使う)。
+- コミット前のレビュー収束を取りに行く場面は対象外(反復レビュー・ループを使う)。
 
 ## 起動可否
 
-以下は Claude Code 上の手順である。特別なゲートはない(呼び出し判断は通常どおり Claude が行う)。ただし `flow:codex-watchdog` スキルの
-[使用不可の検知と再試行](../codex-watchdog/SKILL.md#使用不可の検知と再試行セッション内で記憶)のとおり、前ラウンドで記憶した「使用不可」の状態が無いか先に確認する。
+特別なゲートはない。呼び出し元が判断する。ただし、前ラウンドで記憶した「使用不可」の状態を先に確認する。
+
+- **Claude Code 上**: [使用不可の検知と再試行](../codex-watchdog/SKILL.md#使用不可の検知と再試行セッション内で記憶)に従う。
+- **Codex 上**: [使用量上限と使用不可の記憶](../../docs/guidance/execution.md#4-使用量上限と使用不可の記憶)に従う。
 
 ## 手順
 
@@ -44,10 +50,14 @@ Codex への**一回限りの相談・調査・診断・修正方針のヒアリ
 ### 手順2: 実行モードの決定
 
 既定は**read-only**。ユーザーが明示的に
-「Codex に直してもらう/修正を実行してもらう」ことを求めている場合に限り、
-[flow:codex-watchdog](../codex-watchdog/SKILL.md#codex-起動の作法誤起動防止) の作法に従って write-capable(`--write`)で起動する。
+「Codex に直してもらう/修正を実行してもらう」ことを求めている場合に限り、書き込みを許可する。
+
+- **Claude Code 上**: [起動の作法](../codex-watchdog/SKILL.md#codex-起動の作法誤起動防止)に従い、`--write` を指定する。
+- **Codex 上**: `sandbox_mode=workspace-write` を指定する。
 
 ### 手順3: 相談実行(1回)
+
+以下のエージェント・companion・RUNID による合否解釈は Claude Code 上の経路に適用する。
 
 `codex:codex-rescue` エージェント(`Agent` ツール、
 `subagent_type: "codex:codex-rescue"`)を、[flow:codex-watchdog](../codex-watchdog/SKILL.md) スキルの契約のとおりに

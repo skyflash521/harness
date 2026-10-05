@@ -67,29 +67,9 @@ flow プラグインを有効化するリポジトリが満たす条件と、そ
 3. **条項3(Claude Code)**: [required-settings.json](../../contract/required-settings.json) を読み、その
    `sandbox.excludedCommands` の各エントリを設定の同じキーへ加える。サンドボックスの無い
    ネイティブ Windows では不要。
-4. marketplace を登録して flow を導入する。harness の所在(リポジトリの URL)は、エージェントが
-   ユーザーに尋ねて依頼文へ入れる。経路は2つある。
-   - `/plugin marketplace add <harness の所在>` と `/plugin install`。**ユーザー操作なので、
-     エージェントは依頼して待つ。** 環境によっては `/plugin` が使えない。
-   - `claude plugin marketplace add <harness の所在>` と
-     `claude plugin install <プラグイン>@harness --scope project`。ターミナルから実行する。
-
-   `--scope` の既定は `user` で、そのマシンの全リポジトリでフックが発火する。対象を1つに絞るなら
-   `project` を明示する。
-
-   Codex CLI では、対象リポジトリの `.codex/config.toml` に次を設定する。
-
-   ```toml
-   [marketplaces.harness]
-   source_type = "git"
-   source = "<harness の所在>"
-
-   [plugins."flow@harness"]
-   enabled = true
-   ```
-
-   Codex は信頼済みリポジトリの設定を読み込む。この設定は他のリポジトリでは有効にならない。
-   新しい Codex CLI セッションで `/hooks` を開き、`Plugin - flow@harness` のフック定義の内容を確認して
+4. [harness の導入・更新手順](https://github.com/skyflash521/harness#プラグインの利用)に従い、
+   対象リポジトリで flow を導入・有効化する。
+   Codex CLI では新しいセッションで `/hooks` を開き、`Plugin - flow@harness` のフック定義の内容を確認して
    信頼し、有効化する。信頼はフック定義の内容ごとに記録されるため、プラグインの更新で定義が変わったら
    再度確認する。エージェントが操作する場合は、ユーザーの明示指示を受けてから対話式の Codex CLI で
    `/hooks` を開き、表示されたフックを確認して信頼・有効化する。指示が無ければ、ユーザーに操作を
@@ -100,7 +80,6 @@ flow プラグインを有効化するリポジトリが満たす条件と、そ
    `codex-guard-git-write` による `PreToolUse Blocked` が返ることを確かめる。
    この確認は実際のコミットを作らない。Codex CLI の外のシェルで実行してもフックは発火しない。
    これらを確認してから、flow のレビューとコミットを実変更へ適用する。
-
 5. [検証](#導入の検証)を実行し、終了コード0を確認する。
 
 ## 導入の検証
