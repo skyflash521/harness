@@ -21,10 +21,10 @@ PowerShell ツールの発行も同じく見る。見るのは上に挙げた走
 """
 import json
 import re
-import shlex
 import sys
 
 from hook_input import read_command
+from shell_words import head_name, segments
 
 ALWAYS_RECURSIVE = {"find", "rg", "ripgrep", "fd", "fdfind", "ag", "ack", "tree", "du"}
 # ls の `-r` は逆順であって再帰ではないので、大文字だけを見る。
@@ -40,35 +40,6 @@ MAX_BOUNDED_DEPTH = 2
 def is_root_path(token):
     """トークンがドライブルート相当のパスか。"""
     return bool(ROOT_RE.fullmatch(token.replace("\\", "/")))
-
-
-def head_name(token):
-    """コマンド名の比較用の形。パス修飾と `.exe` を落とす。"""
-    name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
-    return name[:-4] if name.endswith(".exe") else name
-
-
-def segments(command):
-    """コマンドを `;` `|` `&&` 等で区切ったセグメントのトークン列に分ける。解釈不能なら None。"""
-    if "<<" in command:  # here-doc 本文は安全に切り出せないので対象外
-        return None
-    lexer = shlex.shlex(command.replace("\n", "\n;"), posix=True, punctuation_chars=";()<>|&")
-    lexer.whitespace_split = True
-    try:
-        tokens = list(lexer)
-    except ValueError:
-        return None
-    result, current = [], []
-    for token in tokens:
-        if token[:1] in ";|&<>(){}":
-            if current:
-                result.append(current)
-            current = []
-        else:
-            current.append(token)
-    if current:
-        result.append(current)
-    return result
 
 
 def has_recursive_flag(name, args):

@@ -11,10 +11,10 @@ PowerShell ツールの発行も同じく見る。見るのは sed の呼び出�
 """
 import json
 import re
-import shlex
 import sys
 
 from hook_input import read_command
+from shell_words import head_name, segments
 
 
 def is_inplace_flag(flag):
@@ -28,25 +28,10 @@ def is_inplace_flag(flag):
 
 def has_sed_inplace(command):
     """コマンド内のどこかで、コマンド先頭の sed が in-place 編集を行うか。"""
-    if "<<" in command:  # here-doc 本文は安全に切り出せないので対象外
-        return False
-    lexer = shlex.shlex(command.replace("\n", "\n;"), posix=True, punctuation_chars=";()<>|&")
-    lexer.whitespace_split = True
-    try:
-        tokens = list(lexer)
-    except ValueError:
-        return False
-    at_head = True
-    is_sed = False
-    for token in tokens:
-        if token[:1] in ";|&<>(){}":
-            at_head, is_sed = True, False
-        elif at_head:
-            is_sed = token.replace("\\", "/").rsplit("/", 1)[-1] in ("sed", "sed.exe")
-            at_head = False
-        elif is_sed and is_inplace_flag(token):
-            return True
-    return False
+    return any(
+        head_name(tokens[0]) == "sed" and any(is_inplace_flag(token) for token in tokens[1:])
+        for tokens in segments(command) or []
+    )
 
 
 def main():

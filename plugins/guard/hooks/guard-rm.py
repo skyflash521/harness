@@ -15,10 +15,10 @@ PowerShell ツールの発行も同じく見る。そちらは Remove-Item と�
 """
 import json
 import pathlib
-import shlex
 import sys
 
 from hook_input import read_command
+from shell_words import head_name, segments
 
 RM_NAMES = ("rm", "rm.exe")
 SANDBOX_EXCLUSION = 'python3 "*/guard/*scripts/trash.py"*'
@@ -52,23 +52,7 @@ def deny_reason(via="", codex=False):
 
 def has_rm(command, names=RM_NAMES):
     """コマンド内のどこかで、セグメント先頭が names のいずれか(パス修飾・拡張子形含む)か。"""
-    if "<<" in command:  # here-doc 本文は安全に切り出せないので対象外
-        return False
-    lexer = shlex.shlex(command.replace("\n", "\n;"), posix=True, punctuation_chars=";()<>|&")
-    lexer.whitespace_split = True
-    try:
-        tokens = list(lexer)
-    except ValueError:
-        return False
-    at_head = True
-    for token in tokens:
-        if token[:1] in ";|&<>(){}":
-            at_head = True
-            continue
-        if at_head and token.replace("\\", "/").rsplit("/", 1)[-1].lower() in names:
-            return True
-        at_head = False
-    return False
+    return any(head_name(tokens[0]) in names for tokens in segments(command) or [])
 
 
 def main():

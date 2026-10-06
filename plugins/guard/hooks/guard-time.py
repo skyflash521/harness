@@ -16,10 +16,11 @@ import shlex
 import sys
 
 from hook_input import read_command
+from shell_words import head_name, segments
 
 # 次のトークンを引数として食う date のフラグ。いずれも読み取り専用。
 TAKES_ARG = {"-d", "--date", "-r", "--reference", "-f", "--file"}
-PS_CLOCK_SETTERS = ("set-date", "w32tm", "w32tm.exe")
+PS_CLOCK_SETTERS = ("set-date", "w32tm")
 NOT_STANDALONE_STATIC = re.compile(r"[$`<>;&|\n(]")
 
 
@@ -58,20 +59,9 @@ def decide_powershell(cmd):
     """PowerShell の発行が時計を変えるなら "deny"。それ以外は None(通す)。"""
     if not isinstance(cmd, str) or not cmd.strip():
         return None
-    lexer = shlex.shlex(cmd.replace("\n", "\n;"), posix=True, punctuation_chars=";()<>|&")
-    lexer.whitespace_split = True
-    try:
-        tokens = list(lexer)
-    except ValueError:
-        return None
-    at_head = True
-    for token in tokens:
-        if token[:1] in ";|&<>(){}":
-            at_head = True
-            continue
-        if at_head and token.replace("\\", "/").rsplit("/", 1)[-1].lower() in PS_CLOCK_SETTERS:
+    for tokens in segments(cmd, skip_heredoc=False) or []:
+        if head_name(tokens[0]) in PS_CLOCK_SETTERS:
             return "deny"
-        at_head = False
     return None
 
 
@@ -86,16 +76,16 @@ def decide_cmd(cmd):
         tokens = list(lexer)
     except ValueError:
         return None
-    segments = []
+    parts = []
     current = []
     for token in tokens + [";"]:
         if token[:1] in ";&|":
             if current:
-                segments.append(current)
+                parts.append(current)
             current = []
         else:
             current.append(token)
-    for segment in segments:
+    for segment in parts:
         name = segment[0].replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
         if name in ("date", "time") and [arg.lower() for arg in segment[1:]] != ["/t"]:
             return "deny"
