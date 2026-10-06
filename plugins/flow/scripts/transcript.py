@@ -18,6 +18,7 @@ HANDBACK = "<agent-message"
 SKIP_PREFIXES = ("<system-reminder>", "<ide_opened_file>", "<ide_selection>", "<command-",
                  "<local-command-", "<task-notification>", "<cross-session-message",
                  "[Cross-session", "[Request interrupted", "<hook_prompt",
+                 "<external_codex_apps_open_page>",
                  "# AGENTS.md instructions", "<environment_context>", "<user_instructions>")
 
 
@@ -32,7 +33,22 @@ def text_blocks(content):
 
 def spoken(blocks):
     """ハーネスが差し込んだ囲みを落として、人が書いた・エージェントが書いた本文だけを返す。"""
-    kept = [t.strip() for t in blocks if t and not t.lstrip().startswith(SKIP_PREFIXES)]
+    kept = []
+    for text in blocks:
+        if not text or text.lstrip().startswith(SKIP_PREFIXES):
+            continue
+        text = text.strip()
+        opening, closing = "<send_user_message_question_reply>", "</send_user_message_question_reply>"
+        if text.startswith(opening) and text.endswith(closing):
+            try:
+                replies = json.loads(text[len(opening):-len(closing)].strip())
+            except json.JSONDecodeError:
+                replies = None
+            if (isinstance(replies, list) and replies
+                    and all(isinstance(reply, dict) and isinstance(reply.get("answer"), str) for reply in replies)):
+                kept.extend(reply["answer"].strip() for reply in replies)
+                continue
+        kept.append(text)
     return "\n".join(t for t in kept if t)
 
 
@@ -241,6 +257,21 @@ def selftest():
     check("割り込みの発言を数える", said_by_user(queued("ついでに README も直して")), True)
     check("機械の割り込みは数えない", said_by_user(queued("片付いた", kind="hook")), False)
     check("素のユーザー発言を数える", said_by_user(user("レビューしろ")), True)
+    page = '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>'
+    check("画面状態は発言に数えない", said_by_user(user(page)), False)
+    check("画面状態と同じ行の別ブロックの指示を残す", spoken([page, "レビューしろ"]), "レビューしろ")
+    reply = '<send_user_message_question_reply>' + json.dumps([
+        {"question": "質問の文面", "answer": "回答の本文"},
+        {"question": "次の質問", "answer": "次の回答"},
+    ]) + '</send_user_message_question_reply>'
+    check("確認フォームは回答だけを発言に数える", spoken_of(user(reply)), "回答の本文\n次の回答")
+    for malformed in ("not json", "[]", '[{"question":"質問だけ"}]', '[{"answer":null}]'):
+        text = '<send_user_message_question_reply>' + malformed + '</send_user_message_question_reply>'
+        check("読めないフォームで発言を捨てない", spoken_of(user(text)), text)
+    for text, expected in ((page, ""), (reply, "回答の本文\n次の回答")):
+        row = normalize_row({"type": "response_item", "payload": {"type": "message", "role": "user",
+                            "content": [{"type": "input_text", "text": text}]}})
+        check("Codex 転写でもユーザー本文を選ぶ", spoken_of(row), expected)
 
     check("直近の発言の本文を返す",
           latest_instruction([user("古い指示"), assistant(tool="Bash"), user("新しい指示")]),
