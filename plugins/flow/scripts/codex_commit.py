@@ -30,7 +30,6 @@ from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 GLOB_CHARS = set("*?[]")
-JAPANESE = re.compile(r"[぀-ヿ㐀-鿿]")
 CODEX_TRAILER = "Co-Authored-By: Codex <noreply@openai.com>"
 TRAILER = re.compile(r"^\s*co-authored-by:", re.IGNORECASE)
 NUMBERED_STEP = re.compile(r"Step\s*[0-9]|ステップ\s*[0-9]|(?<!グ)ラウンド")
@@ -66,9 +65,14 @@ def check_review(text):
 
 
 def check_message(message):
+    writer = load_hook("guard-git-write")
     subject = message.strip().splitlines()[0] if message.strip() else ""
-    if not JAPANESE.search(subject):
+    if not writer.JAPANESE_CHAR.search(subject):
         return "件名に日本語が無い"
+    if writer.ESCAPE_NEWLINE in message:
+        return "改行がエスケープ表記(バックスラッシュと n)のまま入っている。実際の改行で書く"
+    if writer._probe_subject_problem(subject):
+        return "件名が使い捨ての語だけで、起草した変更内容を述べていない"
     lines = message.rstrip().splitlines()
     trailers = [line for line in lines if TRAILER.match(line)]
     if trailers != [CODEX_TRAILER] or not lines or lines[-1] != CODEX_TRAILER:
@@ -228,6 +232,8 @@ def run_selftest():
         ("番号付きの作業工程の参照", good_review, "Step 3 で a.txt を追加する\n", ["a.txt"]),
         ("ラウンド番号の参照", good_review, "ラウンド2の指摘に対応して a.txt を追加する\n", ["a.txt"]),
         ("相対参照の語", good_review, relative_word + "の値を変えて a.txt を追加する\n", ["a.txt"]),
+        ("改行のエスケープ表記", good_review, good_message.replace("\n\n" + CODEX_TRAILER, "\\n\n" + CODEX_TRAILER), ["a.txt"]),
+        ("使い捨ての件名", good_review, "テスト\n\n" + CODEX_TRAILER + "\n", ["a.txt"]),
         ("ディレクトリ指定", good_review, good_message, ["docs"]),
         ("親ディレクトリ", good_review, good_message, ["../a.txt"]),
         ("グロブ", good_review, good_message, ["*.txt"]),
