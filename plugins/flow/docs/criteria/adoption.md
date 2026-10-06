@@ -30,6 +30,11 @@ flow プラグインを有効化するリポジトリが満たす条件と、そ
 の `installed` 一覧の `pluginId`・`installed`・`enabled` で確認する。設定はユーザー設定と
 信頼済みリポジトリの `.codex/config.toml` の解決結果を使う。
 
+フック機能が有効であり、flow の必須フックすべてが信頼済み・有効であることも必要とする。
+guard も導入・有効化している場合は、guard の必須フックも同じ条件で確認する。
+実行状態は Codex の `hooks/list` と `config/read` の対象リポジトリでの解決結果を使う。
+未信頼・変更後の未承認・無効・欠落・状態の取得失敗は導入不足とする。
+
 ## 任意条項
 
 - レビューで照合させたい規約(用語規約表など)を `docs/conventions/` に置く。flow のレビュー
@@ -47,9 +52,8 @@ flow プラグインを有効化するリポジトリが満たす条件と、そ
   未完了は実行時に検知して報告する機構を codex 系スキルが持つ。
 - Codex CLI 上で flow を使う場合は、Claude Code CLI も別途必要になる。加えて Codex の設定(`config.toml`)に
   次の2つを加える。
-  - `sandbox_workspace_write.network_access = true`: 委譲した Claude Code CLI の外部接続に必要。
-  - `sandbox_workspace_write.writable_roots` に、そのリポジトリの管理ディレクトリ(`<リポジトリ>/.git`)を加える:
-    コミット時の管理ディレクトリへの書き込みに必要。
+  - `sandbox_workspace_write.network_access = true`。
+  - `sandbox_workspace_write.writable_roots` に、そのリポジトリの管理ディレクトリ(`<リポジトリ>/.git`)を加える。
 
   Windows の Codex のサンドボックスには、次の制約がある。
   - Python の一時ディレクトリを後始末できず(権限エラー)、一時ディレクトリを使う自己テストを含む検証がサンドボックスの
@@ -99,7 +103,7 @@ python3 <flow プラグインの contract/check_adoption.py の絶対パス> --h
 
 `--host` の既定は `claude`。Claude Code でルートを省いた場合は `CLAUDE_PROJECT_DIR`、それも無ければ
 カレントディレクトリを対象にする。Codex で省いた場合はカレントディレクトリを対象にする。
-Codex 用の機械検査は条項1・2と、条項3のプラグイン導入・有効化を扱う。
+Codex 用の機械検査は条項1・2と、条項3のプラグイン導入・有効化、フック機能と必須フックの実行状態を扱う。
 
 ## 起動時の契約確認
 
@@ -107,7 +111,7 @@ Codex 用の機械検査は条項1・2と、条項3のプラグイン導入・�
 PreToolUse フックで受け、[この確認スクリプト](#導入の検証)を実行する。非0で終わったら起動を deny し、
 欠けた条項とこの文書の所在を示す。
 
-flow:commit-worker は直接起動への防御として、不正コミット防止チェックでも条項1を確認する。
+flow:commit-worker は不正コミット防止チェックでも条項1を確認する。
 
 Codex は `Skill` イベントを持たない。スキルの着手前に
 [導入の検証](#導入の検証)の Codex 用コマンドを実行する。

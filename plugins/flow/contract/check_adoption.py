@@ -2,16 +2,6 @@
 """導入契約の必須条項を機械確認する。
 
 フックまたはスキルの入口から起動し、欠けた条項を報告する。
-確認をスクリプトへ寄せるのは、各スキルが個別に手順を書くと判定が食い違い、条項が増えたときに
-追随漏れが出るため。
-
-確認する条項:
-
-    1. 検証手順書が存在すること
-    2. スクラッチ置き場が除外設定に入っていること
-    3. Claude Code は必須設定の登録、Codex は flow の導入・有効化
-       (Claude Code のネイティブ Windows では sandbox.excludedCommands を確認しない)
-
 使い方: python3 <このスクリプトの絶対パス> [--host claude|codex] [対象リポジトリのルート]
        ルート省略時は Claude Code のみ CLAUDE_PROJECT_DIR を使い、未設定または Codex は現在のディレクトリ。
        Codex の一覧取得は、公式フック既定上限600秒の半分300秒を実行に割り当てる。
@@ -24,6 +14,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -86,14 +77,76 @@ def registered_entries(root, user_settings=None):
     return merged, unreadable
 
 
+def process_module():
+    spec = importlib.util.spec_from_file_location("_review_process", HERE.parent / "scripts" / "review_process.py")
+    process = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(process)
+    return process
+
+
+def required_hook_keys(plugin):
+    directory = HERE.parent
+    if plugin["pluginId"] != "flow@harness":
+        source = plugin.get("source")
+        path = source.get("path") if isinstance(source, dict) else None
+        if not isinstance(path, str) or not Path(path).is_absolute():
+            raise ValueError(f"{plugin['pluginId']}: 導入先の絶対パスを取得できない")
+        directory = Path(path)
+    definition = load_json(directory / "hooks" / "codex-hooks.json")
+    if not isinstance(definition, dict) or not isinstance(definition.get("hooks"), dict):
+        raise ValueError(f"{plugin['pluginId']}: フック定義を読めない")
+    keys = set()
+    names = {"SessionStart": "session_start", "PreToolUse": "pre_tool_use", "Stop": "stop"}
+    for event, groups in definition["hooks"].items():
+        if event not in names or not isinstance(groups, list):
+            raise ValueError(f"{plugin['pluginId']}: フック登録が不正")
+        for group_index, group in enumerate(groups):
+            handlers = group.get("hooks") if isinstance(group, dict) else None
+            if not isinstance(handlers, list) or not handlers:
+                raise ValueError(f"{plugin['pluginId']}: フック登録が空または不正")
+            for handler_index, handler in enumerate(handlers):
+                if not isinstance(handler, dict) or handler.get("type") != "command":
+                    raise ValueError(f"{plugin['pluginId']}: フックの種別が不正")
+                keys.add(f"{plugin['pluginId']}:hooks/codex-hooks.json:{names[event]}:{group_index}:{handler_index}")
+    if not keys:
+        raise ValueError(f"{plugin['pluginId']}: フック定義が空")
+    return keys
+
+
+def codex_hook_problems(payload, required, root):
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        return ["条項3(Codex): フックの一覧が不正"]
+    entries = payload["data"]
+    if len(entries) != 1 or not isinstance(entries[0], dict):
+        return ["条項3(Codex): 対象リポジトリのフック一覧が無い"]
+    entry = entries[0]
+    cwd = entry.get("cwd")
+    if not isinstance(cwd, str) or os.path.normcase(os.path.realpath(cwd)) != os.path.normcase(os.path.realpath(root)):
+        return ["条項3(Codex): フック一覧の対象リポジトリが異なる"]
+    if entry.get("errors") or not isinstance(entry.get("hooks"), list):
+        return ["条項3(Codex): フックの読み込みが失敗した"]
+    hooks = {}
+    for hook in entry["hooks"]:
+        if not isinstance(hook, dict) or not isinstance(hook.get("key"), str) or hook["key"] in hooks:
+            return ["条項3(Codex): フック一覧の項目が不正または重複"]
+        hooks[hook["key"]] = hook
+    problems = []
+    for key in sorted(required):
+        hook = hooks.get(key)
+        if hook is None:
+            problems.append(f"条項3(Codex): 必須フックが無い: {key}")
+        elif hook.get("enabled") is not True or hook.get("trustStatus") != "trusted":
+            problems.append(f"条項3(Codex): 必須フックが無効または未信頼: {key}。/hooks で定義を確認し信頼・有効化する")
+    return problems
+
+
 def codex_settings(root):
     codex = shutil.which("codex")
     if codex is None:
         return ["条項3(Codex): codex コマンドが見つからない"]
+    deadline = time.monotonic() + CODEX_SETTINGS_TIMEOUT
     try:
-        spec = importlib.util.spec_from_file_location("_review_process", HERE.parent / "scripts" / "review_process.py")
-        process = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(process)
+        process = process_module()
         result = process.run_review([codex, "plugin", "list", "--marketplace", "harness", "--json"],
                                     cwd=root, input_text="", timeout=CODEX_SETTINGS_TIMEOUT)
         payload = json.loads(result.stdout)
@@ -104,11 +157,35 @@ def codex_settings(root):
     installed = payload.get("installed")
     if not isinstance(installed, list):
         return ["条項3(Codex): 導入済みプラグインの一覧が無い"]
-    for plugin in installed:
-        if isinstance(plugin, dict) and plugin.get("pluginId") == "flow@harness":
-            if plugin.get("installed") is True and plugin.get("enabled") is True:
-                return []
-    return ["条項3(Codex): 対象リポジトリで flow@harness が導入・有効化されていない"]
+    active = [p for p in installed if isinstance(p, dict) and p.get("installed") is True and p.get("enabled") is True]
+    if not any(p.get("pluginId") == "flow@harness" for p in active):
+        return ["条項3(Codex): 対象リポジトリで flow@harness が導入・有効化されていない"]
+    try:
+        required = set()
+        for plugin in active:
+            if plugin.get("pluginId") in ("flow@harness", "guard@harness"):
+                required.update(required_hook_keys(plugin))
+        result = process.run_rpc([codex, "app-server", "--stdio"], cwd=root,
+                                 requests=[
+                                     {"id": 1, "method": "initialize", "params": {
+                                         "clientInfo": {"name": "harness-adoption", "version": "1"},
+                                         "capabilities": {"experimentalApi": True}}},
+                                     {"method": "initialized"},
+                                     {"id": 2, "method": "hooks/list", "params": {"cwds": [str(root)]}},
+                                     {"id": 3, "method": "config/read", "params": {"cwd": str(root), "includeLayers": False}},
+                                 ], timeout=max(0.01, deadline - time.monotonic()))
+        replies = json.loads(result.stdout)
+        if result.returncode != 0 or not isinstance(replies, list) or len(replies) != 3:
+            return ["条項3(Codex): フックの実行状態を取得できない"]
+        config = replies[2].get("config") if isinstance(replies[2], dict) else None
+        if not isinstance(config, dict) or not isinstance(config.get("features", {}), dict):
+            return ["条項3(Codex): フック機能の設定を取得できない"]
+        features = config.get("features", {})
+        if features.get("hooks", features.get("codex_hooks", True)) is not True:
+            return ["条項3(Codex): フック機能が無効"]
+        return codex_hook_problems(replies[1], required, root)
+    except (OSError, subprocess.TimeoutExpired, ValueError) as error:
+        return [f"条項3(Codex): フックの実行状態を確認できない: {error}"]
 
 
 def check(root, host="claude"):
@@ -219,6 +296,19 @@ def _selftest():
             print(f"FAIL 読めない設定の報告: {unreadable}")
 
     plugin = {"pluginId": "flow@harness", "installed": True, "enabled": True}
+    expected = required_hook_keys(plugin)
+    hook_payload = {"data": [{"cwd": str(HERE), "errors": [], "hooks": [
+        {"key": key, "enabled": True, "trustStatus": "trusted"} for key in sorted(expected)
+    ]}]}
+
+    def cli_module(stdout, returncode=0, hooks=None, config=None):
+        module = Mock()
+        module.run_review.return_value = subprocess.CompletedProcess([], returncode, stdout, "failure")
+        module.run_rpc.return_value = subprocess.CompletedProcess([], 0, json.dumps([
+            {}, hook_payload if hooks is None else hooks, {"config": {} if config is None else config},
+        ]), "")
+        return module
+
     for payload, returncode, accepted in (
         ({"installed": [plugin]}, 0, True),
         ({"installed": [{**plugin, "enabled": False}]}, 0, False),
@@ -229,16 +319,14 @@ def _selftest():
         ([], 0, False),
         ({"installed": [plugin]}, 1, False),
     ):
-        process = Mock(returncode=returncode)
-        process.communicate.return_value = (json.dumps(payload).encode("utf-8"), b"failure")
-        with patch("shutil.which", return_value="codex"), patch("subprocess.Popen", return_value=process):
+        process = cli_module(json.dumps(payload), returncode)
+        with patch("shutil.which", return_value="codex"), patch.dict(globals(), {"process_module": lambda: process}):
             problems = codex_settings(HERE)
         if bool(problems) == accepted:
             ok = False
             print(f"FAIL Codex の導入・有効化: payload={payload} returncode={returncode}")
-    process = Mock(returncode=0)
-    process.communicate.return_value = (b"{", b"")
-    with patch("shutil.which", return_value="codex"), patch("subprocess.Popen", return_value=process):
+    process = cli_module("{")
+    with patch("shutil.which", return_value="codex"), patch.dict(globals(), {"process_module": lambda: process}):
         if not codex_settings(HERE):
             ok = False
             print("FAIL Codex の一覧が不正 JSON でも通す")
@@ -246,10 +334,83 @@ def _selftest():
         if not codex_settings(HERE):
             ok = False
             print("FAIL Codex CLI が無くても通す")
-    with patch("shutil.which", return_value="codex"), patch("subprocess.Popen", side_effect=OSError("fixture")):
+    process = cli_module(json.dumps({"installed": [plugin]}))
+    process.run_review.side_effect = OSError("fixture")
+    with patch("shutil.which", return_value="codex"), patch.dict(globals(), {"process_module": lambda: process}):
         if not codex_settings(HERE):
             ok = False
             print("FAIL Codex CLI の起動失敗でも通す")
+
+    for key in sorted(expected):
+        for state in (None, {"enabled": False}, {"trustStatus": "untrusted"}, {"trustStatus": "changed"},
+                      {"trustStatus": None}, {"enabled": 1}):
+            changed = json.loads(json.dumps(hook_payload))
+            hooks = changed["data"][0]["hooks"]
+            selected = next(hook for hook in hooks if hook["key"] == key)
+            if state is None:
+                hooks.remove(selected)
+            else:
+                selected.update(state)
+            process = cli_module(json.dumps({"installed": [plugin]}), hooks=changed)
+            with patch("shutil.which", return_value="codex"), patch.dict(globals(), {"process_module": lambda: process}):
+                if not codex_settings(HERE):
+                    ok = False
+                    print(f"FAIL 必須フックの不備を通す: {key} {state}")
+
+    invalid_hooks = [[], {}, {"data": []}, {"data": [{"cwd": str(HERE), "hooks": None}]},
+                     {"data": [{"cwd": str(HERE), "errors": ["fixture"], "hooks": []}]},
+                     {"data": [{"cwd": str(HERE / 'different'), "hooks": []}]}]
+    duplicate = json.loads(json.dumps(hook_payload))
+    duplicate["data"][0]["hooks"].append(duplicate["data"][0]["hooks"][0])
+    invalid_hooks.append(duplicate)
+    for payload in invalid_hooks:
+        if not codex_hook_problems(payload, expected, HERE):
+            ok = False
+            print(f"FAIL 不正なフック一覧を通す: {payload}")
+
+    for config in ({"features": {"hooks": False}}, {"features": {"codex_hooks": False}},
+                   {"features": []}):
+        process = cli_module(json.dumps({"installed": [plugin]}), config=config)
+        with patch("shutil.which", return_value="codex"), patch.dict(globals(), {"process_module": lambda: process}):
+            if not codex_settings(HERE):
+                ok = False
+                print(f"FAIL フック機能の無効・不正設定を通す: {config}")
+
+    for failure in (OSError("fixture"), ValueError("fixture"), subprocess.TimeoutExpired("fixture", 1)):
+        process = cli_module(json.dumps({"installed": [plugin]}))
+        process.run_rpc.side_effect = failure
+        with patch("shutil.which", return_value="codex"), patch.dict(globals(), {"process_module": lambda: process}):
+            if not codex_settings(HERE):
+                ok = False
+                print(f"FAIL フック取得失敗を通す: {failure}")
+
+    with tempfile.TemporaryDirectory() as guard_root:
+        directory = Path(guard_root)
+        (directory / "hooks").mkdir()
+        (directory / "hooks/codex-hooks.json").write_text(json.dumps({"hooks": {"PreToolUse": [
+            {"hooks": [{"type": "command", "command": "fixture"} for _ in range(4)]},
+            {"hooks": [{"type": "command", "command": "fixture"}]},
+        ]}}), encoding="utf-8")
+        guard = {"pluginId": "guard@harness", "installed": True, "enabled": True,
+                 "source": {"path": str(directory)}}
+        for source in (None, [], {}, {"path": ""}, {"path": "./plugins/guard"}, {"path": 1}):
+            process = cli_module(json.dumps({"installed": [plugin, {**guard, "source": source}]}))
+            with patch("shutil.which", return_value="codex"), patch.dict(globals(), {"process_module": lambda: process}):
+                if not codex_settings(HERE):
+                    ok = False
+                    print(f"FAIL guard の導入先が不明でも通す: {source}")
+        all_hooks = json.loads(json.dumps(hook_payload))
+        guard_keys = required_hook_keys(guard)
+        all_hooks["data"][0]["hooks"].extend(
+            {"key": key, "enabled": True, "trustStatus": "trusted"} for key in sorted(guard_keys))
+        for key in sorted(guard_keys):
+            changed = json.loads(json.dumps(all_hooks))
+            next(h for h in changed["data"][0]["hooks"] if h["key"] == key)["trustStatus"] = "untrusted"
+            process = cli_module(json.dumps({"installed": [plugin, guard]}), hooks=changed)
+            with patch("shutil.which", return_value="codex"), patch.dict(globals(), {"process_module": lambda: process}):
+                if not codex_settings(HERE):
+                    ok = False
+                    print(f"FAIL 有効な guard の未信頼フックを通す: {key}")
 
     if load_json(REQUIRED_SETTINGS) is None:
         ok = False
