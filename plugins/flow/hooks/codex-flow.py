@@ -130,7 +130,7 @@ def cli_reason(command):
                 if runner == ROOT / "skills" / "run-and-bench" / "run_capped.py" and args[3] == "--":
                     try:
                         cap = float(args[2])
-                        capped = math.isfinite(cap) and 0 < cap <= 900
+                        capped = math.isfinite(cap) and 0 < cap <= hook("guard-idle-stop").WAIT_CAP_SECS
                     except ValueError:
                         pass
                     args = args[4:]

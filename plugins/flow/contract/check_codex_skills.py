@@ -38,6 +38,28 @@ REQUIREMENTS = {
 }
 
 
+TWINS = (
+    ("skills/opus-review-loop/SKILL.md", "skills/fable-review-loop/SKILL.md"),
+    ("agents/opus-reviewer.md", "agents/fable-reviewer.md"),
+)
+MODELS = ("opus", "fable")
+
+
+def without_own_model(path, text):
+    model = next(name for name in MODELS if name in path)
+    return re.sub(model, "", text, flags=re.IGNORECASE)
+
+
+def check_twins(documents):
+    problems = []
+    for left, right in TWINS:
+        if left not in documents or right not in documents:
+            problems.append(f"{left} と {right}: 文書が無い")
+        elif without_own_model(left, documents[left]) != without_own_model(right, documents[right]):
+            problems.append(f"{left} と {right}: モデル名以外の本文が食い違う、または他方のモデル名が混入している")
+    return problems
+
+
 def codex_section(text):
     match = re.search(r"^## Codex 上で実行するとき\s*\n(.*?)(?=^## |\Z)", text, re.M | re.S)
     if not match:
@@ -66,12 +88,26 @@ def check_documents(documents):
 
 
 def read_documents():
-    return {path: (ROOT / path).read_text(encoding="utf-8") for path in REQUIREMENTS if (ROOT / path).is_file()}
+    paths = [*REQUIREMENTS, *(path for twin in TWINS for path in twin)]
+    return {path: (ROOT / path).read_text(encoding="utf-8") for path in paths if (ROOT / path).is_file()}
 
 
 def selftest():
     documents = read_documents()
-    failures = check_documents(documents)
+    failures = check_documents(documents) + check_twins(documents)
+    for left, right in TWINS:
+        changed = dict(documents)
+        changed[left] += "追記"
+        if not check_twins(changed):
+            failures.append(f"{left}: 双子とのずれを検出しない")
+        changed = dict(documents)
+        changed[left] = changed[left].replace("opus", "fable", 1)
+        if not check_twins(changed):
+            failures.append(f"{left}: 他方のモデル名への置換を検出しない")
+        changed = dict(documents)
+        changed.pop(right)
+        if not check_twins(changed):
+            failures.append(f"{right}: 双子の欠落を検出しない")
     for path, clauses in REQUIREMENTS.items():
         for clause in clauses:
             changed = dict(documents)
@@ -100,7 +136,8 @@ def main(argv):
     if argv:
         print(__doc__)
         return 1
-    problems = check_documents(read_documents())
+    documents = read_documents()
+    problems = check_documents(documents) + check_twins(documents)
     for problem in problems:
         print(problem)
     print("Codex スキル契約 OK" if not problems else "Codex スキル契約に不備あり")
