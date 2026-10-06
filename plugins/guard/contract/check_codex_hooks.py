@@ -62,8 +62,6 @@ def selftest():
         for script, denied, passed, guidance in (
             ("guard-rm.py", delete, "git status --short", "trash.py"),
             ("guard-time.py", setter, reader, reader),
-            ("guard-sed-inplace.py", "sed -i 's/a/b/' 検査.txt",
-             "sed -n '1,5p' 検査.txt", "apply_patch"),
             ("guard-root-scan.py", "rg --files /", "rg --files plugins", "rg --files"),
         ):
             reason = invoke(script, command_input(denied, shell), platform=platform)
@@ -71,7 +69,7 @@ def selftest():
             assert "Edit ツール" not in reason and "sandbox.excludedCommands" not in reason
             assert invoke(script, command_input(passed, shell), platform=platform) is None
             cases += 2
-    for script in ("guard-rm.py", "guard-time.py", "guard-sed-inplace.py", "guard-root-scan.py"):
+    for script in ("guard-rm.py", "guard-time.py", "guard-root-scan.py"):
         for malformed in (None, [], {}, {"tool_name": "Bash", "tool_input": []},
                           command_input(123), command_input("rm x", tool="Read")):
             assert invoke(script, malformed) is None
@@ -90,7 +88,6 @@ def selftest():
             cases += 1
     for script, denied, guidance in (
         ("guard-rm.py", "rm 検査.txt", "sandbox.excludedCommands"),
-        ("guard-sed-inplace.py", "sed -i x 検査.txt", "Edit ツール"),
         ("guard-time.py", "date -s 2030", "date"),
         ("guard-root-scan.py", "rg --files /", "Glob ツール"),
     ):
@@ -100,7 +97,6 @@ def selftest():
         cases += 2
     for script, denied, guidance in (
         ("guard-rm.py", "Remove-Item 検査.txt", "Bash ツールへ移り"),
-        ("guard-sed-inplace.py", "sed -i x 検査.txt", "Edit ツール"),
         ("guard-time.py", "Set-Date", "Get-Date"),
         ("guard-root-scan.py", "rg --files /", "Glob ツール"),
     ):
@@ -110,7 +106,7 @@ def selftest():
         cases += 2
     claude = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
     codex = json.loads((HOOKS / "codex-hooks.json").read_text(encoding="utf-8"))
-    expected = ["guard-rm.py", "guard-sed-inplace.py", "guard-time.py", "guard-root-scan.py"]
+    expected = ["guard-rm.py", "guard-time.py", "guard-root-scan.py"]
     assert len(claude["hooks"]["PreToolUse"]) == 2
     for entry, matcher in zip(claude["hooks"]["PreToolUse"], ("Bash", "PowerShell")):
         assert entry["matcher"] == matcher

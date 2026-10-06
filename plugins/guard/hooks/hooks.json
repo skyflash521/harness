@@ -11,11 +11,6 @@
           },
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-sed-inplace.py\"",
-            "shell": "bash"
-          },
-          {
-            "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-time.py\"",
             "shell": "bash"
           },
@@ -32,11 +27,6 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-rm.py\" \"${CLAUDE_PLUGIN_ROOT}\"",
-            "shell": "bash"
-          },
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-sed-inplace.py\"",
             "shell": "bash"
           },
           {

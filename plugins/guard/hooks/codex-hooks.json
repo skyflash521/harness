@@ -10,10 +10,6 @@
           },
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/hooks/guard-sed-inplace.py\" --codex"
-          },
-          {
-            "type": "command",
             "command": "python3 \"${PLUGIN_ROOT}/hooks/guard-time.py\" --codex"
           },
           {

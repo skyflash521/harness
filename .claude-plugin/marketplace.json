@@ -7,7 +7,7 @@
     {
       "name": "guard",
       "source": "./plugins/guard",
-      "description": "言語非依存の安全装置。rm の拒否とごみ箱誘導・sed インプレース監視・時計変更の拒否・ルート起点の再帰探索の拒否"
+      "description": "言語非依存の安全装置。rm の拒否とごみ箱誘導・時計変更の拒否・ルート起点の再帰探索の拒否"
     },
     {
       "name": "flow",
