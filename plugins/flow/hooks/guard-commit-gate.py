@@ -238,6 +238,29 @@ def transcript_file(directory, says, name="transcript.jsonl"):
     return path.as_posix()
 
 
+def launches_file(directory, launched, name="launches.jsonl"):
+    rows = []
+    for index, (agent_name, kind, agent_id) in enumerate(launched):
+        args = {"subagent_type": kind, "prompt": "x"}
+        if agent_name:
+            args["name"] = agent_name
+        rows.append({"type": "assistant", "isSidechain": False, "message": {"content": [
+            {"type": "tool_use", "id": f"u{index}", "name": "Agent", "input": args}]}})
+        rows.append({"type": "user", "isSidechain": False,
+                     "toolUseResult": {"status": "completed", "agentId": agent_id},
+                     "message": {"content": [
+                         {"type": "tool_result", "tool_use_id": f"u{index}", "content": "done"}]}})
+    path = Path(directory, name)
+    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
+                    encoding="utf-8")
+    return path.as_posix()
+
+
+def message(to, transcript_path):
+    return {"tool_name": "SendMessage", "transcript_path": transcript_path,
+            "tool_input": {"to": to, "message": "もう一度コミットして"}}
+
+
 def selftest():
     import tempfile
 
@@ -246,6 +269,13 @@ def selftest():
 
 
 def run_selftest(tmp):
+    launched = launches_file(tmp, [
+        ("committer", "flow:commit-worker", "a-worker"),
+        ("reviewer", "flow:opus-reviewer", "a-reviewer"),
+        (None, "flow:commit-worker", "a-unnamed"),
+        ("reused", "flow:commit-worker", "a-reused-1"),
+        ("reused", "flow:opus-reviewer", "a-reused-2"),
+    ])
     told = transcript_file(tmp, ["レビューしろ", "|結末: 千日手", SAID])
     beforehand = transcript_file(
         tmp, [SAID, "レビューしろ", "|結末: 千日手"], "beforehand.jsonl")
@@ -264,7 +294,13 @@ def run_selftest(tmp):
         ("レビュー応答原文の中の囲みはコミット指示ではない",
          launch(wrap("[[[\n引用した設定\n]]]\n\n未解決の指摘: 0件"))),
         ("コミットワーカー以外のエージェント", launch("レビューせよ", "flow:opus-reviewer")),
-        ("継続の送信", {"tool_name": "SendMessage", "tool_input": {"to": "committer"}}),
+        ("転写を読めない回の送信", {"tool_name": "SendMessage", "tool_input": {"to": "committer"}}),
+        ("レビュアーの名前への送信", message("reviewer", launched)),
+        ("レビュアーの agentId への送信", message("a-reviewer", launched)),
+        ("起動へ解決できない宛先への送信", message("nobody", launched)),
+        ("同じ名前の最後の起動がレビュアー", message("reused", launched)),
+        ("宛先が文字列でない送信", {"tool_name": "SendMessage", "transcript_path": launched,
+                              "tool_input": {"to": 1}}),
         ("Agent 以外のツール", {"tool_name": "Bash", "tool_input": {"command": "git diff"}}),
         ("tool_input が辞書でない", {"tool_name": "Agent", "tool_input": []}),
         ("空の入力", {}),
@@ -299,6 +335,12 @@ def run_selftest(tmp):
          launch(wrap(STALEMATE_VERDICT, override=SAID), transcript_path=missing), "未解決 2件"),
         ("コミット指示があっても申告が無ければ結末を確かめられない",
          launch(wrap("千日手だ。", override=SAID), transcript_path=told), "申告が無い"),
+        ("ワーカーの名前への送信", message("committer", launched), "継続の送信"),
+        ("ワーカーの agentId への送信", message("a-worker", launched), "継続の送信"),
+        ("名前を付けずに起動したワーカーの agentId への送信",
+         message("a-unnamed", launched), "継続の送信"),
+        ("名前を継ぎ直す前のワーカーの agentId への送信",
+         message("a-reused-1", launched), "継続の送信"),
     )
     failures = []
     for label, data in passes:

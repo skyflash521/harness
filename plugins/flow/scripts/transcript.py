@@ -356,6 +356,27 @@ def selftest():
     check("発言が無ければ None", calls_since_last_instruction([assistant(tool="Bash")]), None)
     check("呼び出しが無ければ空", calls_since_last_instruction([user("読め")]), [])
 
+    def agent_use(ident, kind, name=None, sidechain=False):
+        args = {"subagent_type": kind}
+        if name:
+            args["name"] = name
+        return {"type": "assistant", "isSidechain": sidechain, "message": {"content": [
+            {"type": "tool_use", "id": ident, "name": "Agent", "input": args}]}}
+
+    def agent_result(ident, agent_id):
+        return {"type": "user", "isSidechain": False, "toolUseResult": {"agentId": agent_id},
+                "message": {"content": [{"type": "tool_result", "tool_use_id": ident}]}}
+
+    found = launches([
+        user("起動しろ"),
+        agent_use("u1", "flow:commit-worker", name="committer"), agent_result("u1", "a1"),
+        agent_use("u2", "flow:opus-reviewer"), agent_result("u2", "a2"),
+        agent_use("u3", "flow:commit-worker", sidechain=True), agent_result("u3", "a3"),
+    ])
+    check("起動を名前と agentId の両方へ解決する",
+          [(index, kind, sorted(names)) for index, kind, names in found],
+          [(1, "flow:commit-worker", ["a1", "committer"]), (3, "flow:opus-reviewer", ["a2"])])
+
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp, "transcript.jsonl")
         path.write_text(
