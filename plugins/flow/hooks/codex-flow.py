@@ -298,7 +298,8 @@ def decide(data):
             command = tool_input.get("command")
             if isinstance(command, str):
                 reason = patch_reason(command, data.get("cwd") or Path.cwd())
-        if reason is None and data.get("tool_name", "").rsplit(".", 1)[-1] in (
+        tool_name = data.get("tool_name")
+        if reason is None and isinstance(tool_name, str) and tool_name.rsplit(".", 1)[-1] in (
             "request_user_input", "request_user_input_async", "AskUserQuestion",
         ):
             reason = hook("guard-autonomous-question").decide({**data, "tool_name": "AskUserQuestion"})

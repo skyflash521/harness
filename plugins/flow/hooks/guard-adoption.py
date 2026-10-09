@@ -31,9 +31,10 @@ def _load_contract():
 
 def skill_name(data):
     """Skill 起動なら起動対象のスキル名、それ以外なら None。"""
-    if data.get("tool_name") != "Skill":
+    if not isinstance(data, dict) or data.get("tool_name") != "Skill":
         return None
-    name = (data.get("tool_input") or {}).get("skill")
+    tool_input = data.get("tool_input")
+    name = tool_input.get("skill") if isinstance(tool_input, dict) else None
     return name if isinstance(name, str) else None
 
 

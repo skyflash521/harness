@@ -767,10 +767,13 @@ def main():
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, EOFError, UnicodeDecodeError):
         return
-    tool = data.get("tool_name")
-    if tool not in {"Bash", "PowerShell"}:
+    if not isinstance(data, dict):
         return
-    command = (data.get("tool_input") or {}).get("command")
+    tool = data.get("tool_name")
+    if tool not in ("Bash", "PowerShell"):
+        return
+    tool_input = data.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if tool == "PowerShell":
         decision, reason = classify_powershell(command)
     else:

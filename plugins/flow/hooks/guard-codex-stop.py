@@ -132,7 +132,8 @@ def decide(data, transcript=None):
     """deny する理由を返す。対象でない・判定できないなら None(pass-through)。"""
     if not isinstance(data, dict) or data.get("tool_name") != TOOL:
         return None
-    task_id = (data.get("tool_input") or {}).get("task_id")
+    tool_input = data.get("tool_input")
+    task_id = tool_input.get("task_id") if isinstance(tool_input, dict) else None
     if not isinstance(task_id, str) or not task_id:
         return None
     transcript = transcript or transcript_module()
