@@ -321,6 +321,19 @@ def selftest():
         (broken / "state.json").write_text("{ not json", encoding="utf-8")
         check("読めない索引は素通りする", active_jobs("S1", files=[root], now=now) == [])
 
+    from unittest.mock import patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        state = Path(tmp, "plugins", "data", "openai-codex", "state")
+        state.mkdir(parents=True)
+        with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": tmp}):
+            check("CLAUDE_CONFIG_DIR 配下の状態ディレクトリを探す", state in state_roots())
+        default = Path(tmp, "home", ".claude", "plugins", "data", "openai-codex", "state")
+        default.mkdir(parents=True)
+        with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": ""}), \
+                patch.object(Path, "home", return_value=Path(tmp, "home")):
+            check("空の CLAUDE_CONFIG_DIR は既定の置き場を探す", default in state_roots())
+
     with contextlib.redirect_stderr(io.StringIO()):
         env = os.environ.pop(SESSION_ENV, None)
         check("セッションIDが決まらなければ使い方を返す", main([]) == 2)

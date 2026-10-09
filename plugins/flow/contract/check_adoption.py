@@ -295,6 +295,17 @@ def _selftest():
             ok = False
             print(f"FAIL 設定の合算: got={got} unreadable={unreadable}")
 
+        config = root / "config-dir"
+        config.mkdir()
+        (config / "settings.json").write_text(json.dumps({"sandbox": required["sandbox"]}), encoding="utf-8")
+        for value, sandbox_found in ((config, True), (root / "absent", False)):
+            with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(value)}):
+                registered, _ = registered_entries(root)
+            got = missing_entries(registered, required)
+            if ("sandbox.excludedCommands" not in got) != sandbox_found:
+                ok = False
+                print(f"FAIL CLAUDE_CONFIG_DIR={value} のユーザー設定の読み取り: got={got}")
+
         (root / SETTINGS_FILES[1]).write_text("{壊れた JSON", encoding="utf-8")
         _, unreadable = registered_entries(root, user_settings=user)
         if [path.name for path in unreadable] != [Path(SETTINGS_FILES[1]).name]:
