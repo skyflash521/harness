@@ -1,18 +1,12 @@
 #!/usr/bin/env python3
-"""Codex の PreToolUse フック: シェルから直接発行された履歴を書き換える操作を deny する。
+"""Codex の PreToolUse フック。
 
-Codex では、フックの入力が呼び出し元のエージェントを識別しない。そのためコミットは
-scripts/codex_commit.py だけが成立させ、このフックはそれ以外の経路——シェルへ直接書いた
-コミット・リセット・リベースなど——を拒否する。ファイルを指定するだけのステージは通す。
-
-コマンド文字列をシェルの構文どおりに語へ分け、命令ごとに版管理コマンドの副コマンドを読む。引用符で
-囲んだ値とエスケープした文字は語の一部なので、値に空白や区切り文字があっても副コマンドの位置と
-混ざらない。シェルが文字列を命令として読む呼び出し(bash -c・pwsh -Command・cmd /c・eval)に
-渡された語だけを、命令として読み直す。
+Codex では、フックの入力が呼び出し元のエージェントを識別しない。
 
 使い方: Codex の PreToolUse フックとして登録する(matcher は Bash)。--selftest で自己テスト。
 """
 import json
+import os
 import re
 import subprocess
 import sys
@@ -105,8 +99,11 @@ def program(word):
     return name[:-4] if name.endswith(".exe") else name
 
 
-def blocked_subcommand(text, depth=0):
-    """命令の中の履歴を書き換える副コマンドの名前を返す。無ければ None。"""
+def blocked_subcommand(text, depth=0, base=""):
+    """命令の中の、通さない形の副コマンドの名前を返す。無ければ None。
+
+    base は add が名指すパスを解決する基点。空なら現在のディレクトリ。
+    """
     try:
         tokens = words(text)
     except ValueError:
@@ -114,7 +111,7 @@ def blocked_subcommand(text, depth=0):
     segment = []
     for word, quoted in tokens + [("\n", False)]:
         if not quoted and word in OPERATORS:
-            found = scan_segment(segment, depth)
+            found = scan_segment(segment, depth, base)
             if found:
                 return found
             segment = []
@@ -172,7 +169,7 @@ def shell_commands(args):
     yield " ".join(following)
 
 
-def scan_segment(segment, depth):
+def scan_segment(segment, depth, base):
     for index in command_positions(segment):
         name = program(segment[index])
         if name == "git":
@@ -184,20 +181,50 @@ def scan_segment(segment, depth):
                     position += 1
                 else:
                     break
-            if position < len(segment) and segment[position] in BLOCKED:
-                return segment[position]
+            if position >= len(segment):
+                continue
+            subcommand, rest = segment[position], segment[position + 1:]
+            if subcommand == "restore" and unstages_only(rest):
+                continue
+            if subcommand in BLOCKED or (subcommand == "add" and not explicit_add(rest, base)):
+                return subcommand
         elif name in SHELLS and depth < MAX_DEPTH:
             for command in shell_commands(segment[index:]):
-                found = blocked_subcommand(command, depth + 1)
+                found = blocked_subcommand(command, depth + 1, base)
                 if found:
                     return found
     return None
 
 
+def unstages_only(args):
+    """`git restore` の引数が、作業ツリーにも取り出し元にも触れずステージだけを外す形か。"""
+    staged = False
+    for arg in args[:args.index("--")] if "--" in args else args:
+        name = arg.split("=", 1)[0]
+        if name.startswith("--"):
+            if len(name) > 2 and ("--worktree".startswith(name) or "--source".startswith(name)):
+                return False
+            staged = staged or name == "--staged"
+        elif name.startswith("-"):
+            if set(name[1:]) & set("Ws"):
+                return False
+            staged = staged or "S" in name[1:]
+    return staged
+
+
+def explicit_add(args, base):
+    """`git add` の引数が、`--` に続けて base から見た個別のファイルを名指す形か。"""
+    paths = args[1:]
+    return (bool(paths) and args[0] == "--"
+            and not any(not path or path in (".", "..") or path.endswith(("/", "\\"))
+                        or path.startswith(":") or any(c in path for c in "*?[]{}")
+                        or os.path.isdir(os.path.join(base, path)) for path in paths))
+
+
 def loose_match(text):
-    """構文として読めないコマンドは、版管理コマンドと禁止する副コマンドの語が共にあれば拒否する。"""
+    """構文として読めないコマンドは、版管理コマンドと通さない副コマンドの語が共にあれば拒否する。"""
     if re.search(r"\bgit\b", text, re.IGNORECASE):
-        for word in sorted(BLOCKED):
+        for word in sorted(BLOCKED | {"add"}):
             if re.search(r"(?<![\w-])" + re.escape(word) + r"(?![\w-])", text):
                 return word
     return None
@@ -211,9 +238,13 @@ def decide(data):
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if not isinstance(command, str):
         return None
-    found = blocked_subcommand(command)
+    base = data.get("cwd")
+    found = blocked_subcommand(command, base=base if isinstance(base, str) else "")
     if found is None:
         return None
+    if found == "add":
+        return ("[codex-guard-git-write] git add は `git add -- <個別のファイル>...` の形だけを通す。"
+                "ディレクトリ・グロブ・`.`・`-A` を使わず、ステージするファイルを1つずつ名指すこと。")
     return f"[codex-guard-git-write] git {found} をシェルから直接発行できない。" + GUIDANCE
 
 
