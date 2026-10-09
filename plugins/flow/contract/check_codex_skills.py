@@ -38,6 +38,40 @@ REQUIREMENTS = {
 }
 
 
+def constant(path, name):
+    """path の Python ソースが `name = <整数>` で定める値。見つからなければ None。"""
+    match = re.search(rf"^{name} = (\d+)$", (ROOT / path).read_text(encoding="utf-8"), re.M)
+    return int(match.group(1)) if match else None
+
+
+STALL = constant("scripts/reap_codex_jobs.py", "STALL_SECONDS")
+WAIT_CAP = constant("hooks/guard-idle-stop.py", "WAIT_CAP_SECS")
+ROUND_CAP = f"[1ラウンドの上限](../review-loop-judgement/SKILL.md#1ラウンドが時間内に終わらないとき) の{WAIT_CAP}秒"
+THRESHOLDS = {
+    "scripts/reap_codex_jobs.py": (f"既定と同じ{STALL}秒",),
+    "skills/codex-watchdog/watchdog.sh": (f'STALL_SECS="${{1:-{STALL}}}"', f'WALL_CAP_SECS="${{2:-{WAIT_CAP}}}"'),
+    "skills/codex-watchdog/SKILL.md": (f"`STALL_SECS={STALL}`・`WALL_CAP_SECS={WAIT_CAP}`",),
+    "skills/review-loop-judgement/SKILL.md": (f"1ラウンドをハングと判断する時間は{WAIT_CAP}秒",),
+    "skills/codex-review-loop/SKILL.md": (ROUND_CAP,),
+    "skills/opus-review-loop/SKILL.md": (ROUND_CAP,),
+    "skills/fable-review-loop/SKILL.md": (ROUND_CAP,),
+    "skills/codex-consult/SKILL.md": (f"単発相談の時間上限は{WAIT_CAP}秒",),
+}
+
+
+def check_thresholds(documents):
+    if STALL is None or WAIT_CAP is None:
+        return ["閾値の正本(STALL_SECONDS・WAIT_CAP_SECS)を読めない"]
+    problems = []
+    for path, required in THRESHOLDS.items():
+        text = documents.get(path)
+        if text is None:
+            problems.append(f"{path}: 文書が無い")
+            continue
+        problems += [f"{path}: 閾値が正本と一致しない: {clause}" for clause in required if clause not in text]
+    return problems
+
+
 TWINS = (
     ("skills/opus-review-loop/SKILL.md", "skills/fable-review-loop/SKILL.md"),
     ("agents/opus-reviewer.md", "agents/fable-reviewer.md"),
@@ -88,13 +122,13 @@ def check_documents(documents):
 
 
 def read_documents():
-    paths = [*REQUIREMENTS, *(path for twin in TWINS for path in twin)]
+    paths = [*REQUIREMENTS, *THRESHOLDS, *(path for twin in TWINS for path in twin)]
     return {path: (ROOT / path).read_text(encoding="utf-8") for path in paths if (ROOT / path).is_file()}
 
 
 def selftest():
     documents = read_documents()
-    failures = check_documents(documents) + check_twins(documents)
+    failures = check_documents(documents) + check_twins(documents) + check_thresholds(documents)
     for left, right in TWINS:
         changed = dict(documents)
         changed[left] += "追記"
@@ -137,7 +171,7 @@ def main(argv):
         print(__doc__)
         return 1
     documents = read_documents()
-    problems = check_documents(documents) + check_twins(documents)
+    problems = check_documents(documents) + check_twins(documents) + check_thresholds(documents)
     for problem in problems:
         print(problem)
     print("Codex スキル契約 OK" if not problems else "Codex スキル契約に不備あり")
