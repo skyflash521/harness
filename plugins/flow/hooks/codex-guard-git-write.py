@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 BLOCKED = frozenset((
     "commit", "reset", "rebase", "cherry-pick", "revert", "am", "restore", "clean", "stash", "rm",
@@ -317,9 +318,29 @@ DENIES = (
     ("PowerShell の省略命令フラグ", "powershell -exec bypass -com git commit -m x"),
     ("PowerShell の位置引数", "powershell -exec bypass git commit -m x"),
     ("構文として読めないコマンド", "git commit -m 'unbalanced"),
+    ("全体のステージ", "git add -A"),
+    ("カレントディレクトリのステージ", "git add ."),
+    ("区切りの後のカレントディレクトリ", "git add -- ."),
+    ("区切りの無いステージ", "git add a.txt"),
+    ("ファイルを名指さないステージ", "git add --"),
+    ("グロブのステージ", "git add -- '*.py'"),
+    ("`:` で始まる pathspec", "git add -- :/"),
+    ("連結の後の全体のステージ", "git status && git add -A"),
+    ("構文として読めないステージ", "echo 'C:\\work\\'; git add -A"),
+    ("作業ツリーを戻す restore", "git restore a.txt"),
+    ("作業ツリーも戻す restore", "git restore --staged --worktree a.txt"),
+    ("短いオプションをまとめた restore", "git restore -SW a.txt"),
+    ("省略した長いオプションの restore", "git restore --staged --work a.txt"),
+    ("取り出し元を指定する restore", "git restore --staged --source=HEAD~1 a.txt"),
+    ("短い取り出し元を指定する restore", "git restore --staged -s HEAD a.txt"),
 )
 PASSES = (
     ("ファイルを指定するステージ", "git add -- a.txt"),
+    ("複数のファイルを指定するステージ", "git add -- a.txt docs/b.md"),
+    ("ステージだけを外す restore", "git restore --staged -- a.txt"),
+    ("区切りの無いステージだけを外す restore", "git restore --staged a.txt"),
+    ("短いオプションでステージだけを外す restore", "git restore -S a.txt"),
+    ("区切りの後のオプション風のパス", "git restore --staged -- -W"),
     ("状態の確認", "git status --short"),
     ("差分の確認", "git diff --cached"),
     ("ログ", "git log --oneline -1"),
@@ -362,6 +383,17 @@ def selftest():
     for label, data in others:
         if decide(data) is not None:
             failures.append(f"通すはずが deny: {label}")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.mkdir(os.path.join(tmp, "sub"))
+        for label, command, denied in (
+            ("入力の cwd から見たディレクトリのステージ", "git add -- sub", True),
+            ("入力の cwd から見たディレクトリの中のファイルのステージ", "git add -- sub/a.txt", False),
+            ("実在しない名前に末尾の区切り文字を付けたパス", "git add -- new/", True),
+            ("入れ子のシェルでの入力の cwd から見たディレクトリのステージ",
+             'bash -c "git add -- sub"', True),
+        ):
+            if (decide(dict(shell(command), cwd=tmp)) is not None) != denied:
+                failures.append(f"判定が逆: {label}")
     payload = json.dumps(shell(DENIES[0][1]), ensure_ascii=False).encode("utf-8")
     result = subprocess.run([sys.executable, __file__], input=payload, stdout=subprocess.PIPE, check=False)
     try:
