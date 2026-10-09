@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""セッションの転写を、停止の判定に使える形で読む。
-
-停止を判定するフックが共有する読み取りの正本。転写の行を辞書にして返すことと、**直近のユーザー
-発言より後にどの道具を呼んだか**を返すことを引き受ける。
+"""フックが import する、セッションの転写の読み取りの共有モジュール。
 
 ハーネスが差し込んだ囲み(`<system-reminder>` 等)・文脈が尽きたときの圧縮要約・サブエージェントの
 発言は、ユーザーの発言に数えない。前2つはユーザーが書いたものではなく——とくに圧縮要約は作業した
@@ -218,6 +215,40 @@ def calls_since_last_instruction(rows):
         if not isinstance(content, list):
             continue
         found.extend(b for b in content if isinstance(b, dict) and b.get("type") == "tool_use")
+    return found
+
+
+def blocks_of(row):
+    """その行の内容ブロック。文字列で来る content も1つのブロックとして扱う。"""
+    if row.get("isSidechain"):
+        return []
+    content = (row.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    return [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
+
+
+def launches(rows):
+    """起動したエージェントを `[位置, 種別, 識別子の集合]` で返す。
+
+    識別子は起動時に付けた名前と、起動の結果が返す `agentId` の両方。`TaskStop`・`SendMessage` は
+    どちらでも相手を指せるので、どちらで呼ばれても同じ起動に解決できるようにする。
+    """
+    pending, found = {}, []
+    for index, row in enumerate(rows):
+        for block in blocks_of(row):
+            if block.get("type") == "tool_use" and block.get("name") == "Agent":
+                args = block.get("input") if isinstance(block.get("input"), dict) else {}
+                name = args.get("name")
+                entry = [index, args.get("subagent_type"),
+                         {name} if isinstance(name, str) and name else set()]
+                pending[block.get("id")] = entry
+                found.append(entry)
+            elif block.get("type") == "tool_result" and block.get("tool_use_id") in pending:
+                result = row.get("toolUseResult")
+                agent_id = result.get("agentId") if isinstance(result, dict) else None
+                if isinstance(agent_id, str) and agent_id:
+                    pending[block["tool_use_id"]][2].add(agent_id)
     return found
 
 

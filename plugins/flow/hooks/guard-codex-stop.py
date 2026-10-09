@@ -78,7 +78,7 @@ def reason_text(task_id):
 
 
 def transcript_module():
-    """転写の読み取りを持つ側を取り込む。読めなければ None。"""
+    """読めなければ None。"""
     try:
         root = Path(__file__).resolve().parent.parent
         spec = importlib.util.spec_from_file_location("_transcript", Path(root, *TRANSCRIPT))
@@ -89,44 +89,10 @@ def transcript_module():
         return None
 
 
-def blocks_of(row):
-    """その行の内容ブロック。文字列で来る content も1つのブロックとして扱う。"""
-    if row.get("isSidechain"):
-        return []
-    content = (row.get("message") or {}).get("content")
-    if isinstance(content, str):
-        return [{"type": "text", "text": content}]
-    return [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
-
-
-def launches(rows):
-    """バックグラウンドで起動したエージェントを `[位置, 種別, 識別子の集合]` で返す。
-
-    識別子は起動時に付けた名前と、起動の結果が返す `agentId` の両方。`TaskStop` はどちらでも
-    止められるので、どちらで呼ばれても同じ起動に解決できるようにする。
-    """
-    pending, found = {}, []
-    for index, row in enumerate(rows):
-        for block in blocks_of(row):
-            if block.get("type") == "tool_use" and block.get("name") == "Agent":
-                args = block.get("input") if isinstance(block.get("input"), dict) else {}
-                name = args.get("name")
-                entry = [index, args.get("subagent_type"),
-                         {name} if isinstance(name, str) and name else set()]
-                pending[block.get("id")] = entry
-                found.append(entry)
-            elif block.get("type") == "tool_result" and block.get("tool_use_id") in pending:
-                result = row.get("toolUseResult")
-                agent_id = result.get("agentId") if isinstance(result, dict) else None
-                if isinstance(agent_id, str) and agent_id:
-                    pending[block["tool_use_id"]][2].add(agent_id)
-    return found
-
-
-def target_launch(rows, task_id):
+def target_launch(rows, task_id, transcript):
     """その `task_id` が指す codex の起動 `(位置, 識別子の集合)`。codex 以外・不明なら None。"""
     found = None
-    for index, kind, names in launches(rows):
+    for index, kind, names in transcript.launches(rows):
         if task_id in names:
             found = (index, kind, names)
     if found is None or found[1] != TARGET:
@@ -152,11 +118,11 @@ def declared(row, block):
             and bool(GROUND_LINE.search(str(block.get("text", "")))))
 
 
-def settled(rows, start, names, text_blocks):
+def settled(rows, start, names, transcript):
     """起動より後に、そのラウンドの結末を受け取った記録か、停止事由の宣言があるか。"""
     for row in rows[start + 1:]:
-        for block in blocks_of(row):
-            if (reported(block, text_blocks) or notified(row, block, names)
+        for block in transcript.blocks_of(row):
+            if (reported(block, transcript.text_blocks) or notified(row, block, names)
                     or declared(row, block)):
                 return True
     return False
@@ -175,11 +141,11 @@ def decide(data, transcript=None):
     rows = transcript.rows_of(data.get("transcript_path"))
     if not rows:
         return None
-    target = target_launch(rows, task_id)
+    target = target_launch(rows, task_id, transcript)
     if target is None:
         return None
     start, names = target
-    if settled(rows, start, names, transcript.text_blocks):
+    if settled(rows, start, names, transcript):
         return None
     return reason_text(task_id)
 
@@ -214,7 +180,8 @@ def selftest():
 
     def loaded(rows):
         """転写を読む側を、与えた行を返すものへ差し替える。"""
-        return types.SimpleNamespace(rows_of=lambda _path: rows, text_blocks=real.text_blocks)
+        return types.SimpleNamespace(rows_of=lambda _path: rows, text_blocks=real.text_blocks,
+                                     blocks_of=real.blocks_of, launches=real.launches)
 
     def agent_use(ident, kind=TARGET, name=None):
         args = {"subagent_type": kind, "run_in_background": True}

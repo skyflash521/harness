@@ -578,7 +578,7 @@ def is_work(block):
 
 
 def transcript_module():
-    """転写の読み取りを持つ側を取り込む。読めなければ None。"""
+    """読めなければ None。"""
     try:
         root = Path(__file__).resolve().parent.parent
         spec = importlib.util.spec_from_file_location("_transcript", Path(root, *TRANSCRIPT))

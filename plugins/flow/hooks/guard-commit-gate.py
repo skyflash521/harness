@@ -15,9 +15,10 @@
 `結末: 千日手` を宣言し、**その宣言より後に**ユーザーが出した指示が `[[[`/`]]]` の中に在るときに限る。
 どちらを欠いても通さない。
 
-見るのは `subagent_type` がコミットワーカーの `Agent` 起動だけで、他は何も出力せず通す。
+見るのは `subagent_type` がコミットワーカーの `Agent` 起動と、ワーカーへの `SendMessage`(本文を
+見ずに deny する)だけで、他は何も出力せず通す。
 
-使い方: `Agent` の PreToolUse フックとして登録する。--selftest で自己テスト。
+使い方: `Agent` と `SendMessage` の PreToolUse フックとして登録する。--selftest で自己テスト。
 """
 import importlib.util
 import json
@@ -45,6 +46,12 @@ GUIDANCE = (
     "ユーザーが出したコミット指示を囲んで添える。要ユーザー判断なら諮る。"
     "**申告行も宣言も囲みの中身も自分で書いて通すな**——申告と宣言はレビュアーが、指示はユーザーが"
     "出すもので、呼び出し元の地の文は判定の入力にならない。"
+)
+
+WORKER_MESSAGE_REASON = (
+    "[guard-commit-gate] コミットワーカーへの継続の送信は、本文を問わず deny する。この送信は"
+    "起動時のレビューゲートを通らない。出し直すなら flow:commit のプロンプトの型のとおり、"
+    "レビューの最終応答原文を囲んで新しくワーカーを起動すること。"
 )
 
 
@@ -81,16 +88,36 @@ def flat(text):
     return "".join(str(text).split()).replace("*", "").replace("`", "")
 
 
-def user_said(data):
-    """レビュアーが千日手を宣言した後のユーザー発言の本文。読めなければ None。"""
+def transcript_module():
+    """読めなければ None。"""
     try:
         spec = importlib.util.spec_from_file_location("_t", HOOKS.parent / Path(*TRANSCRIPT))
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     except (OSError, AttributeError, ImportError, SyntaxError, ValueError):
         return None
+    return module
+
+
+def user_said(data):
+    """レビュアーが千日手を宣言した後のユーザー発言の本文。読めなければ None。"""
+    module = transcript_module()
+    if module is None:
+        return None
     rows = module.rows_of(data.get("transcript_path"))
     return None if rows is None else module.instructions_after(rows, OUTCOME, STALEMATE)
+
+
+def to_worker(data):
+    """`SendMessage` の宛先が、転写上でコミットワーカーとして起動された名前か agentId か。"""
+    tool_input = data.get("tool_input")
+    to = tool_input.get("to") if isinstance(tool_input, dict) else None
+    module = transcript_module()
+    if not isinstance(to, str) or not to or module is None:
+        return False
+    rows = module.rows_of(data.get("transcript_path")) or []
+    kinds = [kind for _, kind, names in module.launches(rows) if to in names]
+    return bool(kinds) and isinstance(kinds[-1], str) and kinds[-1].split(":")[-1] == WORKER
 
 
 def vouched(said, data):
@@ -101,6 +128,8 @@ def vouched(said, data):
 
 def decide(data):
     """deny する理由を返す。対象の起動でなければ None(pass-through)。"""
+    if isinstance(data, dict) and data.get("tool_name") == "SendMessage":
+        return WORKER_MESSAGE_REASON if to_worker(data) else None
     if not isinstance(data, dict) or data.get("tool_name") != "Agent":
         return None
     tool_input = data.get("tool_input")
