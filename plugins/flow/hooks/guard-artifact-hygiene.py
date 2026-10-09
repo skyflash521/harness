@@ -12,6 +12,7 @@ deny する。既存の違反を含むファイルへの無関係な編集や、
 
 使い方: Edit/Write の PreToolUse フックとして登録する。--selftest で自己テスト。
 """
+import importlib.util
 import json
 import re
 import sys
@@ -297,7 +298,17 @@ def _out_of_scope(path):
         or "/appdata/local/temp/" in path or "/var/folders/" in path
         or path.startswith(("/tmp/", "/private/tmp/"))
         or "/.claude/projects/" in path or bool(HOME_CLAUDE.search(path))
+        or path.startswith(config_dir_prefix())
     )
+
+
+def config_dir_prefix():
+    """Claude Code の設定ディレクトリを、照合するパスと同じ形(区切りは `/`・小文字・末尾 `/`)で返す。"""
+    spec = importlib.util.spec_from_file_location(
+        "_claude_config", Path(__file__).resolve().parent.parent / "scripts" / "claude_config.py")
+    config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(config)
+    return str(config.claude_config_dir()).replace("\\", "/").lower().rstrip("/") + "/"
 
 
 def _is_instruction(path, name):

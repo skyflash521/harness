@@ -44,6 +44,7 @@ companion が `/codex:cancel` で書くのと同じ形——ジョブログへ�
 """
 import contextlib
 import datetime
+import importlib.util
 import io
 import json
 import os
@@ -66,9 +67,11 @@ def state_files(roots=None):
 
 
 def state_roots():
-    config = os.environ.get("CLAUDE_CONFIG_DIR")
-    home = Path(config) if config else Path.home() / ".claude"
-    yield from (home / "plugins" / "data").glob("*/state")
+    spec = importlib.util.spec_from_file_location(
+        "_claude_config", Path(__file__).resolve().parent / "claude_config.py")
+    config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(config)
+    yield from (config.claude_config_dir() / "plugins" / "data").glob("*/state")
     # CLAUDE_PLUGIN_DATA が無いまま起動された companion は状態を一時ディレクトリへ置く。
     yield Path(tempfile.gettempdir(), "codex-companion")
 

@@ -23,7 +23,6 @@ ADOPTION_DOC = HERE.parent / "docs" / "criteria" / "adoption.md"
 
 VERIFICATION_DOC = "docs/conventions/verification.md"
 SETTINGS_FILES = (".claude/settings.json", ".claude/settings.local.json")
-USER_SETTINGS = Path.home() / ".claude" / "settings.json"
 SCRATCH_DIR = ".scratch"
 CODEX_SETTINGS_TIMEOUT = 600 / 2
 
@@ -64,7 +63,7 @@ def registered_entries(root, user_settings=None):
     merged = {}
     unreadable = []
     paths = [root / relative for relative in SETTINGS_FILES]
-    paths.append(Path(user_settings) if user_settings else USER_SETTINGS)
+    paths.append(Path(user_settings) if user_settings else config_module().claude_config_dir() / "settings.json")
     for path in paths:
         settings = load_json(path)
         if settings is None:
@@ -75,6 +74,13 @@ def registered_entries(root, user_settings=None):
             have = ((settings.get(outer) or {}).get(inner)) or []
             merged.setdefault(outer, {}).setdefault(inner, []).extend(have)
     return merged, unreadable
+
+
+def config_module():
+    spec = importlib.util.spec_from_file_location("_claude_config", HERE.parent / "scripts" / "claude_config.py")
+    config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(config)
+    return config
 
 
 def process_module():

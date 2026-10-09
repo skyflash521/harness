@@ -22,7 +22,8 @@ flow プラグインを有効化するリポジトリが満たす条件と、そ
 
 同梱の [required-settings.json](../../contract/required-settings.json) が持つ
 `sandbox.excludedCommands` の全エントリを、`.claude/settings.json`・`.claude/settings.local.json`・
-`~/.claude/settings.json` のいずれかに登録する。サンドボックスの無いネイティブ Windows では確認しない。
+Claude Code の設定ディレクトリ(既定 `~/.claude`、`CLAUDE_CONFIG_DIR` で変更)の `settings.json` の
+いずれかに登録する。サンドボックスの無いネイティブ Windows では確認しない。
 
 #### Codex
 
