@@ -48,7 +48,8 @@ user-invocable: false
 - 残骸の後始末の起動: **flow プラグイン同梱の
   [reap_codex_jobs.py](../../scripts/reap_codex_jobs.py)(このスキルファイルの2つ上のディレクトリの
   `scripts/`)を絶対パスで python3 起動する**。[完了の判定](#完了の判定機械的な部分)で使う。
-  このスクリプトは `~/.claude/plugins` 配下の記録を書き換えるので、既定のサンドボックスでは書けない。
+  このスクリプトは Claude Code の設定ディレクトリ(既定 `~/.claude`、`CLAUDE_CONFIG_DIR` で変更)の
+  `plugins` 配下の記録を書き換えるので、既定のサンドボックスでは書けない。
   [導入契約 3](../../docs/criteria/adoption.md#claude-code) が要求するサンドボックス除外は、パスを
   二重引用符で囲む `python3 "<絶対パス>" …` の形に一致する。引用符を落とすと除外が効かない
 
@@ -219,7 +220,7 @@ companion が消えた時刻の前後に最終更新された他セッション�
 設定への `sandbox.allowWrite` 追加も禁止。
 
 read-only 実行を指示しても、companion の `task` モードは**ジョブ状態ログ
-(`~/.claude/plugins/data/.../jobs/task-*.log`)を codex 起動前に無条件で書く**。この書き込みは
+(Claude Code の設定ディレクトリ配下の `plugins/data/.../jobs/task-*.log`)を codex 起動前に無条件で書く**。この書き込みは
 サンドボックス外で `--write` の有無と無関係に EPERM になりうる。つまり read-only は「リポジトリを
 編集させない」効果はあるが**EPERM(サンドボックス外の状態ログ書き込み)の対策にはならない**。EPERM が
 出た場合はサンドボックスを切らず失敗として扱う。
