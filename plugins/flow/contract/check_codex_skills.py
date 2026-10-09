@@ -152,6 +152,27 @@ def selftest():
         changed.pop(path, None)
         if not check_documents(changed):
             failures.append(f"{path}: 文書の欠落を検出しない")
+    for path, clauses in THRESHOLDS.items():
+        for clause in clauses:
+            for value in (STALL, WAIT_CAP):
+                if str(value) not in clause:
+                    continue
+                changed = dict(documents)
+                changed[path] = changed[path].replace(clause, clause.replace(str(value), str(value + 1)))
+                if not check_thresholds(changed):
+                    failures.append(f"{path}: 正本とずれた値を検出しない: {clause}")
+        changed = dict(documents)
+        changed.pop(path)
+        if not check_thresholds(changed):
+            failures.append(f"{path}: 閾値の文書の欠落を検出しない")
+    for name in ("STALL", "WAIT_CAP"):
+        saved = globals()[name]
+        globals()[name] = None
+        try:
+            if not check_thresholds(documents):
+                failures.append(f"{name}: 正本を読めない回を検出しない")
+        finally:
+            globals()[name] = saved
     for path in REQUIREMENTS:
         if path.startswith("skills/"):
             changed = dict(documents)
