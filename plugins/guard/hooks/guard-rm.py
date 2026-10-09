@@ -2,9 +2,7 @@
 """PreToolUse フック: ファイルの削除を deny し、trash.py によるごみ箱送りへ誘導する。
 
 一時文書・未追跡ファイルであっても、削除は取り消せない場合がある(git追跡外・エディタの
-ローカル履歴にも残らない等)。rm はコマンド先頭がどこにあっても常に deny し、同じ引数で
-同梱の trash.py(削除せずOS標準のごみ箱へ送る可逆な代替)を使わせる。ユーザー確認を都度挟まず
-自律進行を止めないまま、誤削除を可逆にする。
+ローカル履歴にも残らない等)。
 
 PowerShell ツールの発行も同じく見る。そちらは Remove-Item とその別名(rm・del・rd 等)が削除にあたり、
 誘導先は Bash ツールでの trash.py になる——PowerShell から `python3` を同じ名前で引けるとは
@@ -18,13 +16,12 @@ import pathlib
 import sys
 
 from hook_input import read_command
-from shell_words import head_name, segments
+from shell_words import command_positions, head_name, segments
 
 RM_NAMES = ("rm", "rm.exe")
 SANDBOX_EXCLUSION = 'python3 "*/guard/*scripts/trash.py"*'
 # PowerShell では次がいずれも Remove-Item の別名で、同じ削除を行う。
 PS_RM_NAMES = RM_NAMES + ("remove-item", "ri", "del", "erase", "rd", "rmdir")
-
 
 def trash_script():
     """誘導先 trash.py の絶対パス。"""
@@ -51,8 +48,13 @@ def deny_reason(via="", codex=False):
 
 
 def has_rm(command, names=RM_NAMES):
-    """コマンド内のどこかで、セグメント先頭が names のいずれか(パス修飾・拡張子形含む)か。"""
-    return any(head_name(tokens[0]) in names for tokens in segments(command) or [])
+    """コマンド内のどこかで、命令の位置の語が names のいずれか(パス修飾・拡張子形含む)か。find -delete も含む。"""
+    for tokens in segments(command) or []:
+        for index in command_positions(tokens):
+            name = head_name(tokens[index])
+            if name in names or (name == "find" and "-delete" in tokens[index:]):
+                return True
+    return False
 
 
 def main():

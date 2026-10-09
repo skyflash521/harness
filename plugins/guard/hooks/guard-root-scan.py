@@ -24,7 +24,7 @@ import re
 import sys
 
 from hook_input import read_command
-from shell_words import head_name, segments
+from shell_words import command_positions, head_name, segments
 
 ALWAYS_RECURSIVE = {"find", "rg", "ripgrep", "fd", "fdfind", "ag", "ack", "tree", "du"}
 # ls の `-r` は逆順であって再帰ではないので、大文字だけを見る。
@@ -105,24 +105,28 @@ def scans_root(command):
         return False
     at_root = False
     for tokens in parsed:
-        name = head_name(tokens[0])
-        args = tokens[1:]
-        if name == "cd":
-            targets = [arg for arg in args if not arg.startswith("-")]
+        positions = list(command_positions(tokens))
+        if positions and head_name(tokens[positions[0]]) == "cd":
+            targets = [arg for arg in tokens[positions[0] + 1:] if not arg.startswith("-")]
             at_root = bool(targets) and is_root_path(targets[0])
             continue
-        if name not in ALWAYS_RECURSIVE and not (
-            name in RECURSIVE_LETTERS and has_recursive_flag(name, args)
-        ):
-            continue
-        if name == "find" and has_bounded_depth(args):
-            continue
-        operands = path_operands(name, args)
-        if any(is_root_path(operand) for operand in operands):
-            return True
-        if at_root and all(operand.rstrip("/") in ("", ".") for operand in operands):
+        if any(scans_from(head_name(tokens[i]), tokens[i + 1:], at_root) for i in positions):
             return True
     return False
+
+
+def scans_from(name, args, at_root):
+    """name を args で起動すると、ドライブルート起点の再帰探索になるか。"""
+    if name not in ALWAYS_RECURSIVE and not (
+        name in RECURSIVE_LETTERS and has_recursive_flag(name, args)
+    ):
+        return False
+    if name == "find" and has_bounded_depth(args):
+        return False
+    operands = path_operands(name, args)
+    if any(is_root_path(operand) for operand in operands):
+        return True
+    return at_root and all(operand.rstrip("/") in ("", ".") for operand in operands)
 
 
 def main():

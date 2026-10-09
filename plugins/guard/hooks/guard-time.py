@@ -16,7 +16,7 @@ import shlex
 import sys
 
 from hook_input import read_command
-from shell_words import head_name, segments
+from shell_words import command_positions, head_name, segments
 
 # 次のトークンを引数として食う date のフラグ。いずれも読み取り専用。
 TAKES_ARG = {"-d", "--date", "-r", "--reference", "-f", "--file"}
@@ -25,7 +25,7 @@ NOT_STANDALONE_STATIC = re.compile(r"[$`<>;&|\n(]")
 
 
 def decide(cmd):
-    """単独の静的な `date` が時計を変えるなら "deny"。それ以外は None(通す)。"""
+    """単独の静的な呼び出しで、命令の位置にある `date` が時計を変えるなら "deny"。それ以外は None(通す)。"""
     if not isinstance(cmd, str) or not cmd.strip():
         return None
     if NOT_STANDALONE_STATIC.search(cmd):
@@ -34,10 +34,11 @@ def decide(cmd):
         tokens = shlex.split(cmd, posix=True)
     except Exception:
         return None
-    if not tokens or tokens[0] != "date":
+    start = next((i for i in command_positions(tokens) if tokens[i] == "date"), None)
+    if start is None:
         return None
 
-    args = tokens[1:]
+    args = tokens[start + 1:]
     i = 0
     while i < len(args):
         arg = args[i]
@@ -59,7 +60,7 @@ def decide_powershell(cmd):
     """PowerShell の発行が時計を変えるなら "deny"。それ以外は None(通す)。"""
     if not isinstance(cmd, str) or not cmd.strip():
         return None
-    for tokens in segments(cmd, skip_heredoc=False) or []:
+    for tokens in segments(cmd) or []:
         if head_name(tokens[0]) in PS_CLOCK_SETTERS:
             return "deny"
     return None
