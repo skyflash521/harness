@@ -10,6 +10,7 @@
 キルに失敗して子が生き残っても呼び出し側は復帰できる。
 
 使い方: python3 run_capped.py <cap_seconds> -- <command...>
+       --selftest で自己テスト。
 終了コード: 上限を超えたら 124(キル自体の成否によらない)、それ以外は子の終了コード。
 """
 import math
@@ -134,7 +135,68 @@ def main():
         return 124
 
 
+def selftest():
+    import contextlib
+    import io
+    import tempfile
+    import time
+    from pathlib import Path
+
+    failures = []
+
+    def capped(cap, code, timeout=60):
+        return subprocess.run([sys.executable, __file__, str(cap), "--", sys.executable, "-c", code],
+                              capture_output=True, timeout=timeout, check=False)
+
+    relayed = capped(20, "import sys; sys.stdout.buffer.write('日本語'.encode('utf-8')); "
+                         "sys.stderr.buffer.write(b'to-stderr'); sys.exit(3)")
+    if relayed.returncode != 3:
+        failures.append(f"子の終了コードを返さない: {relayed.returncode}")
+    if relayed.stdout != "日本語".encode("utf-8") or b"to-stderr" not in relayed.stderr:
+        failures.append("子の標準出力・標準エラーを中継しない")
+    for args in (["0", "--", "x"], ["5", "x"], ["5", "--"]):
+        result = subprocess.run([sys.executable, __file__, *args], capture_output=True, check=False)
+        if result.returncode != 2:
+            failures.append(f"使い方の誤りで 2 を返さない: {args}")
+    with tempfile.TemporaryDirectory() as scratch:
+        marker = Path(scratch) / "grandchild-survived"
+        spawned = Path(scratch) / "grandchild-spawned"
+        grandchild = f"import time; from pathlib import Path; time.sleep(8); Path({str(marker)!r}).touch()"
+        parent = ("import subprocess, sys, time; from pathlib import Path; "
+                  f"subprocess.Popen([sys.executable, '-c', {grandchild!r}], "
+                  f"stdout=sys.stdout, stderr=sys.stderr); Path({str(spawned)!r}).touch(); time.sleep(30)")
+        start = time.monotonic()
+        result = capped(5, parent)
+        if result.returncode != 124:
+            failures.append(f"上限超過で 124 を返さない: {result.returncode}")
+        if time.monotonic() - start > 30:
+            failures.append("上限超過の後に復帰しない")
+        if not spawned.exists():
+            failures.append("孫プロセスを起動する前に上限へ達した")
+        time.sleep(9)
+        if marker.exists():
+            failures.append("上限超過の後に孫プロセスが残る")
+    global _POST_KILL_WAIT_SEC
+    saved = _POST_KILL_WAIT_SEC
+    _POST_KILL_WAIT_SEC = 1.0
+    survivor = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        start = time.monotonic()
+        with contextlib.redirect_stderr(io.StringIO()):
+            _wait_after_kill(survivor)
+        if time.monotonic() - start > 5:
+            failures.append("キルが効かない子を上限なしに待つ")
+    finally:
+        _POST_KILL_WAIT_SEC = saved
+        survivor.kill()
+        survivor.wait()
+    for failure in failures:
+        print("FAIL " + failure)
+    print("ALL PASS" if not failures else "SOME FAILED")
+    return 1 if failures else 0
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    sys.exit(main())
+    sys.exit(selftest() if sys.argv[1:] == ["--selftest"] else main())
