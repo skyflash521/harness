@@ -273,6 +273,14 @@ def selftest():
         ok = False
         print("FAIL 転写を読めない回を deny した")
 
+    for payload in ([], {"tool_name": None}, {"tool_name": TOOL, "tool_input": [1]}):
+        cases += 1
+        result = subprocess.run([sys.executable, str(Path(__file__).resolve())],
+                                input=json.dumps(payload).encode("utf-8"), capture_output=True, check=False)
+        if result.returncode or result.stdout.strip():
+            ok = False
+            print("FAIL 型の崩れた入力の往復:", payload, "exit", result.returncode)
+
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp, "transcript.jsonl")
         path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in launch)

@@ -426,6 +426,9 @@ def selftest():
             failures.append("PreToolUse: apply_patch の成果物衛生")
 
     for payload, expected in (("{", None), ("[]", None), ("{}", None),
+                              (json.dumps({"hook_event_name": "PreToolUse", "tool_name": None}), None),
+                              (json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                                           "tool_input": [1]}), None),
                               (json.dumps({"hook_event_name": "SessionStart"}), "additionalContext"),
                               (json.dumps({"hook_event_name": "Stop", "last_assistant_message": "確認しました。"}), "block")):
         result = subprocess.run([sys.executable, __file__], input=payload.encode("utf-8"),

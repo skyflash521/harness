@@ -119,6 +119,9 @@ def selftest():
             ("deny の往復", unmet, {"tool_name": "Skill", "tool_input": {"skill": "flow:commit"}}, True),
             ("通過の往復", str(repo), {"tool_name": "Skill", "tool_input": {"skill": "flow:commit"}}, False),
             ("別ツールの往復", unmet, {"tool_name": "Bash", "tool_input": {"command": "ls"}}, False),
+            ("辞書でない入力の往復", unmet, [], False),
+            ("tool_name が null の往復", unmet, {"tool_name": None}, False),
+            ("tool_input が辞書でない往復", unmet, {"tool_name": "Skill", "tool_input": [1]}, False),
         ]
         for why, root, payload, want_deny in roundtrips:
             result = subprocess.run(
@@ -128,9 +131,9 @@ def selftest():
             )
             out = result.stdout.strip()
             if not want_deny:
-                if out:
+                if out or result.returncode:
                     ok = False
-                    print(f"FAIL {why}: 通すべき起動で出力がある: {out!r}")
+                    print(f"FAIL {why}: 通すべき起動で出力がある: exit {result.returncode} {out!r}")
                 continue
             try:
                 decision = json.loads(out)["hookSpecificOutput"]["permissionDecision"]

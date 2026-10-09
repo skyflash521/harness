@@ -1089,6 +1089,13 @@ def selftest():
     if not roundtrip_denies_main_thread():
         failures.append(("ハーネスと同じ形の起動でメインモデルの commit が deny されない",
                          "deny", "pass"))
+    for payload in ([], {"tool_name": None}, {"tool_name": [1]},
+                    {"tool_name": "Bash", "tool_input": [1]}):
+        result = subprocess.run([sys.executable, __file__], input=json.dumps(payload).encode("utf-8"),
+                                capture_output=True, check=False)
+        if result.returncode or result.stdout.strip():
+            failures.append((f"型の崩れた入力の往復: {payload}", "exit 0・無出力",
+                             f"exit {result.returncode}"))
     if failures:
         for command, expected, actual in failures:
             print(f"FAIL expected={expected} actual={actual}: {command!r}")
