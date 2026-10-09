@@ -6,8 +6,10 @@ XDG Trash 仕様(freedesktop.org)に従う。guard-rm.py が rm を deny し、�
 使い方: python3 <このスクリプトの絶対パス> <path>...(guard-rm の誘導文が絶対パスを示す)
 """
 import ctypes
+import errno
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import urllib.parse
@@ -64,7 +66,12 @@ def _trash_linux(paths):
             f"[Trash Info]\nPath={urllib.parse.quote(str(src))}\n"
             f"DeletionDate={datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}\n"
         )
-        src.rename(dest)
+        try:
+            src.rename(dest)
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+            shutil.move(str(src), str(dest))
 
 
 def main():
