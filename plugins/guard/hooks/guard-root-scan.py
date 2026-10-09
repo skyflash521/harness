@@ -177,6 +177,10 @@ def selftest():
         "cd / && find -name x",
         "cd / && du -sh",
         "echo start\nfind / -name x",
+        "find / -name x <<EOF\nx\nEOF",
+        "timeout 60 find / -name x",
+        "sudo -u x find / -name y",
+        "find . -exec grep -r x / ;",
     ]
     pass_cases = [
         "find . -name '*.md'",
@@ -198,6 +202,7 @@ def selftest():
         "cd / && find plugins -name x",
         "find . -newer /",
         "cat <<EOF\nfind / -name x\nEOF",
+        "env ls /",
         "git ls-files",
     ]
     ok = True

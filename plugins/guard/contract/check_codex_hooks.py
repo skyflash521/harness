@@ -63,6 +63,7 @@ def selftest():
             ("guard-rm.py", delete, "git status --short", "trash.py"),
             ("guard-time.py", setter, reader, reader),
             ("guard-root-scan.py", "rg --files /", "rg --files plugins", "rg --files"),
+            ("guard-rm.py", "rm -rf 検査 <<EOF\nx\nEOF", "cat <<EOF\nrm x\nEOF", "trash.py"),
         ):
             reason = invoke(script, command_input(denied, shell), platform=platform)
             assert reason and guidance in reason, (platform, shell, script, reason)

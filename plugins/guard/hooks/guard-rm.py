@@ -86,6 +86,24 @@ def selftest():
         "rm.exe x",
         "cd t && rm x",
         "echo prep # c\nrm x",
+        "rm -rf .scratch <<EOF\nx\nEOF",
+        "cat <<EOF\nx\nEOF\nrm y",
+        "cat <<-'EOF'\nx\n\tEOF\nrm y",
+        "echo '<<EOF'\nrm y",
+        "find . -exec rm {} +",
+        "find . -execdir rm {} \\;",
+        "find . -name x -delete",
+        "ls | xargs rm",
+        "ls | xargs -0 -n 1 rm -f",
+        "ls | xargs -d '\\n' rm",
+        "xargs -I % rm %",
+        "for f in *.tmp; do rm \"$f\"; done",
+        "if true; then rm x; fi",
+        "sudo rm -rf x",
+        "sudo -u www rm -rf x",
+        "timeout -s KILL 5 rm x",
+        "LC_ALL=C rm x",
+        "sudo find . -delete",
     ]
     ps_deny_cases = [
         "Remove-Item foo.txt",
@@ -108,6 +126,9 @@ def selftest():
         "grep rm f",
         "true # rm x",
         "cat <<EOF\nrm x\nEOF",
+        "if grep -q rm f; then echo y; fi",
+        "time ls rm",
+        "find . -name rm",
     ]
     ok = True
     if SANDBOX_EXCLUSION not in deny_reason():
