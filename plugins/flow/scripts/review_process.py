@@ -184,4 +184,6 @@ def selftest():
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     sys.exit(selftest() if sys.argv[1:] == ["--selftest"] else 2)

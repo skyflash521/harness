@@ -186,6 +186,8 @@ def main() -> None:
 
 
 if __name__ == '__main__':
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     if '--selftest' in sys.argv:
         sys.exit(selftest())
     main()

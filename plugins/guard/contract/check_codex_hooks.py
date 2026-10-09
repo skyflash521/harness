@@ -129,6 +129,8 @@ def selftest():
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     if sys.argv[1:] != ["--selftest"]:
         raise SystemExit("--selftest を指定してください")
     selftest()

@@ -310,6 +310,8 @@ def cmd_check():
 
 
 def cmd_bump(name):
+    if not require_hooks_installed():
+        return 1
     rel = plugin_json_path(name)
     if not (REPO_ROOT / rel).is_file():
         print(f"エラー: {rel} が存在しない")
@@ -391,4 +393,6 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     sys.exit(main(sys.argv[1:]))
