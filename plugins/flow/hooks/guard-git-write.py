@@ -13,8 +13,11 @@ deny する——使い捨ての語だけの件名と、コマンド自身の先
 
 `git commit` は**呼び出し元がコミットワーカーのときだけ**通す。フック入力の `agent_id`(サブエージェント
 から発火したときだけ入る)と `agent_type` で見分ける。ワーカー以外の発行は、git と commit が同居する
-コマンドをどの形でも deny する——子シェルや未知の起動子の内側に隠した commit も止めるための線引きで、
-これらの語を含む読み取り専用の呼び出しも巻き込む。**`git add` は呼び出し元を見ない**——レビューへ回す前の
+コマンドを deny する——子シェルや未知の起動子の内側に隠した commit も止めるための線引きである。
+除外するのは、git の直後に commit・config 以外の副コマンドを置いた1つの呼び出しで、シェル構文・
+ラッパー・環境変数接頭・グローバルオプションのどれも伴わず、git と commit が同居する引数を持たない
+ものだけ(`git add -- skills/commit/SKILL.md`、`git log --grep=commit` など)。それ以外の形は、これらの
+語を含む読み取り専用の呼び出しも巻き込む。**`git add` は呼び出し元を見ない**——レビューへ回す前の
 ステージはメインモデルの経路である。
 
 `--amend` は、**その発行元自身が作った直前のコミットの文面を書き換えるときだけ**通す。素の commit を
@@ -616,6 +619,24 @@ def _mentions_commit(command):
     return bool(GIT_WORD.search(command) and COMMIT_WORD.search(command))
 
 
+def _bare_non_commit_git(command):
+    """commit・config 以外の副コマンドを素の形で走らせる、1つだけの git の呼び出しか。"""
+    if _has_shell_syntax(command):
+        return False
+    try:
+        tokens = _tokens(command)
+    except ValueError:
+        return False
+    if len(tokens) < 2 or not _is_plain_git(tokens[0]):
+        return False
+    if "(" in tokens or ")" in tokens:
+        return False
+    subcommand = tokens[1]
+    if subcommand.startswith("-") or subcommand in {"commit", "config"}:
+        return False
+    return not any(_mentions_commit(arg) for arg in tokens[2:])
+
+
 def _from_commit_worker(data):
     """フック入力がコミットワーカーからの発火か。
 
@@ -640,7 +661,7 @@ def classify(command, root=None, staged=None, worker=False, amend=None):
     """
     if not isinstance(command, str) or not command.strip():
         return "pass", None
-    if not worker and _mentions_commit(command):
+    if not worker and _mentions_commit(command) and not _bare_non_commit_git(command):
         return "deny", COMMIT_CALLER_DENY_REASON
     try:
         tokens = _tokens(command)
