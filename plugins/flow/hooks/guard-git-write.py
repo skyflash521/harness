@@ -1030,6 +1030,24 @@ def selftest():
         CallerCase("メインモデルからの amend",
                    f"git commit --amend -m '件名を書き直す\n\n本文\n\n{TRAILER}'", {}, "deny"),
         CallerCase("メインモデルの add は通す", ADD, {}, "pass"),
+        CallerCase("メインモデルがパスに commit を含むファイルを add する",
+                   "git add -- plugins/flow/skills/commit/SKILL.md", {}, "pass"),
+        CallerCase("メインモデルがパスに commit を含むファイルの差分を読む",
+                   "git diff -- plugins/flow/skills/commit/SKILL.md", {}, "pass"),
+        CallerCase("メインモデルが commit を検索語にして履歴を読む",
+                   "git log --grep=commit", {}, "pass"),
+        CallerCase("メインモデルがパスに commit を含む範囲の変更を読む",
+                   "git show HEAD -- plugins/flow/skills/commit", {}, "pass"),
+        CallerCase("メインモデルが別のリポジトリへ移した commit",
+                   "git -C other commit -m x", {}, "deny"),
+        CallerCase("メインモデルが -c で commit の alias を定義して使う",
+                   "git -c alias.ci=commit ci -m x", {}, "deny"),
+        CallerCase("メインモデルが config で commit の alias を定義する",
+                   "git config alias.ci commit", {}, "deny"),
+        CallerCase("メインモデルが git に commit を起動させる引数",
+                   "git rebase -x 'git commit -m x' HEAD~1", {}, "deny"),
+        CallerCase("メインモデルが add の後ろへ連結した commit",
+                   "git add -- README.md; git commit -m y", {}, "deny"),
         CallerCase("メインモデルの許可しない形の add は形で deny する",
                    "git add -A", {}, "deny"),
         CallerCase("メインモデルの reset は形で deny する", "git reset --hard", {}, "deny"),
@@ -1089,7 +1107,7 @@ def fixture_repo():
     root = Path(holder.name)
     tracked = (
         "README.md", "AGENTS.md", "plugins/flow/hooks/guard-git-write.py",
-        "plugins/flow/tests/fixtures/日本語パス検査.txt",
+        "plugins/flow/skills/commit/SKILL.md", "plugins/flow/tests/fixtures/日本語パス検査.txt",
     )
     for relative in tracked:
         path = root / relative
