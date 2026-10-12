@@ -240,7 +240,8 @@ REASON_WAIT_NO_DEADLINE = (
     "——ハングを捕まえるための締切が、ハングを見逃す装置になる。"
 )
 REASON_WAIT_TOO_LONG = (
-    f"{WAIT} の締切が長すぎる: {{tasks}} が残り{{secs}}秒を張っている。待つ対象が別に在る場で、"
+    f"{WAIT} の締切が長すぎる: {{tasks}} が残り{{secs}}秒を張っている。待つ対象が別に在る場で"
+    "({targets} が生存中)、"
     f"{WAIT_CAP_SECS}秒を超える締切は張らない。"
     f"レビュー1ラウンドを待つ回では、{WAIT_CAP_SECS}秒がハングと判断する時間として定まっている"
     "(正本はレビューループの判断ロジック)。**対象が自分でハングを判定する仕組みを持っていても、"
@@ -250,10 +251,12 @@ REASON_WAIT_TOO_LONG = (
     "レビュー以外の待ちでも同じで、締切は対象の所要に見合わせる。"
     f"取るべき行動は、{WAIT_CAP_SECS}秒以内の締切を張り直し、"
     "先の締切を TaskStop で止めてから宣言し直すこと。"
+    "**{targets} が用済み(終わった・失敗した後の残り)なら、そちらを TaskStop で止める**——"
+    "待つ対象が無くなれば、時間そのものを待つ形としてこの上限を受けない。"
     "時間そのものを待つ場合(使用量上限のリセット待ち等)はこの上限を受けない。"
 )
 REASON_WAIT_DUPLICATED = (
-    f"{WAIT_SCRIPT} が2つ以上動いている。待つ対象は1つなので、先に用が済んだ後も残りが発火し、"
+    f"{WAIT_SCRIPT} が2つ以上動いている: {{waits}}。待つ対象は1つなので、先に用が済んだ後も残りが発火し、"
     "確認するものが無いターンを作る。TaskStop で余分な方を止めてから宣言し直すこと。"
 )
 REASON_CODEX_STALE = (
@@ -721,7 +724,7 @@ def deadline_left(task, now, module):
 
 
 def overlong_deadline(data):
-    """待つ対象が別に在るのに長すぎる締切。無ければ None、在れば `(対象の一覧, 最長の残り秒数)`。
+    """待つ対象が別に在るのに長すぎる締切。無ければ None、在れば `(締切の一覧, 最長の残り秒数, 待つ対象の一覧)`。
 
     **wait.py だけが残る待機は見ない**——時間そのものを待つ形(使用量上限のリセット待ち)で、
     そこは長いのが正しい。解釈できない引数も見ない。判定できないことを不許可の理由にすると、
@@ -743,7 +746,8 @@ def overlong_deadline(data):
             overlong.append((task, int(left)))
     if not overlong:
         return None
-    return label([task for task, _ in overlong]), max(secs for _, secs in overlong)
+    others = label([t for t in tasks if not is_wait(t)])
+    return label([task for task, _ in overlong]), max(secs for _, secs in overlong), others
 
 
 def codex_jobs(data):
@@ -778,13 +782,14 @@ def decide(data, codex=()):
         if not live_tasks(data):
             return None, REASON_WAIT_UNSUBSTANTIATED
         if live_waits(data) > 1:
-            return None, REASON_WAIT_DUPLICATED
+            waits = label([t for t in live_now(data) if is_wait(t)])
+            return None, REASON_WAIT_DUPLICATED.format(waits=waits)
         if not pending_waits(data):
             return None, REASON_WAIT_NO_DEADLINE
         overlong = overlong_deadline(data)
         if overlong is not None:
-            tasks, secs = overlong
-            return None, REASON_WAIT_TOO_LONG.format(tasks=tasks, secs=secs)
+            tasks, secs, targets = overlong
+            return None, REASON_WAIT_TOO_LONG.format(tasks=tasks, secs=secs, targets=targets)
     elif live_now(data):
         return None, REASON_TASK_LEFT_RUNNING.format(tasks=label(live_now(data)))
     stale = [job for job in codex if job.get("state") in ENDED_RUN]
@@ -910,7 +915,7 @@ def selftest():
         (stop("どちらで進めますか。\n\n[停止: 要判断]", tasks=[waiting_seconds]),
          REASON_TASK_LEFT_RUNNING.format(tasks="b3")),
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting, waiting_seconds]),
-         REASON_WAIT_DUPLICATED),
+         REASON_WAIT_DUPLICATED.format(waits="b2, b3")),
         (stop("作業は終わりました。\n\n[停止: 完了] [停止: 要判断]"), REASON_MULTIPLE),
         (stop("回答しました。\n答えた質問: プッシュはまだか\n\n[停止: 応答]", tasks=[task]),
          REASON_TASK_LEFT_RUNNING.format(tasks="b1")),
@@ -953,7 +958,7 @@ def selftest():
         (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[task]), REASON_WAIT_NO_DEADLINE),
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[other_test]), REASON_WAIT_NO_DEADLINE),
         (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[waiting_long, task]),
-         REASON_WAIT_TOO_LONG.format(tasks="b9", secs=1320)),
+         REASON_WAIT_TOO_LONG.format(tasks="b9", secs=1320, targets="b1")),
         (stop("作業は終わりました。\n\n[停止: 完了]"), codex_stale("j2"), [codex_alive, codex_ghost]),
         (stop("作業は終わりました。\n\n[停止: 完了]"), codex_running("j1"), [codex_alive]),
         (stop("どちらで進めますか。\n\n[停止: 要判断]"), codex_running("j1"), [codex_alive]),
