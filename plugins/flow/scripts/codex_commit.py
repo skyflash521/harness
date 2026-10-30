@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 """Codex 上でコミットを成立させる唯一の経路。レビューの結末と対象範囲を検査してからコミットする。
 
-Codex のフックは呼び出し元のエージェントを識別できないので、Claude 側のように「ワーカーだけが
-コミットできる」とは書けない。代わりに、コミットの許可を本スクリプトへ集める。Codex 用の書込ガード
-(hooks/codex-guard-git-write.py)が直接のコミット操作を拒否するので、コミットはここを通る。
-
 呼び出し形:
 
     codex_commit.py --repo REPO --files PATH [PATH ...]
@@ -32,7 +28,6 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 GLOB_CHARS = set("*?[]")
 CODEX_TRAILER = "Co-Authored-By: Codex <noreply@openai.com>"
 TRAILER = re.compile(r"^\s*co-authored-by:", re.IGNORECASE)
-NUMBERED_STEP = re.compile(r"Step\s*[0-9]|ステップ\s*[0-9]|(?<!グ)ラウンド")
 
 
 def load_hook(name):
@@ -79,11 +74,11 @@ def check_message(message):
         return "末尾の独立行に Co-Authored-By: Codex <noreply@openai.com> を1行だけ付ける"
     if len(lines) < 2 or lines[-2].strip():
         return "Co-Authored-By の前に空行が必要"
-    hygiene = load_hook("guard-artifact-hygiene")
-    relative = [atom.label for atom in hygiene.ATOMS if atom.exempt_group == "P2" and atom.pattern.search(message)]
-    found = NUMBERED_STEP.search(message)
-    if relative or found:
-        return "作業過程参照・相対参照を含む: " + ", ".join(relative + ([found.group(0)] if found else []))
+    found = writer.work_process_references(message)
+    if found is None:
+        return "成果物衛生フックを読めず、作業過程参照の検査ができない"
+    if found:
+        return "作業過程参照・相対参照を含む: " + ", ".join(found)
     return None
 
 

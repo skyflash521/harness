@@ -1,60 +1,15 @@
 #!/usr/bin/env python3
-"""PreToolUse フック: コミットスキルが発する git の書き込みを検査する。
+"""Bash と PowerShell の PreToolUse フック。git の add・commit・reset を検査する。
 
-無言で通るのは次の3つだけ。
-
-    git add -- <明示したファイル>...
-    git commit -m <メッセージ>          (件名に日本語が1文字以上あること。呼び出し元がコミットワーカー)
-    git commit --amend -m <メッセージ>  (加えて、その発行元自身が作った直前のコミットで、インデックスが空)
-
-件名が ASCII だけの形は deny し、日本語で起草し直させる。起草されたメッセージではありえない件名も
-deny する——使い捨ての語だけの件名と、コマンド自身の先頭が引数へ紛れ込んだ件名。メッセージの行構造も
-検査する。
-
-`git commit` は**呼び出し元がコミットワーカーのときだけ**通す。フック入力の `agent_id`(サブエージェント
-から発火したときだけ入る)と `agent_type` で見分ける。ワーカー以外の発行は、git と commit が同居する
-コマンドを deny する——子シェルや未知の起動子の内側に隠した commit も止めるための線引きである。
-除外するのは、git の直後に commit・config 以外の副コマンドを置いた1つの呼び出しで、シェル構文・
-ラッパー・環境変数接頭・グローバルオプションのどれも伴わず、git と commit が同居する引数を持たない
-ものだけ(`git add -- skills/commit/SKILL.md`、`git log --grep=commit` など)。それ以外の形は、これらの
-語を含む読み取り専用の呼び出しも巻き込む。**`git add` は呼び出し元を見ない**——レビューへ回す前の
-ステージはメインモデルの経路である。
-
-`--amend` は、**その発行元自身が作った直前のコミットの文面を書き換えるときだけ**通す。素の commit を
-通すたびにそのときの HEAD を控えておき、amend の時点で HEAD の親がその控えと一致するかで見分ける
-(控えは作業ツリー・セッション・発行元の識別子ごとに分ける)。加えて、インデックスが空であること
-——これで書き換わるのが文面だけになる——と、HEAD がリモート追跡参照に含まれないことを求め、メッセージは
-素の commit と同じ検査を通す。控えはワーカー自身が書ける場所にあるので、これは詐称を防ぐ証明ではなく、
-取り違えを防ぐ支えである。**同じ鍵の別の発行が、前の発行の作ったコミットが手つかずで HEAD に残っている
-うちに amend を出せば、その文面は通る**——鍵が発行を分けきるかはハーネス側の事実で、ここでは裏取り
-できない。
-`--amend` が直せるのは文面だけで、コミットが履歴に増えたことも、その内容も取り消せない。
-
-これら以外の add/commit は deny するので、エージェントはユーザーへ許可を求めず通常の形で出し直す。
-ワーカーからの発行では、add/commit と認識できない形(フックが起動子として知らない語や bash -c の中の
-git)はここを素通りする。**素通りは安全の判定ではない**——導入契約は許可リストを要求せず、前提の許可
-モード `auto` は許可 glob に依らず分類器の判断で自動実行しうるので、素通りした形が止まる保証は無い。
-素通りする形を止めているのは、素の形だけを使うというコミットワーカー側の規律である。無関係なコマンドは
-通る。
-
-PowerShell ツールの発行は、git と add・commit・reset が同居する形を deny する。読み取り専用の呼び出しが
-これらの語を含む場合も巻き込む安全側の線引きで、書き込みかどうかの見分けはしない——トークン化が POSIX
-前提で PowerShell の引用・エスケープを同じには読めず、コミットワーカーには Bash ツールでの発行だけを
-許しているので、この方言で形を選り分ける理由が無い。巻き込まれた読み取りは Bash ツールで出し直せる。
-
-git reset はどの形も deny する。インデックスと HEAD を書き換え、安全に許せる変種が無いため。
-
-整った git add も、そのコマンドが名指ししていないファイルが既にステージされていれば deny する。
-インデックスは作業ツリー単位の共有状態で git commit はその全体を取るので、他のセッションが使って
-いるインデックスへステージすると、相手の分を自分のコミットへ巻き込むか、自分の分を相手へ持って
-行かれる——書いた側からは見えない。コミットが取るステージ集合は、意図して名指ししたものだけでなければ
-ならない。
+ファイル全体の不変則: 許した正規形以外は理由を返して deny し、迷う形は deny 側に倒す。add・commit と
+認識できない形は検査を受けずに素通りする——素通りは安全の判定ではない。
 
 使い方: Bash と PowerShell の PreToolUse フックとして登録する。--selftest で自己テスト——検査に使う
 追跡下のファイルは一時リポジトリへ自分で用意するので、置き場所とカレントディレクトリを選ばない。
 """
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -69,6 +24,10 @@ from pathlib import Path
 CONTROL_CHARS = ";&|<>\n"
 GLOB_CHARS = "*?[]{}"
 WORKER = "commit-worker"
+HYGIENE_HOOK = Path(__file__).resolve().parent / "guard-artifact-hygiene.py"
+RELATIVE_REFERENCE_GROUP = "P2"
+# 「グラウンド」を含む語(バックグラウンド等)はレビューのラウンド番号ではない。
+WORK_PROCESS_STEP = re.compile(r"Step\s*[0-9]|ステップ\s*[0-9]|(?<!グ)ラウンド")
 JAPANESE_CHAR = re.compile(r"[぀-ヿ㐀-䶿一-鿿]")
 TARGET_WORD = re.compile(r"(?<![\w-])(add|commit)(?![\w-])")
 ESCAPE_NEWLINE = "\\n"
@@ -571,6 +530,20 @@ def _message_format_problem(message):
     )
 
 
+def work_process_references(message):
+    """メッセージに残る、書式が固定された作業過程参照・相対参照の語。衛生フックを読めなければ None。"""
+    try:
+        spec = importlib.util.spec_from_file_location("_hygiene", HYGIENE_HOOK)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        atoms = [atom for atom in module.ATOMS if atom.exempt_group == RELATIVE_REFERENCE_GROUP]
+    except (OSError, AttributeError, ImportError, SyntaxError, ValueError, TypeError):
+        return None
+    found = [atom.label for atom in atoms if atom.pattern.search(message)]
+    step = WORK_PROCESS_STEP.search(message)
+    return found + [step.group(0)] if step else found
+
+
 def _classify_message(message):
     """コミットメッセージの検査。素の commit と amend が共有する。"""
     subject = message.split("\n", 1)[0]
@@ -593,6 +566,16 @@ def _classify_message(message):
     problem = _message_format_problem(message)
     if problem:
         return "deny", problem
+    found = work_process_references(message)
+    if found is None:
+        return "deny", ("The hygiene hook that defines the relative-reference words could not be read, "
+                        "so the message cannot be checked. Report this instead of retrying.")
+    if found:
+        return "deny", (
+            "Commit message contains a work-process reference: {}. Rewrite the sentence that holds the "
+            "word so that it stands on its own, then re-issue; do not merely delete the word or drop the "
+            "body or the trailer to get past this."
+        ).format(", ".join(found))
     return "pass", None
 
 
@@ -859,6 +842,16 @@ def selftest():
             (f"git commit -m '改行を \\n で表す\n\n{TRAILER}'", "deny"),
             (f"git commit -m $'件名\\n\\n本文\\n\\n{TRAILER}'", "deny"),
         ]),
+        CaseGroup("書式が固定された作業過程参照・相対参照が残るメッセージ", [
+            (f"git commit -m 'Step 3 の検査を追加\n\n{TRAILER}'", "deny"),
+            (f"git commit -m '検査を追加\n\nステップ2で決めた上限に合わせる\n\n{TRAILER}'", "deny"),
+            (f"git commit -m '検査を追加\n\nラウンド2の指摘に対応する\n\n{TRAILER}'", "deny"),
+            (f"git commit -m '検査を追加\n\n改修前の値を保つ\n\n{TRAILER}'", "deny"),
+            (f"git commit -m '検査を追加\n\n今回の変更で上限を外す\n\n{TRAILER}'", "deny"),
+            (f"git commit -m '検査を追加\n\nkept as before this change\n\n{TRAILER}'", "deny"),
+            (f"git commit -m '待機をバックグラウンドで回す\n\n{TRAILER}'", "pass"),
+            (f"git commit -m '出力を UTF-8 に固定する\n\n今回は対象外\n\n{TRAILER}'", "pass"),
+        ]),
         CaseGroup("許可しない add・commit の形", [
             ("git add", "deny"),
             ("git add .", "deny"),
@@ -1085,6 +1078,12 @@ def selftest():
         for word in ("$", "log/diff/show", *sorted(REPOSITION_READONLY)):
             if word not in reason:
                 failures.append((f"再配置の deny 文が条件を述べる: {command}", word, "欠落"))
+    _, reason = classify(f"git commit -m 'Step 3 の検査を追加\n\n改修後も同じ\n\n{TRAILER}'", repo, worker=True)
+    for word in ("Step 3", "改修後"):
+        if word not in reason:
+            failures.append(("作業過程参照の deny 文が見つけた語を挙げる", word, "欠落"))
+    if work_process_references("") != []:
+        failures.append(("作業過程参照の無いメッセージは空の一覧", "[]", repr(work_process_references(""))))
     failures += staged_deletion_failures()
     if not roundtrip_denies_main_thread():
         failures.append(("ハーネスと同じ形の起動でメインモデルの commit が deny されない",
