@@ -396,7 +396,7 @@ def selftest():
         received = []
 
         def check(root, host, tier):
-            received.append((root, host))
+            received.append((root, host, tier))
             return problems
 
         contract = SimpleNamespace(check=check, ADOPTION_DOC=ROOT / "docs" / "criteria" / "adoption.md")
@@ -415,8 +415,8 @@ def selftest():
                        contract if name == "check_adoption" else actual_load(name, path)):
                 result = decide({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(ROOT),
                                  "tool_input": {"command": command}})
-            if received != [(str(ROOT), "codex")]:
-                failures.append("PreToolUse: Codex の導入検査に cwd と host を渡していない")
+            if received != [(str(ROOT), "codex", "base" if command == prefix + valid else "dev")]:
+                failures.append(f"PreToolUse: Codex の導入検査に cwd・host・区分を渡していない: {received}")
             if (not problems and result is not None) or (problems and (
                     not result or result["hookSpecificOutput"].get("permissionDecision") != "deny"
                     or problems[0] not in result["hookSpecificOutput"].get("permissionDecisionReason", ""))):
@@ -428,6 +428,30 @@ def selftest():
                          "tool_input": {"command": command}})
         if bool(result) != denied:
             failures.append("PreToolUse: apply_patch の成果物衛生")
+
+    outside = Path(Path.cwd().anchor) / "flow-codex-probe-absent"
+    contract = actual_load("check_adoption", ROOT / "contract" / "check_adoption.py")
+    for command, needle in ((prefix + 'codex exec --json -c sandbox_mode=read-only -', None),
+                            ("python3 scripts/codex_commit.py --help", "git 管理外"),
+                            ("bash -c \"python3 scripts/codex_commit.py --help\"; " + prefix + "codex exec -s read-only -",
+                             "git 管理外")):
+        with patch.object(contract, "codex_settings", return_value=[]), patch(
+                __name__ + ".load", side_effect=lambda name, path:
+                contract if name == "check_adoption" else actual_load(name, path)):
+            result = decide({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(outside),
+                             "tool_input": {"command": command}})
+        reason = result["hookSpecificOutput"]["permissionDecisionReason"] if result else None
+        if (needle is None and reason is not None) or (needle is not None and (not reason or needle not in reason)):
+            failures.append(f"PreToolUse: git 管理外の cwd での区分別の導入検査: {command} {reason!r}")
+
+    content = "今回の変更です。"
+    for cwd, path, denied in ((outside, "docs/sample.md", False),
+                              (outside, ROOT.parents[1] / "docs" / "sample.md", True)):
+        command = f"*** Begin Patch\n*** Add File: {path}\n+{content}\n*** End Patch"
+        result = decide({"hook_event_name": "PreToolUse", "tool_name": "apply_patch", "cwd": str(cwd),
+                         "tool_input": {"command": command}})
+        if bool(result) != denied:
+            failures.append(f"PreToolUse: git 管理外の cwd での apply_patch の成果物衛生: {path}")
 
     for payload, expected in (("{", None), ("[]", None), ("{}", None),
                               (json.dumps({"hook_event_name": "PreToolUse", "tool_name": None}), None),
