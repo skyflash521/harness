@@ -40,11 +40,13 @@ def session_context():
 
 
 def flow_entrypoint(command):
+    """起動する同梱エントリポイントに要る導入契約の区分。コミットの入口があれば "dev"、レビュー・相談の CLI だけなら "base"、どちらも無ければ None。"""
     parser = hook("codex-guard-git-write")
     try:
         words = parser.words(command_text(command, parser))
     except ValueError:
-        return False
+        return None
+    tiers = set()
     segment = []
     for token, quoted in words + [("\n", False)]:
         if quoted or token not in parser.OPERATORS:
@@ -53,19 +55,19 @@ def flow_entrypoint(command):
         for position in parser.command_positions(segment):
             args = segment[position:]
             name = parser.program(args[0]).removesuffix(".cmd").removesuffix(".ps1")
-            if name in parser.SHELLS and any(flow_entrypoint(text) for text in parser.shell_commands(args)):
-                return True
+            if name in parser.SHELLS:
+                tiers.update(flow_entrypoint(text) for text in parser.shell_commands(args))
             if name in ("python", "python3", "py"):
                 if any(Path(value).name == "codex_commit.py" for value in args[1:]):
-                    return True
+                    tiers.add("dev")
                 if len(args) > 4 and Path(args[1]).name == "run_capped.py" and args[3] == "--":
                     args = args[4:]
                     name = parser.program(args[0]).removesuffix(".cmd").removesuffix(".ps1")
             if ((name == "claude" and any(value in ("-p", "--print") for value in args[1:]))
                     or (name == "codex" and "exec" in args[1:])):
-                return True
+                tiers.add("base")
         segment = []
-    return False
+    return "dev" if "dev" in tiers else "base" if "base" in tiers else None
 
 
 def command_text(command, parser):
@@ -251,8 +253,9 @@ def patch_documents(command, cwd):
 
 def patch_reason(command, cwd):
     hygiene = hook("guard-artifact-hygiene")
+    contract = load("check_adoption", ROOT / "contract" / "check_adoption.py")
     for path, before, after in patch_documents(command, cwd):
-        if hygiene.applicable_atoms(str(path)):
+        if hygiene.applicable_atoms(str(path)) and not contract.hygiene_exempt(path, cwd):
             reason = hygiene.evaluate("Write", {"file_path": str(path), "content": after}, before)
             if reason:
                 return reason
@@ -289,9 +292,10 @@ def decide(data):
             command = tool_input.get("command")
             if isinstance(command, str):
                 reason = cli_reason(command)
-            if isinstance(command, str) and reason is None and flow_entrypoint(command):
+            tier = flow_entrypoint(command) if isinstance(command, str) and reason is None else None
+            if tier:
                 contract = load("check_adoption", ROOT / "contract" / "check_adoption.py")
-                problems = contract.check(data.get("cwd") or Path.cwd(), host="codex")
+                problems = contract.check(data.get("cwd") or Path.cwd(), host="codex", tier=tier)
                 if problems:
                     reason = "導入契約に不足がある:\n" + "\n".join(problems) + f"\n{contract.ADOPTION_DOC} を確認する。"
         if reason is None and data.get("tool_name") == "apply_patch" and isinstance(tool_input, dict):
@@ -391,7 +395,7 @@ def selftest():
                      ["条項3(Codex): flow が無効"]):
         received = []
 
-        def check(root, host):
+        def check(root, host, tier):
             received.append((root, host))
             return problems
 
