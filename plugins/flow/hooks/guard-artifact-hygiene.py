@@ -430,6 +430,8 @@ def _format_reason(increases, changed_lines):
 
 
 def selftest():
+    import subprocess
+
     failures = []
     for group in CASE_GROUPS:
         for case in group.cases:
@@ -470,13 +472,28 @@ def selftest():
     if "出現が 1 件から 2 件に増えました" not in fallback:
         failures.append(f"候補行が無い場合の代替文面が出ていない: {fallback!r}")
 
+    outside = Path(Path.cwd().anchor) / "flow-hygiene-probe-absent"
+    repository = Path(__file__).resolve().parents[3]
+    content = "ログは C:/Users/alice/logs にある。今回の変更で足した。\n"
+    for file_path, root, want_deny in ((outside / "note.md", outside, False),
+                                       (repository / "docs" / "flow-hygiene-probe-absent.md", outside, True),
+                                       (outside / "note.md", repository, True)):
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve())],
+            input=json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(file_path), "content": content}}),
+            capture_output=True, text=True, encoding="utf-8",
+            env={**os.environ, "CLAUDE_PROJECT_DIR": str(root)}, check=False)
+        if ('"permissionDecision": "deny"' in result.stdout) != want_deny or result.returncode:
+            failures.append(f"git 管理外の免除: file={file_path} root={root} want_deny={want_deny} "
+                            f"exit={result.returncode} out={result.stdout!r}")
+
     if failures:
         for line in failures:
             print(f"FAIL {line}")
         raise SystemExit(1)
     total = (sum(len(group.cases) for group in CASE_GROUPS)
              + len(READ_FAILURE_CASES) + len(MESSAGE_CASES))
-    print(f"ALL PASS ({total} cases + 列挙順・候補行・窓幅・代替文面の 4 検査)")
+    print(f"ALL PASS ({total} cases + 列挙順・候補行・窓幅・代替文面・git 管理外の免除の 5 検査)")
 
 
 def main():
