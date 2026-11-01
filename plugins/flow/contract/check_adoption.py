@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""導入契約の必須条項を機械確認する。
+"""導入契約の必須条項を機械確認する。スキルごとに要る区分と、成果物衛生の検査を免除するかの判定の正本も持つ。
 
 フックまたはスキルの入口から起動し、欠けた条項を報告する。
-使い方: python3 <このスクリプトの絶対パス> [--host claude|codex] [対象リポジトリのルート]
+使い方: python3 <このスクリプトの絶対パス> [--host claude|codex] [--tier base|dev] [対象リポジトリのルート]
+       --tier の既定は dev(開発条項)。base は基本条項だけを確認する。
        ルート省略時は Claude Code のみ CLAUDE_PROJECT_DIR を使い、未設定または Codex は現在のディレクトリ。
        Codex の一覧取得は、公式フック既定上限600秒の半分300秒を実行に割り当てる。
        残りは判定とプロセス停止に残す。https://learn.chatgpt.com/docs/hooks
-終了コード: 全条項を満たせば 0、1つでも欠ければ 1。
+終了コード: 指定した区分の条項をすべて満たせば 0、1つでも欠ければ 1。
 """
 import importlib.util
 import json
@@ -25,6 +26,39 @@ VERIFICATION_DOC = "docs/conventions/verification.md"
 SETTINGS_FILES = (".claude/settings.json", ".claude/settings.local.json")
 SCRATCH_DIR = ".scratch"
 CODEX_SETTINGS_TIMEOUT = 600 / 2
+
+TIER_BASE = "base"
+TIER_DEV = "dev"
+TIERS = (TIER_BASE, TIER_DEV)
+SKILL_TIERS = {
+    "flow:commit": TIER_DEV,
+    "flow:codex-review-loop": TIER_DEV,
+    "flow:fable-review-loop": TIER_DEV,
+    "flow:opus-review-loop": TIER_DEV,
+    "flow:autonomous-dev": TIER_DEV,
+    "flow:review-loop-judgement": TIER_DEV,
+    "flow:review-loop-subagent": TIER_DEV,
+    "flow:plan": TIER_DEV,
+    "flow:run-and-bench": TIER_BASE,
+    "flow:codex-consult": TIER_BASE,
+    "flow:codex-watchdog": TIER_BASE,
+}
+
+
+def skill_tier(name):
+    """スキルに要る区分。一覧に無いスキルは開発条項を要る。"""
+    return SKILL_TIERS.get(name, TIER_DEV)
+
+
+def in_work_tree(path):
+    """path かその親ディレクトリのいずれかに .git が在るか。git は起動しない。"""
+    path = Path(path).resolve()
+    return any((directory / ".git").exists() for directory in (path, *path.parents))
+
+
+def hygiene_exempt(file_path, root):
+    """成果物衛生の検査を掛けないか。書き込み先もルートも git 作業ツリーの外のときだけ真。"""
+    return not in_work_tree(Path(root) / file_path) and not in_work_tree(root)
 
 
 def load_json(path):
@@ -194,15 +228,19 @@ def codex_settings(root):
         return [f"条項3(Codex): フックの実行状態を確認できない: {error}"]
 
 
-def check(root, host="claude"):
-    """欠けている条項の説明を並べて返す。空なら全条項を満たす。"""
+def check(root, host="claude", tier=TIER_DEV):
+    """tier の区分で欠けている条項の説明を並べて返す。空ならその区分の条項をすべて満たす。"""
     root = Path(root).resolve()
     problems = []
+    work_tree = in_work_tree(root)
 
-    if not (root / VERIFICATION_DOC).is_file():
-        problems.append(f"条項1: 検証手順書 {VERIFICATION_DOC} が無い")
+    if tier == TIER_DEV:
+        if not work_tree:
+            problems.append(f"git 管理外: ルート {root} が git 作業ツリーでない")
+        if not (root / VERIFICATION_DOC).is_file():
+            problems.append(f"条項1: 検証手順書 {VERIFICATION_DOC} が無い")
 
-    if not ignored(root, SCRATCH_DIR):
+    if work_tree and not ignored(root, SCRATCH_DIR):
         problems.append(f"条項2: スクラッチ置き場 {SCRATCH_DIR}/ が除外設定に入っていない")
 
     if host == "codex":
@@ -227,24 +265,26 @@ def check(root, host="claude"):
 def main(argv):
     if "--selftest" in argv:
         return _selftest()
-    host = "claude"
-    if argv[:1] == ["--host"]:
-        if len(argv) < 2 or argv[1] not in ("claude", "codex"):
-            print("--host は claude または codex を指定する")
+    options = {"--host": "claude", "--tier": TIER_DEV}
+    while argv[:1] and argv[0] in options:
+        choices = ("claude", "codex") if argv[0] == "--host" else TIERS
+        if len(argv) < 2 or argv[1] not in choices:
+            print(f"{argv[0]} は {' または '.join(choices)} を指定する")
             return 1
-        host, argv = argv[1], argv[2:]
+        options[argv[0]], argv = argv[1], argv[2:]
+    host, tier = options["--host"], options["--tier"]
     if len(argv) > 1:
         print("対象リポジトリは1つだけ指定する")
         return 1
     root = argv[0] if argv else (os.environ.get("CLAUDE_PROJECT_DIR") if host == "claude" else None) or os.getcwd()
-    problems = check(root, host=host)
+    problems = check(root, host=host, tier=tier)
     if problems:
         print("導入契約を満たしていない条項がある:")
         for problem in problems:
             print(f"  - {problem}")
         print(f"\n満たし方は {ADOPTION_DOC} を参照。")
         return 1
-    print("導入契約 OK(条項1・2・3)")
+    print("導入契約 OK(条項1・2・3)" if tier == TIER_DEV else "導入契約 OK(基本条項)")
     return 0
 
 

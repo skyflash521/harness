@@ -54,12 +54,7 @@ Codex ではイベントの `cwd` である。ルートそのものを親ディ�
 
 ### スキルごとに要る区分
 
-| 区分 | スキル |
-|---|---|
-| 開発条項 | flow:commit・flow:codex-review-loop・flow:fable-review-loop・flow:opus-review-loop・flow:autonomous-dev・flow:review-loop-judgement・flow:review-loop-subagent・flow:plan |
-| 基本条項 | flow:run-and-bench・flow:codex-consult・flow:codex-watchdog |
-
-この表に無い `flow:` のスキルは開発条項を要る。
+スキルごとに要る区分の正本は、[確認スクリプト](../../contract/check_adoption.py)が持つスキルと区分の対応である。
 
 ### 基本条項だけを満たすリポジトリでの振る舞い
 
