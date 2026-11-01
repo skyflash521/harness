@@ -469,6 +469,69 @@ def _selftest():
                     ok = False
                     print(f"FAIL 有効な guard の未信頼フックを通す: {key}")
 
+    def kinds(root, tier):
+        return {problem.split(":", 1)[0] for problem in check(root, tier=tier)} - {"条項3"}
+
+    with tempfile.TemporaryDirectory() as base:
+        base = Path(base)
+        outside = base / "outside"
+        outside.mkdir()
+        for tier, want in ((TIER_BASE, set()), (TIER_DEV, {"git 管理外", "条項1"})):
+            got = kinds(outside, tier)
+            if got != want:
+                ok = False
+                print(f"FAIL git 管理外のルートの {tier}: want={want} got={got}")
+
+        repo = base / "repo"
+        (repo / "docs" / "conventions").mkdir(parents=True)
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True, capture_output=True)
+        (base / "no-excludes").write_text("", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "config", "core.excludesFile", str(base / "no-excludes")],
+                       check=True, capture_output=True)
+        for tier, want in ((TIER_BASE, {"条項2"}), (TIER_DEV, {"条項1", "条項2"})):
+            got = kinds(repo, tier)
+            if got != want:
+                ok = False
+                print(f"FAIL .scratch を除外しない git 作業ツリーの {tier}: want={want} got={got}")
+        (repo / ".gitignore").write_text(".scratch/\n", encoding="utf-8")
+        (repo / VERIFICATION_DOC).write_text("x\n", encoding="utf-8")
+        for tier in TIERS:
+            got = kinds(repo, tier)
+            if got:
+                ok = False
+                print(f"FAIL 条項1・2 を満たす git 作業ツリーの {tier}: got={got}")
+
+        worktree = base / "worktree"
+        worktree.mkdir()
+        (worktree / ".git").write_text(f"gitdir: {repo / '.git'}\n", encoding="utf-8")
+        for path, want in ((worktree, True), (worktree / "sub" / "new.md", True), (repo / "docs", True),
+                           (outside, False), (outside / "new.md", False)):
+            if in_work_tree(path) != want:
+                ok = False
+                print(f"FAIL git 作業ツリーの判定: {path} want={want}")
+
+        for file_path, root, want in ((outside / "a.md", outside, True), (repo / "a.md", outside, False),
+                                      (outside / "a.md", repo, False), (repo / "a.md", repo, False),
+                                      ("a.md", outside, True), ("a.md", repo, False)):
+            if hygiene_exempt(file_path, root) != want:
+                ok = False
+                print(f"FAIL 衛生検査の免除: file={file_path} root={root} want={want}")
+
+    expected_tiers = {
+        **{f"flow:{name}": TIER_DEV for name in (
+            "commit", "codex-review-loop", "fable-review-loop", "opus-review-loop", "autonomous-dev",
+            "review-loop-judgement", "review-loop-subagent", "plan")},
+        **{f"flow:{name}": TIER_BASE for name in ("run-and-bench", "codex-consult", "codex-watchdog")},
+    }
+    for name, want in {**expected_tiers, "flow:unknown": TIER_DEV}.items():
+        if skill_tier(name) != want:
+            ok = False
+            print(f"FAIL スキルの区分: {name} want={want}")
+    skills = {f"flow:{path.parent.name}" for path in (HERE.parent / "skills").glob("*/SKILL.md")}
+    if skills != set(expected_tiers):
+        ok = False
+        print(f"FAIL 同梱スキルと区分の期待値が一致しない: {sorted(skills ^ set(expected_tiers))}")
+
     if load_json(REQUIRED_SETTINGS) is None:
         ok = False
         print(f"FAIL 同梱の {REQUIRED_SETTINGS.name} を読めない")
