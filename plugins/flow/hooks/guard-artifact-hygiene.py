@@ -1,19 +1,11 @@
 #!/usr/bin/env python3
 """PreToolUse フック: 成果物衛生・文書記述規約が禁じる記述の新規混入を Edit/Write の時点で deny する。
 
-書き込み前の全文と書き込み後の全文を突き合わせ、禁止記述(原子)ごとの出現数が増えたときだけ
-deny する。既存の違反を含むファイルへの無関係な編集や、違反の削除・ファイル内の移動は通す。原子
-ごとに数えるのは、禁止語を別の禁止語へ置き換える編集を素通りさせないため。断片ではなく適用後の
-全文で数えるのは、原子が編集境界をまたいで生まれる形を見逃さないため。
-
-検査するかどうかはファイルパスの文字列照合だけで決める(git は起動しない)。正当な用法が実在する
-層——指示層の実行時相対表現と禁止語の引用・パスを扱うフックが持つ例示パス・テストデータなど——は
-原子の種類ごとに除く。
-
 使い方: Edit/Write の PreToolUse フックとして登録する。--selftest で自己テスト。
 """
 import importlib.util
 import json
+import os
 import re
 import sys
 from collections import Counter, namedtuple
@@ -311,6 +303,14 @@ def config_dir_prefix():
     return str(config.claude_config_dir()).replace("\\", "/").lower().rstrip("/") + "/"
 
 
+def contract_module():
+    spec = importlib.util.spec_from_file_location(
+        "_check_adoption", Path(__file__).resolve().parent.parent / "contract" / "check_adoption.py")
+    contract = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(contract)
+    return contract
+
+
 def _is_instruction(path, name):
     """実行時の相対表現と禁止語の引用が正当に現れる指示層か。"""
     return bool(INSTRUCTION_LAYER.search(path)) or "/.claude/" in path or name in INSTRUCTION_NAMES
@@ -499,6 +499,8 @@ def main():
         return
     file_path = tool_input.get("file_path")
     if not isinstance(file_path, str) or not file_path or not applicable_atoms(file_path):
+        return
+    if contract_module().hygiene_exempt(file_path, os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()):
         return
     try:
         before_text = Path(file_path).read_text(encoding="utf-8", errors="replace")
