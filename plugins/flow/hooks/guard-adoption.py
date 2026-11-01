@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse フック: 導入契約を満たさないリポジトリでの flow スキル起動を deny する。
-
-契約の確認をスキルの本文に書くと、スキルごとに毎回 Bash 呼び出しが1往復増える。呼び出しは
-ネストで重なり(自律開発 → レビューループ → コミット)、確認の結果は同じリポジトリで変わらない
-のに会話へ積み上がる。ここで確認すればモデルの往復は増えず、スキル側の指示も要らなくなる。
-
-判定は同梱の contract/check_adoption.py に委ねる。条項の正本を2箇所に持つと食い違うため、
-このフックは起動の絞り込みと deny の出力だけを行う。
+"""PreToolUse フック: 起動する flow スキルに要る導入契約の区分を満たさないリポジトリで、その起動を deny する。
 
 見るのは `flow:` で始まるスキルの `Skill` 起動だけで、他は何も出力せず通す。
 
@@ -43,7 +36,7 @@ def reason_for(name, root):
     if not name or not name.startswith(SKILL_PREFIX):
         return None
     contract = _load_contract()
-    problems = contract.check(root)
+    problems = contract.check(root, tier=contract.skill_tier(name))
     if not problems:
         return None
     listed = "\n".join(f"  - {problem}" for problem in problems)
