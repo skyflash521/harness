@@ -6,9 +6,10 @@ Claude Code・Codex 上のスキルに共通する起動・監視・停止契約
 ## 1. 起動
 
 着手前に [導入契約](../criteria/adoption.md) の実行元に対応する確認を行う。
-Codex 上では [導入検査](../../contract/check_adoption.py) を
-`python3 <check_adoption.py の絶対パス> --host codex <リポジトリルート>` で実行し、終了コード0を確認する。
-不足があれば導入契約へ案内して停止する。
+Codex 上では [導入検査](../../contract/check_adoption.py) を、着手するスキルに要る
+[区分](../criteria/adoption.md#スキルごとに要る区分)を `--tier` に付けて
+`python3 <check_adoption.py の絶対パス> --host codex --tier <base|dev> <リポジトリルート>` で実行し、
+終了コード0を確認する。不足があれば導入契約へ案内して停止する。
 シェル実行の作業ディレクトリは対象リポジトリに合わせ、同梱スクリプトは冒頭の呼び出し契約に従う。
 指示文・応答はメモリ上で受け渡し、中継用ファイルは作らない。
 
