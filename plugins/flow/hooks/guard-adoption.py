@@ -104,13 +104,32 @@ def selftest():
             .read_text(encoding="utf-8"), encoding="utf-8")
         (repo / ".gitignore").write_text(".scratch/\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True, capture_output=True)
-        if reason_for("flow:commit", repo) is not None:
-            ok = False
-            print("FAIL 契約を満たすリポジトリで deny になる")
+        skills = sorted(f"flow:{path.parent.name}"
+                        for path in Path(__file__).resolve().parents[1].glob("skills/*/SKILL.md"))
+        for name in skills:
+            if reason_for(name, repo) is not None:
+                ok = False
+                print(f"FAIL 契約を満たすリポジトリで deny になる: {name}")
+
+        outside = Path(unmet, "outside")
+        (outside / ".claude").mkdir(parents=True)
+        (outside / ".claude" / "settings.json").write_text(
+            (repo / ".claude" / "settings.json").read_text(encoding="utf-8"), encoding="utf-8")
+        for name, want_deny in (("flow:run-and-bench", False), ("flow:codex-consult", False),
+                                ("flow:codex-watchdog", False), ("flow:commit", True), ("flow:plan", True),
+                                ("flow:codex-review-loop", True), ("flow:autonomous-dev", True)):
+            got = reason_for(name, outside)
+            if bool(got) != want_deny or (want_deny and "git 管理外" not in got):
+                ok = False
+                print(f"FAIL git 管理外のルートでの {name}: want_deny={want_deny} got={got!r}")
 
         roundtrips = [
             ("deny の往復", unmet, {"tool_name": "Skill", "tool_input": {"skill": "flow:commit"}}, True),
             ("通過の往復", str(repo), {"tool_name": "Skill", "tool_input": {"skill": "flow:commit"}}, False),
+            ("git 管理外で基本条項のスキルが通る往復", str(outside),
+             {"tool_name": "Skill", "tool_input": {"skill": "flow:run-and-bench"}}, False),
+            ("git 管理外で開発条項のスキルを deny する往復", str(outside),
+             {"tool_name": "Skill", "tool_input": {"skill": "flow:commit"}}, "git 管理外"),
             ("別ツールの往復", unmet, {"tool_name": "Bash", "tool_input": {"command": "ls"}}, False),
             ("辞書でない入力の往復", unmet, [], False),
             ("tool_name が null の往復", unmet, {"tool_name": None}, False),
@@ -129,7 +148,8 @@ def selftest():
                     print(f"FAIL {why}: 通すべき起動で出力がある: exit {result.returncode} {out!r}")
                 continue
             try:
-                decision = json.loads(out)["hookSpecificOutput"]["permissionDecision"]
+                output = json.loads(out)["hookSpecificOutput"]
+                decision, reason = output["permissionDecision"], output["permissionDecisionReason"]
             except (json.JSONDecodeError, KeyError, TypeError):
                 ok = False
                 print(f"FAIL {why}: deny の JSON が読めない: {out!r}")
@@ -137,6 +157,9 @@ def selftest():
             if decision != "deny":
                 ok = False
                 print(f"FAIL {why}: permissionDecision={decision!r}")
+            if isinstance(want_deny, str) and want_deny not in reason:
+                ok = False
+                print(f"FAIL {why}: 理由に {want_deny!r} が無い: {reason!r}")
 
     print("ALL PASS" if ok else "SOME FAILED")
     sys.exit(0 if ok else 1)
