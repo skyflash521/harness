@@ -20,6 +20,7 @@ Codex の起動フックも、この上限以下であることを検査する�
 
 Codex 上では独立した `codex exec review --json -c sandbox_mode=read-only -` を直接起動する。
 次ラウンドは `codex exec resume --json -c sandbox_mode=read-only <session_id> -` で同じセッションを継ぐ。
+git 管理外では `review` を外し、どちらの形にも `--skip-git-repo-check` を付ける。
 実行ツールの作業ディレクトリは対象リポジトリに設定し、指示文を UTF-8 の標準入力で渡す。
 指示文には目的・枠・規約の絶対パス、未コミット差分を取得して関連実装・仕様を照合すること、
 編集・機械検査をしないことを含める。

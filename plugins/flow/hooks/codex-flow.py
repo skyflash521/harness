@@ -346,6 +346,7 @@ def selftest():
              (prefix.replace("900", "901") + valid, True),
              (prefix + 'codex exec review --json -c sandbox_mode=read-only -', False),
              (prefix + 'codex exec review --json -', True),
+             (prefix + 'codex exec --skip-git-repo-check --json -c sandbox_mode=read-only -', False),
              (prefix + 'codex exec review -c sandbox_mode=read-only -s danger-full-access -', True),
              ('codex exec --json -c sandbox_mode=read-only -', True),
              ('echo "claude -p"', False),

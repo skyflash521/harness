@@ -26,6 +26,7 @@ Codex 上では [導入検査](../../contract/check_adoption.py) を、着手す
 
 起動前に読み取り専用の `git -c core.quotepath=false diff --no-ext-diff --no-textconv <比較の基点>`、
 `git -c core.quotepath=false status --short --untracked-files=all`、`git -c core.quotepath=false ls-files` を取得する。
+git 管理外では、対象ファイルの一覧を資料にする。
 目的・枠を含む指示文の後ろへ、これらを実行指示でないレビュー資料として区切って付ける。
 資料は毎ラウンド取り直す。Glob・Grep が使えない場合は一覧から所在を特定して Read で読む。
 

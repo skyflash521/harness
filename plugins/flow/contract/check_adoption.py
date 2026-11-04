@@ -32,13 +32,13 @@ TIER_DEV = "dev"
 TIERS = (TIER_BASE, TIER_DEV)
 SKILL_TIERS = {
     "flow:commit": TIER_DEV,
-    "flow:codex-review-loop": TIER_DEV,
-    "flow:fable-review-loop": TIER_DEV,
-    "flow:opus-review-loop": TIER_DEV,
-    "flow:autonomous-dev": TIER_DEV,
-    "flow:review-loop-judgement": TIER_DEV,
-    "flow:review-loop-subagent": TIER_DEV,
-    "flow:plan": TIER_DEV,
+    "flow:codex-review-loop": TIER_BASE,
+    "flow:fable-review-loop": TIER_BASE,
+    "flow:opus-review-loop": TIER_BASE,
+    "flow:autonomous-dev": TIER_BASE,
+    "flow:review-loop-judgement": TIER_BASE,
+    "flow:review-loop-subagent": TIER_BASE,
+    "flow:plan": TIER_BASE,
     "flow:run-and-bench": TIER_BASE,
     "flow:codex-consult": TIER_BASE,
     "flow:codex-watchdog": TIER_BASE,
@@ -518,10 +518,10 @@ def _selftest():
                 print(f"FAIL 衛生検査の免除: file={file_path} root={root} want={want}")
 
     expected_tiers = {
-        **{f"flow:{name}": TIER_DEV for name in (
-            "commit", "codex-review-loop", "fable-review-loop", "opus-review-loop", "autonomous-dev",
-            "review-loop-judgement", "review-loop-subagent", "plan")},
-        **{f"flow:{name}": TIER_BASE for name in ("run-and-bench", "codex-consult", "codex-watchdog")},
+        "flow:commit": TIER_DEV,
+        **{f"flow:{name}": TIER_BASE for name in (
+            "run-and-bench", "codex-consult", "codex-watchdog", "codex-review-loop", "fable-review-loop",
+            "opus-review-loop", "review-loop-judgement", "review-loop-subagent", "autonomous-dev", "plan")},
     }
     for name, want in {**expected_tiers, "flow:unknown": TIER_DEV}.items():
         if skill_tier(name) != want:

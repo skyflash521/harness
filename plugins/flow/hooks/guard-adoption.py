@@ -116,8 +116,9 @@ def selftest():
         (outside / ".claude" / "settings.json").write_text(
             (repo / ".claude" / "settings.json").read_text(encoding="utf-8"), encoding="utf-8")
         for name, want_deny in (("flow:run-and-bench", False), ("flow:codex-consult", False),
-                                ("flow:codex-watchdog", False), ("flow:commit", True), ("flow:plan", True),
-                                ("flow:codex-review-loop", True), ("flow:autonomous-dev", True)):
+                                ("flow:codex-watchdog", False), ("flow:commit", True), ("flow:plan", False),
+                                ("flow:codex-review-loop", False), ("flow:opus-review-loop", False),
+                                ("flow:autonomous-dev", False)):
             got = reason_for(name, outside)
             if bool(got) != want_deny or (want_deny and "git 管理外" not in got):
                 ok = False
