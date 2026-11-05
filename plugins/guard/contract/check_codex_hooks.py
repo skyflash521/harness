@@ -20,7 +20,7 @@ RUNNER = (
 )
 
 
-def invoke(script, data, *, platform="win32", codex=True):
+def invoke(script, data, *, platform="win32", codex=True, decision="deny"):
     args = [str(ROOT)] if script == "guard-rm.py" else []
     if codex and script != "guard-delete-patch.py":
         args.append("--codex")
@@ -34,7 +34,7 @@ def invoke(script, data, *, platform="win32", codex=True):
         return None
     output = json.loads(result.stdout)["hookSpecificOutput"]
     assert output["hookEventName"] == "PreToolUse"
-    assert output["permissionDecision"] == "deny"
+    assert output["permissionDecision"] == decision
     return output["permissionDecisionReason"]
 
 
@@ -70,7 +70,7 @@ def selftest():
             assert "Edit ツール" not in reason and "sandbox.excludedCommands" not in reason
             assert invoke(script, command_input(passed, shell), platform=platform) is None
             cases += 2
-    for script in ("guard-rm.py", "guard-time.py", "guard-root-scan.py"):
+    for script in ("guard-rm.py", "guard-time.py", "guard-root-scan.py", "guard-gh-write.py"):
         for malformed in (None, [], {}, {"tool_name": "Bash", "tool_input": []},
                           command_input(123), command_input("rm x", tool="Read")):
             assert invoke(script, malformed) is None
@@ -105,14 +105,22 @@ def selftest():
         assert reason and guidance in reason
         assert invoke(script, command_input("Get-Date", tool="PowerShell"), codex=False) is None
         cases += 2
+    for tool in ("Bash", "PowerShell"):
+        reason = invoke("guard-gh-write.py", command_input("gh pr merge 1", tool=tool),
+                        codex=False, decision="ask")
+        assert reason and "gh pr merge" in reason
+        assert invoke("guard-gh-write.py", command_input("gh pr view 1", tool=tool),
+                      codex=False) is None
+        cases += 2
     claude = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
     codex = json.loads((HOOKS / "codex-hooks.json").read_text(encoding="utf-8"))
     expected = ["guard-rm.py", "guard-time.py", "guard-root-scan.py"]
+    claude_expected = [*expected, "guard-gh-write.py"]
     assert len(claude["hooks"]["PreToolUse"]) == 2
     for entry, matcher in zip(claude["hooks"]["PreToolUse"], ("Bash", "PowerShell")):
         assert entry["matcher"] == matcher
-        assert len(entry["hooks"]) == len(expected)
-        for hook, script in zip(entry["hooks"], expected):
+        assert len(entry["hooks"]) == len(claude_expected)
+        for hook, script in zip(entry["hooks"], claude_expected):
             suffix = ' "${CLAUDE_PLUGIN_ROOT}"' if script == "guard-rm.py" else ""
             assert hook == {"type": "command", "shell": "bash",
                             "command": f'python3 "${{CLAUDE_PLUGIN_ROOT}}/hooks/{script}"{suffix}'}
