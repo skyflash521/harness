@@ -15,6 +15,7 @@
 """
 import math
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -26,9 +27,12 @@ _RELAY_JOIN_TIMEOUT_SEC = 5.0
 def _resolve_executable(token):
     """パス区切りを含む相対パスは絶対パスへ解決して返す。Windowsのsubprocess.Popen
     (shell=False)は相対パス(特にスラッシュ区切り)の実行ファイルを見つけられないことが
-    あるため。パス区切りを含まないbare名(PATH検索に委ねるコマンド名)はそのまま返す。"""
+    あるため。パス区切りを含まないbare名は、Windowsでは PATH と PATHEXT で解決して返す。
+    Popen は拡張子を補わず、.cmd が実体のコマンドを見つけられないため。"""
     if ("/" in token or "\\" in token) and not os.path.isabs(token):
         return os.path.abspath(token)
+    if sys.platform == "win32":
+        return shutil.which(token) or token
     return token
 
 
@@ -154,6 +158,17 @@ def selftest():
         failures.append(f"子の終了コードを返さない: {relayed.returncode}")
     if relayed.stdout != "日本語".encode("utf-8") or b"to-stderr" not in relayed.stderr:
         failures.append("子の標準出力・標準エラーを中継しない")
+    with tempfile.TemporaryDirectory() as directory:
+        name = "run-capped-probe"
+        script = Path(directory, name + (".cmd" if sys.platform == "win32" else ""))
+        script.write_text("@echo probe\n" if sys.platform == "win32" else "#!/bin/sh\necho probe\n",
+                          encoding="utf-8")
+        script.chmod(0o755)
+        path = directory + os.pathsep + os.environ.get("PATH", "")
+        found = subprocess.run([sys.executable, __file__, "20", "--", name], capture_output=True,
+                               env={**os.environ, "PATH": path}, timeout=60, check=False)
+        if found.returncode != 0 or b"probe" not in found.stdout:
+            failures.append(f"PATH 上のコマンドを起動できない: {found.returncode} {found.stderr!r}")
     for args in (["0", "--", "x"], ["5", "x"], ["5", "--"]):
         result = subprocess.run([sys.executable, __file__, *args], capture_output=True, check=False)
         if result.returncode != 2:

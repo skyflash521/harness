@@ -17,6 +17,7 @@ Codex への**一回限りの相談・調査・診断・修正方針のヒアリ
 
 Codex 上の相談は [共通の実行と待機の契約](../../docs/guidance/execution.md) に従い、
 単発相談の時間上限は900秒とし、独立した `codex exec --json -c sandbox_mode=read-only -c approval_policy=never -` を直接起動する。
+git 管理外では `--skip-git-repo-check` を付ける。
 [相談内容の整理](#手順1-相談内容の整理)で定める目的・論点と
 [実行モードの決定](#手順2-実行モードの決定)を指示文に書き、実行ツールの作業ディレクトリを対象リポジトリに設定して標準入力へ渡す。
 ユーザーが修正の実行を明示した場合だけ `sandbox_mode=workspace-write` にする。書き込みは作業ディレクトリに限り、
