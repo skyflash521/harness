@@ -272,7 +272,13 @@ def patch_reason(command, cwd):
 def decide(data):
     event = data.get("hook_event_name")
     if event == "SessionStart":
-        return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": session_context()}}
+        context = session_context()
+        contract = load("check_adoption", ROOT / "contract" / "check_adoption.py")
+        problems = contract.check(data.get("cwd") or Path.cwd(), host="codex", tier="base")
+        if problems:
+            context = ("導入契約に不足がある。最初の応答でユーザーへ伝える:\n" + "\n".join(problems)
+                       + f"\n{contract.ADOPTION_DOC} を確認する。\n\n" + context)
+        return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}
     if event == "Stop":
         language = hook("guard-reply-language")
         reason = language.decide(data)
@@ -387,11 +393,27 @@ def selftest():
                    for item in group.get("hooks", [])):
             failures.append(f"{event}: フックが登録されていない")
 
-    context = decide({"hook_event_name": "SessionStart"})["hookSpecificOutput"]
-    if context["hookEventName"] != "SessionStart" or any(
-            clause not in context["additionalContext"] for clause in (
-                "[停止: 完了]", "着手範囲", "execution.md", "adoption.md", "手番を終了しない")):
-        failures.append("SessionStart: Codex の実行・停止・導入の文脈が不足する")
+    actual_load = load
+    for problems in ([], ["条項3(Codex): 必須フックが無効または未信頼"]):
+        received = []
+
+        def check(root, host, tier):
+            received.append((root, host, tier))
+            return problems
+
+        contract = SimpleNamespace(check=check, ADOPTION_DOC=ROOT / "docs" / "criteria" / "adoption.md")
+        with patch(__name__ + ".load", side_effect=lambda name, path:
+                   contract if name == "check_adoption" else actual_load(name, path)):
+            context = decide({"hook_event_name": "SessionStart", "cwd": str(ROOT)})["hookSpecificOutput"]
+        if context["hookEventName"] != "SessionStart" or any(
+                clause not in context["additionalContext"] for clause in (
+                    "[停止: 完了]", "着手範囲", "execution.md", "adoption.md", "手番を終了しない")):
+            failures.append("SessionStart: Codex の実行・停止・導入の文脈が不足する")
+        if received != [(str(ROOT), "codex", "base")]:
+            failures.append(f"SessionStart: Codex の導入検査に cwd・host・区分を渡していない: {received}")
+        if ("最初の応答でユーザーへ伝える" in context["additionalContext"]) != bool(problems) or any(
+                problem not in context["additionalContext"] for problem in problems):
+            failures.append("SessionStart: 導入契約の不足を文脈へ示さない、または不足が無いのに示す")
 
     for message, expected in (
         ("確認しました。\n[停止: 完了]", None),
@@ -404,7 +426,6 @@ def selftest():
                 not result or result.get("decision") != "block" or expected not in result.get("reason", ""))):
             failures.append(f"Stop: {message}")
 
-    actual_load = load
     for problems in ([], ["条項1: 検証手順書が無い"]):
         received = []
 
