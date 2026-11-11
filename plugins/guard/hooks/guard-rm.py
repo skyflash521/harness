@@ -9,6 +9,7 @@ PowerShell ツールの発行も同じく見る。そちらは Remove-Item と�
 限らないため。
 
 使い方: プラグインルートを第1引数に渡す Bash・PowerShell の PreToolUse フックとして登録する。
+Codex の Bash の PreToolUse フックとしては --codex を付けて登録する。
 --selftest で自己テスト。
 """
 import json
@@ -174,4 +175,8 @@ def selftest():
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
         selftest()
-    main()
+    if "--codex" in sys.argv:
+        from codex_entry import run_bash_guards
+        run_bash_guards(main)
+    else:
+        main()

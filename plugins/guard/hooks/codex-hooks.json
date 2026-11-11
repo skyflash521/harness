@@ -7,14 +7,6 @@
           {
             "type": "command",
             "command": "python3 \"${PLUGIN_ROOT}/hooks/guard-rm.py\" \"${PLUGIN_ROOT}\" --codex"
-          },
-          {
-            "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/hooks/guard-time.py\" --codex"
-          },
-          {
-            "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/hooks/guard-root-scan.py\" --codex"
           }
         ]
       },

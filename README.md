@@ -127,7 +127,7 @@ guard の `PreToolUse` と、flow の `SessionStart`・`PreToolUse`・`Stop` を
 codex plugin marketplace upgrade harness
 ```
 
-更新されたフックは Codex の `/hooks` で再度確認して信頼する。変更は新しいセッションで使う。
+変更は新しいセッションで使う。
 プラグインの内容が変わっても `version` が上がっていなければ、新しい版として導入されない。
 
 ## harness の開発環境

@@ -387,11 +387,18 @@ def selftest():
         failures.append("オプション値の後の正規 CLI を拒否する")
     if flow_entrypoint("echo pwsh -Command 'python3 scripts/codex_commit.py --help'"):
         failures.append("シェル名を出力するだけの命令を起動と誤認する")
-    for event in ("SessionStart", "PreToolUse", "Stop"):
-        registered = json.loads((ROOT / "hooks" / "codex-hooks.json").read_text(encoding="utf-8"))["hooks"]
-        if not any("codex-flow.py" in item["command"] for group in registered.get(event, [])
-                   for item in group.get("hooks", [])):
-            failures.append(f"{event}: フックが登録されていない")
+    def entry(script, matcher=None):
+        group = {"hooks": [{"type": "command", "command": f'python3 "${{PLUGIN_ROOT}}/hooks/{script}"'}]}
+        return {"matcher": matcher, **group} if matcher else group
+
+    registered = json.loads((ROOT / "hooks" / "codex-hooks.json").read_text(encoding="utf-8"))
+    if registered != {"hooks": {
+        "SessionStart": [entry("codex-flow.py", "startup|resume|clear|compact")],
+        "PreToolUse": [entry("codex-guard-git-write.py", "^Bash$"), entry("codex-flow.py", ".*")],
+        "Stop": [entry("codex-flow.py")],
+    }}:
+        failures.append("Codex は信頼を登録の位置と定義に結び付けるので、登録を変えない。"
+                        "フックの増減は codex-flow.py で行う")
 
     actual_load = load
     for problems in ([], ["条項3(Codex): 必須フックが無効または未信頼"]):

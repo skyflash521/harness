@@ -195,8 +195,7 @@ def selftest():
     cases += 1
     claude = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
     codex = json.loads((HOOKS / "codex-hooks.json").read_text(encoding="utf-8"))
-    expected = ["guard-rm.py", "guard-time.py", "guard-root-scan.py"]
-    claude_expected = [*expected, "guard-gh-write.py"]
+    claude_expected = ["guard-rm.py", "guard-time.py", "guard-root-scan.py", "guard-gh-write.py"]
     assert len(claude["hooks"]["PreToolUse"]) == 2
     for entry, matcher in zip(claude["hooks"]["PreToolUse"], ("Bash", "PowerShell")):
         assert entry["matcher"] == matcher
@@ -205,15 +204,19 @@ def selftest():
             suffix = ' "${CLAUDE_PLUGIN_ROOT}"' if script == "guard-rm.py" else ""
             assert hook == {"type": "command", "shell": "bash",
                             "command": f'python3 "${{CLAUDE_PLUGIN_ROOT}}/hooks/{script}"{suffix}'}
-    shell_entry, patch_entry = codex["hooks"]["PreToolUse"]
-    assert shell_entry["matcher"] == "^Bash$"
-    assert len(shell_entry["hooks"]) == len(expected)
-    for hook, script in zip(shell_entry["hooks"], expected):
-        suffix = ' "${PLUGIN_ROOT}"' if script == "guard-rm.py" else ""
-        assert hook == {"type": "command",
-                        "command": f'python3 "${{PLUGIN_ROOT}}/hooks/{script}"{suffix} --codex'}
-    assert patch_entry == {"matcher": "^apply_patch$", "hooks": [{"type": "command",
-                           "command": 'python3 "${PLUGIN_ROOT}/hooks/guard-delete-patch.py"'}]}
+    assert codex == {"hooks": {"PreToolUse": [
+        {"matcher": "^Bash$", "hooks": [{"type": "command",
+                                         "command": 'python3 "${PLUGIN_ROOT}/hooks/guard-rm.py" "${PLUGIN_ROOT}" --codex'}]},
+        {"matcher": "^apply_patch$", "hooks": [{"type": "command",
+                                                "command": 'python3 "${PLUGIN_ROOT}/hooks/guard-delete-patch.py"'}]},
+    ]}}, "Codex は信頼を登録の位置と定義に結び付けるので、登録を変えない。ガードの増減は codex_entry.py で行う"
+    for name, denied, guidance in (
+        ("時計の変更", "date -s 2030", "date"),
+        ("ルート起点の再帰探索", "rg --files /", "rg --files"),
+    ):
+        reason = invoke("guard-rm.py", command_input(denied, "/bin/bash"))
+        assert reason and guidance in reason, f"Codex の Bash の入口 guard-rm.py は{name}を拒否する"
+        cases += 1
     print(f"guard JSON 入出力 OK({cases}件)、製品別登録 OK")
 
 
