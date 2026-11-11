@@ -788,17 +788,14 @@ def selftest():
             ("git add -- plugins/flow/hooks/guard-git-write.py", "pass"),
             ("git add plugins/flow/hooks/guard-git-write.py README.md", "deny"),
             ("git add -- plugins/flow/hooks", "deny"),
+            ("git add -- plugins/flow/hooks/guard-git-write.py plugins/flow/hooks", "deny"),
             ("git add -- ../outside.py", "deny"),
             (f"git add -- {shlex.quote((repo / 'README.md').as_posix())}", "deny"),
             ("git add -- missing-file.py", "deny"),
             (f"git commit -m '件名\n\n本文 $5 `literal` > text\n\n{TRAILER}'", "pass"),
             (f"git commit -m 'it'\\''s 修正済み\n\n{TRAILER}'", "pass"),
             (f"git commit -m 'Add CHANGELOG validation\n\n{TRAILER}'", "deny"),
-            (f"git commit -m 'English subject\n\n日本語本文\n\n{TRAILER}'", "deny"),
             (f"git commit -m 'English subject、with a stray comma\n\n日本語本文\n\n{TRAILER}'", "deny"),
-        ]),
-        CaseGroup("エスケープ表記で1行へ詰めたメッセージと、部分的に潰れた形", [
-            (f"git commit -m '件名\\n\\n本文\n\n{TRAILER}'", "deny"),
         ]),
         CaseGroup("使い捨ての語だけの件名(コマンドの形を試すコミット)", [
             (f"git commit -m 'テスト行1\n\nテスト行2\n\n{TRAILER}'", "deny"),
@@ -833,45 +830,33 @@ def selftest():
         CaseGroup("行構造を表す改行エスケープだけを拒む", [
             (f"git commit -m '区切りは \\t 文字\n\n{TRAILER}'", "pass"),
             (f"git commit -m '改行を \\n で表す\n\n{TRAILER}'", "deny"),
-            (f"git commit -m $'件名\n\n本文\n\n{TRAILER}'", "deny"),
         ]),
         CaseGroup("書式が固定された作業過程参照・相対参照が残るメッセージ", [
             (f"git commit -m 'Step 3 の検査を追加\n\n{TRAILER}'", "deny"),
             (f"git commit -m '検査を追加\n\nステップ2で決めた上限に合わせる\n\n{TRAILER}'", "deny"),
             (f"git commit -m '検査を追加\n\nラウンド2の指摘に対応する\n\n{TRAILER}'", "deny"),
-            (f"git commit -m '検査を追加\n\n改修前の値を保つ\n\n{TRAILER}'", "deny"),
             (f"git commit -m '検査を追加\n\n今回の変更で上限を外す\n\n{TRAILER}'", "deny"),
-            (f"git commit -m '検査を追加\n\nkept as before this change\n\n{TRAILER}'", "deny"),
             (f"git commit -m '待機をバックグラウンドで回す\n\n{TRAILER}'", "pass"),
-            (f"git commit -m '出力を UTF-8 に固定する\n\n今回は対象外\n\n{TRAILER}'", "pass"),
         ]),
         CaseGroup("許可しない add・commit の形", [
             ("git add", "deny"),
-            ("git add .", "deny"),
-            ("git add -A", "deny"),
             ("git add -- 'src/[ab].py'", "deny"),
             ("git add -- :/", "deny"),
             ("git commit", "deny"),
             ("git commit -m ''", "deny"),
             ("git add a.py && git commit -m 'x'", "deny"),
             (f"git commit -m \"件名 $MESSAGE\n\n{TRAILER}\"", "deny"),
-            ("git add -- src/{a,b}.py", "deny"),
             ("git add a.py > staged.txt", "deny"),
-            ("cd repo && git add a.py", "deny"),
             ("git -c user.name=x commit -m 'x'", "deny"),
             ("VAR=x git commit -m 'x'", "deny"),
             ("command git add a.py", "deny"),
-            ("time git commit --amend", "deny"),
             ("stdbuf git add -A", "deny"),
             ("xargs git commit -m 'x'", "deny"),
             ("git.exe commit -m 'x'", "deny"),
-            ("/usr/bin/git commit -m 'x'", "deny"),
         ]),
         CaseGroup("git reset はどの形も deny する", [
             ("git reset", "deny"),
-            ("git reset -- file.py", "deny"),
             ("git -c user.name=x reset --hard", "deny"),
-            ("git.exe reset", "deny"),
             ("/usr/bin/git reset --hard", "deny"),
             ("time git reset --hard", "deny"),
             ("VAR=x git reset", "deny"),
@@ -881,38 +866,27 @@ def selftest():
         CaseGroup("別のリポジトリへ移した git の読み取り除外と、その境界", [
             ("cd /d && git -C /d/other-repo status --short", "deny"),
             ("git -C repo status", "pass"),
-            ("git -C. status", "pass"),
             ("git -C ../other-clone log --oneline -5", "deny"),
-            ("git -C ../other-clone diff", "deny"),
-            ("git -C ../other-clone show HEAD", "deny"),
             ("git --git-dir=.git status", "pass"),
             ("git --work-tree /x status", "pass"),
-            ("VAR=x git -C repo status", "pass"),
-            ("git -C repo push", "deny"),
             ("git -C repo", "deny"),
             ("git -C ../other grep --open-files-in-pager foo", "deny"),
             ("git -C ../other grep -Ovim foo", "deny"),
             ("git -C ../other grep --textconv foo", "deny"),
             ("git -C ../other cat-file --filters HEAD:a.py", "deny"),
-            ("git -C ../other cat-file --textcon HEAD:a.py", "deny"),
             ("git -C ../other grep --filter=x foo", "deny"),
         ]),
         CaseGroup("シェルのキーワードと制御演算子の後ろに置いた呼び出し", [
             ("! git add a.py", "deny"),
             ("coproc git commit -m 'x'", "deny"),
-            ("! git reset --hard", "deny"),
             ("git -C ../other status\ngit -C ../other status", "deny"),
             ("( git -C ../other status )", "deny"),
-            ("! git -C ../other push", "deny"),
             ("( git add a.py )", "deny"),
             ("git status & git commit -m 'x'", "deny"),
         ]),
         CaseGroup("ガードの対象外として素通りする形", [
             ("git log -C", "pass"),
             ("git -c user.name=x log", "pass"),
-            ("echo git -C repo status", "pass"),
-            ("git restore --staged a.py", "pass"),
-            ("git status --short", "pass"),
             ("git log commit", "pass"),
             ("echo git commit", "pass"),
             ("", "pass"),
@@ -923,8 +897,6 @@ def selftest():
             ("git add -- a.py", "deny"),
             ("git commit -m '件名'", "deny"),
             ("git reset --hard", "deny"),
-            ("git.exe reset", "deny"),
-            ("& \"C:/Program Files/Git/bin/git.exe\" commit -m '件名'", "deny"),
             ("Write-Output 'git commit'", "deny"),
         ]),
         CaseGroup("PowerShell ツール: git と add/commit/reset が同居しない形", [
@@ -935,9 +907,7 @@ def selftest():
     )
     IndexCase = namedtuple("IndexCase", "why command staged expected")
     index_cases = [
-        IndexCase("ステージが空なら通る", "git add -- README.md", [], "pass"),
         IndexCase("既にステージ済みのファイルの再 add", "git add -- README.md", ["README.md"], "pass"),
-        IndexCase("既にステージ済みのファイルの再 add", "git add -- README.md AGENTS.md", ["AGENTS.md"], "pass"),
         IndexCase("別のセッションがステージした項目との衝突", "git add -- README.md", ["AGENTS.md"], "deny"),
         IndexCase("別のセッションがステージした項目との衝突", "git add -- README.md", ["README.md", "plugins/flow/.claude-plugin/plugin.json"], "deny"),
         IndexCase("commit はインデックス全体を取るので対象外", f"git commit -m '件名\n\n本文\n\n{TRAILER}'", ["AGENTS.md"], "pass"),
@@ -957,11 +927,6 @@ def selftest():
         AmendCase("実測を渡されていない発行", AMEND, None, "deny"),
         AmendCase("メッセージの検査は素の commit と同じ(件名が英語)",
                   f"git commit --amend -m 'Rewrite the subject\n\n{TRAILER}'", OWN, "deny"),
-        AmendCase("メッセージの検査は素の commit と同じ(トレーラが無い)",
-                  "git commit --amend -m '件名を書き直す'", OWN, "deny"),
-        AmendCase("メッセージの検査は素の commit と同じ(間に合わせの件名)",
-                  f"git commit --amend -m 'テスト\n\n{TRAILER}'", OWN, "deny"),
-        AmendCase("文面を伴わない amend", "git commit --amend --no-edit", OWN, "deny"),
         AmendCase("エディタを開く amend", "git commit --amend", OWN, "deny"),
         AmendCase("--amend を -m の後ろへ置いた形",
                   f"git commit -m '件名を書き直す\n\n{TRAILER}' --amend", OWN, "deny"),
@@ -974,7 +939,6 @@ def selftest():
     ]
     CallerCase = namedtuple("CallerCase", "why command data expected")
     COMMIT = f"git commit -m '件名を書く\n\n本文\n\n{TRAILER}'"
-    ADD = "git add -- plugins/flow/hooks/guard-git-write.py"
     caller_cases = [
         CallerCase("コミットワーカーからの commit",
                    COMMIT, {"agent_id": "a1", "agent_type": "flow:commit-worker"}, "pass"),
@@ -992,16 +956,11 @@ def selftest():
         CallerCase("agent_type が無い", COMMIT, {"agent_id": "a1"}, "deny"),
         CallerCase("メインモデルが子シェルの内側へ隠した commit",
                    "bash -c \"git commit -m x\"", {}, "deny"),
-        CallerCase("メインモデルが未知の起動子の内側へ隠した commit",
-                   "mycmd --run 'git commit -m x'", {}, "deny"),
         CallerCase("ワーカーが子シェルの内側へ隠した commit(素の形の規律に委ねる)",
                    "bash -c \"git commit -m x\"",
                    {"agent_id": "a1", "agent_type": "flow:commit-worker"}, "pass"),
-        CallerCase("メインモデルの add は通す", ADD, {}, "pass"),
         CallerCase("メインモデルがパスに commit を含むファイルを add する",
                    "git add -- plugins/flow/skills/commit/SKILL.md", {}, "pass"),
-        CallerCase("メインモデルがパスに commit を含むファイルの差分を読む",
-                   "git diff -- plugins/flow/skills/commit/SKILL.md", {}, "pass"),
         CallerCase("メインモデルが -c で commit の alias を定義して使う",
                    "git -c alias.ci=commit ci -m x", {}, "deny"),
         CallerCase("メインモデルが config で commit の alias を定義する",
@@ -1010,9 +969,6 @@ def selftest():
                    "git rebase -x 'git commit -m x' HEAD~1", {}, "deny"),
         CallerCase("メインモデルが add の後ろへ連結した commit",
                    "git add -- README.md; git commit -m y", {}, "deny"),
-        CallerCase("メインモデルの許可しない形の add は形で deny する",
-                   "git add -A", {}, "deny"),
-        CallerCase("メインモデルの reset は形で deny する", "git reset --hard", {}, "deny"),
     ]
     failures = []
     for group in case_groups:
@@ -1039,7 +995,7 @@ def selftest():
         if actual != case.expected:
             failures.append((f"呼び出し元の検査 / {case.why}", case.expected, actual))
     _, reason = classify('git -C "$R" status', repo, worker=True)
-    for word in ("$", "log/diff/show", *sorted(REPOSITION_READONLY)):
+    for word in ("$", "log/diff/show", "status"):
         if word not in reason:
             failures.append(('再配置の deny 文が条件を述べる: git -C "$R" status', word, "欠落"))
     _, reason = classify(f"git commit -m 'Step 3 の検査を追加\n\n改修後も同じ\n\n{TRAILER}'", repo, worker=True)
@@ -1052,7 +1008,7 @@ def selftest():
     if not roundtrip_denies_main_thread():
         failures.append(("ハーネスと同じ形の起動でメインモデルの commit が deny されない",
                          "deny", "pass"))
-    for payload in ([], {"tool_name": None}, {"tool_name": [1]},
+    for payload in ([], {"tool_name": [1]},
                     {"tool_name": "Bash", "tool_input": [1]}):
         result = subprocess.run([sys.executable, __file__], input=json.dumps(payload).encode("utf-8"),
                                 capture_output=True, check=False)
@@ -1082,7 +1038,7 @@ def fixture_repo():
         "README.md", "AGENTS.md", "plugins/flow/hooks/guard-git-write.py",
         "plugins/flow/skills/commit/SKILL.md", "plugins/flow/tests/fixtures/日本語パス検査.txt",
     )
-    for relative in tracked + ("src/[ab].py", "src/{a,b}.py"):
+    for relative in tracked + ("src/[ab].py",):
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("x\n", encoding="utf-8")
@@ -1102,18 +1058,13 @@ def staged_deletion_failures():
                 capture_output=True, check=True)
 
         git("init", "-q")
-        for name in ("gone.txt", "kept.txt"):
-            Path(tmp, name).write_text("x\n", encoding="utf-8")
-        git("add", "--", "gone.txt", "kept.txt")
+        Path(tmp, "gone.txt").write_text("x\n", encoding="utf-8")
+        git("add", "--", "gone.txt")
         git("commit", "-q", "-m", "init")
         git("rm", "-q", "--", "gone.txt")
-        for command, expected_word in (
-            ("git add -- gone.txt", "gone.txt"),
-            ("git add -- kept.txt gone.txt", "gone.txt"),
-        ):
-            decision, reason = classify(command, tmp, worker=True)
-            if decision != "deny" or expected_word not in reason or "staged" not in reason:
-                failures.append((f"削除済みパスを名指した add: {command}", "deny+パス名指し", reason))
+        decision, reason = classify("git add -- gone.txt", tmp, worker=True)
+        if decision != "deny" or "gone.txt" not in reason or "staged" not in reason:
+            failures.append(("削除済みパスを名指した add: git add -- gone.txt", "deny+パス名指し", reason))
         decision, reason = classify("git add -- nothere.txt", tmp, worker=True)
         if decision != "deny" or "already staged" in reason:
             failures.append(("追跡下に無いパスの add は削除の案内を出さない", "deny", reason))

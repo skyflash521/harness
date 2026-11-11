@@ -174,9 +174,23 @@ def _selftest():
         return find_problems(data.get, lambda rel: rel in present and rel not in absent)
 
     marketplace = build_marketplace(claude_mp, CODEX_PLUGINS)
-    if [p["name"] for p in marketplace["plugins"]] != CODEX_PLUGINS:
+    if marketplace != {"name": "m", "plugins": [
+        {
+            "name": name,
+            "source": {"source": "local", "path": f"./plugins/{name}"},
+            "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+            "category": "Developer Tools",
+        }
+        for name in CODEX_PLUGINS
+    ]}:
         ok = False
         print("FAIL build_marketplace: Codex manifest を持つプラグインだけを登録しない")
+    if build_manifest(claude) != {
+        "name": "flow", "version": "1.2.3", "description": "d",
+        "skills": "./skills/", "hooks": CODEX_HOOKS["flow"],
+    }:
+        ok = False
+        print("FAIL build_manifest: flow の manifest が name・version・description・skills・hooks を持たない")
     if "skills" in build_manifest(guard) or build_manifest(guard).get("hooks") != CODEX_HOOKS["guard"]:
         ok = False
         print("FAIL build_manifest: guard に存在しない skills を登録するか hooks を欠く")
@@ -187,6 +201,8 @@ def _selftest():
         ("marketplace 欠落", files(**{CODEX_MARKETPLACE: None}), 1),
         ("手編集", files(**{codex_manifest_path("flow"): {**build_manifest(claude), "keywords": ["x"]}}), 1),
         ("marketplace 不一致", files(**{CODEX_MARKETPLACE: {"name": "m", "plugins": []}}), 1),
+        ("Claude 側 manifest 欠落", files(**{claude_manifest_path("flow"): None}), 1),
+        ("Claude 側 marketplace 欠落", files(**{CLAUDE_MARKETPLACE: None}), 1),
     ]
     manifest_target = "plugins/flow/.codex-plugin/plugin.json"
     for name, data, absent, want in [(n, d, (), w) for n, d, w in cases] + [

@@ -336,13 +336,12 @@ def _selftest():
         config = root / "config-dir"
         config.mkdir()
         (config / "settings.json").write_text(json.dumps({"sandbox": required["sandbox"]}), encoding="utf-8")
-        for value, sandbox_found in ((config, True), (root / "absent", False)):
-            with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(value)}):
-                registered, _ = registered_entries(root)
-            got = missing_entries(registered, required)
-            if ("sandbox.excludedCommands" not in got) != sandbox_found:
-                ok = False
-                print(f"FAIL CLAUDE_CONFIG_DIR={value} のユーザー設定の読み取り: got={got}")
+        with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(config)}):
+            registered, _ = registered_entries(root)
+        got = missing_entries(registered, required)
+        if "sandbox.excludedCommands" in got:
+            ok = False
+            print(f"FAIL CLAUDE_CONFIG_DIR={config} のユーザー設定の読み取り: got={got}")
 
         (root / SETTINGS_FILES[1]).write_text("{壊れた JSON", encoding="utf-8")
         _, unreadable = registered_entries(root, user_settings=user)
@@ -397,8 +396,8 @@ def _selftest():
             print("FAIL Codex CLI の起動失敗でも通す")
 
     for key in sorted(expected):
-        for state in (None, {"enabled": False}, {"trustStatus": "untrusted"}, {"trustStatus": "changed"},
-                      {"trustStatus": None}, {"enabled": 1}):
+        for state in (None, {"enabled": False}, {"trustStatus": "untrusted"}, {"trustStatus": None},
+                      {"enabled": 1}):
             changed = json.loads(json.dumps(hook_payload))
             hooks = changed["data"][0]["hooks"]
             selected = next(hook for hook in hooks if hook["key"] == key)

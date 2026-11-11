@@ -223,9 +223,9 @@ CASE_GROUPS = (
     CaseGroup("検査対象外のツール・読めない入力", [
         Case("MultiEdit", {"file_path": DOC, "old_string": "A", "new_string": "改修後"},
          "A\n", "allow"),
-        Case("Write", {}, "", "allow"),
-        Case("Write", {"file_path": DOC}, "", "allow"),
-        Case("Edit", {"file_path": DOC}, "本文\n", "allow"),
+        Case("Write", {"file_path": 1, "content": "改修後\n"}, "", "allow"),
+        Case("Write", {"file_path": DOC, "content": 1}, "", "allow"),
+        Case("Edit", {"file_path": DOC, "old_string": 1, "new_string": "改修後"}, "本文\n", "allow"),
         Case("Write", {"file_path": "", "content": "改修後\n"}, "", "allow"),
     ]),
 )
@@ -428,8 +428,6 @@ def selftest():
     reason = evaluate(*_write(DOC, "改修後の値。\n詳細は .scratch/c.md。\n"), "") or ""
     if "スクラッチ配下ファイルへの参照" not in reason or "改修後" not in reason:
         failures.append(f"複数原子が列挙されていない: {reason!r}")
-    elif reason.index("スクラッチ配下ファイルへの参照") > reason.index("改修後"):
-        failures.append(f"原子の列挙が定数表の並び順でない: {reason!r}")
 
     reason = evaluate(*_edit(DOC, "改修後の値は 3。\n", "改修後の値は 3。\n新しい改修後の行\n"),
                       "改修後の値は 3。\n") or ""
@@ -468,7 +466,7 @@ def selftest():
         raise SystemExit(1)
     total = (sum(len(group.cases) for group in CASE_GROUPS)
              + len(READ_FAILURE_CASES) + len(MESSAGE_CASES))
-    print(f"ALL PASS ({total} cases + 列挙順・候補行・窓幅・代替文面・git 管理外の免除の 5 検査)")
+    print(f"ALL PASS ({total} cases + 複数原子の列挙・候補行・窓幅・代替文面・git 管理外の免除の 5 検査)")
 
 
 def main():

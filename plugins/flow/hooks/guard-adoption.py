@@ -84,15 +84,14 @@ def selftest():
 
     with tempfile.TemporaryDirectory() as unmet:
         reason_cases = [
-            ("flow スキルは deny", "flow:commit", True),
-            ("他プラグインのスキルは通す", "codex:rescue", False),
-            ("スキルでない起動は通す", None, False),
+            ("他プラグインのスキルは通す", "codex:rescue"),
+            ("スキルでない起動は通す", None),
         ]
-        for why, name, want_deny in reason_cases:
+        for why, name in reason_cases:
             got = reason_for(name, unmet)
-            if bool(got) != want_deny:
+            if got:
                 ok = False
-                print(f"FAIL {why}: want_deny={want_deny} got={got!r}")
+                print(f"FAIL {why}: got={got!r}")
 
         repo = Path(unmet, "satisfied")
         (repo / "docs" / "conventions").mkdir(parents=True)

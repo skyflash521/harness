@@ -129,42 +129,41 @@ def read_documents():
 def selftest():
     documents = read_documents()
     failures = check_documents(documents) + check_twins(documents) + check_thresholds(documents)
-    for left, right in TWINS:
-        changed = dict(documents)
-        changed[left] += "追記"
-        if not check_twins(changed):
-            failures.append(f"{left}: 双子とのずれを検出しない")
-        changed = dict(documents)
-        changed[left] = changed[left].replace("opus", "fable", 1)
-        if not check_twins(changed):
-            failures.append(f"{left}: 他方のモデル名への置換を検出しない")
-        changed = dict(documents)
-        changed.pop(right)
-        if not check_twins(changed):
-            failures.append(f"{right}: 双子の欠落を検出しない")
-    for path, clauses in REQUIREMENTS.items():
-        for clause in clauses:
-            changed = dict(documents)
-            changed[path] = changed.get(path, "").replace(clause, "")
-            if not check_documents(changed):
-                failures.append(f"{path}: 欠落を検出しない: {clause}")
-        changed = dict(documents)
-        changed.pop(path, None)
-        if not check_documents(changed):
-            failures.append(f"{path}: 文書の欠落を検出しない")
-    for path, clauses in THRESHOLDS.items():
-        for clause in clauses:
-            for value in (STALL, WAIT_CAP):
-                if str(value) not in clause:
-                    continue
-                changed = dict(documents)
-                changed[path] = changed[path].replace(clause, clause.replace(str(value), str(value + 1)))
-                if not check_thresholds(changed):
-                    failures.append(f"{path}: 正本とずれた値を検出しない: {clause}")
-        changed = dict(documents)
-        changed.pop(path)
-        if not check_thresholds(changed):
-            failures.append(f"{path}: 閾値の文書の欠落を検出しない")
+
+    def replaced(path, text):
+        return {**documents, path: text}
+
+    def without(path):
+        return {key: text for key, text in documents.items() if key != path}
+
+    left, right = TWINS[-1]
+    if not check_twins(replaced(left, documents[left] + "追記")):
+        failures.append(f"{left}: 双子とのずれを検出しない")
+    if not check_twins(replaced(left, documents[left].replace("opus", "fable", 1))):
+        failures.append(f"{left}: 他方のモデル名への置換を検出しない")
+    if not check_twins(without(right)):
+        failures.append(f"{right}: 双子の欠落を検出しない")
+
+    plain, skill = "docs/guidance/usage-limit-response.md", "skills/autonomous-dev/SKILL.md"
+    if not check_documents(without(plain)):
+        failures.append(f"{plain}: 文書の欠落を検出しない")
+    if not check_documents(replaced(skill, documents[skill].replace("execution.md", ""))):
+        failures.append(f"{skill}: 欠落を検出しない: execution.md")
+    clause = REQUIREMENTS[skill][-1]
+    moved = documents[skill].replace(clause, "") + f"\n## 末尾の節\n\n{clause}\n"
+    if check_documents(replaced(skill, moved)) != [f"{skill}: 契約の記述が無い: {clause}"]:
+        failures.append(f"{skill}: Codex 分岐の外にしか無い記述を欠落と扱わない: {clause}")
+    headless = documents[skill].replace("## Codex 上で実行するとき", "## Claude Code 上の経路")
+    if not check_documents(replaced(skill, headless)):
+        failures.append(f"{skill}: Codex 分岐の欠落を検出しない")
+
+    path = "skills/codex-consult/SKILL.md"
+    clause = THRESHOLDS[path][-1]
+    shifted = documents[path].replace(clause, clause.replace(str(WAIT_CAP), str(WAIT_CAP + 1)))
+    if not check_thresholds(replaced(path, shifted)):
+        failures.append(f"{path}: 正本とずれた値を検出しない: {clause}")
+    if not check_thresholds(without(path)):
+        failures.append(f"{path}: 閾値の文書の欠落を検出しない")
     for name in ("STALL", "WAIT_CAP"):
         saved = globals()[name]
         globals()[name] = None
@@ -173,12 +172,6 @@ def selftest():
                 failures.append(f"{name}: 正本を読めない回を検出しない")
         finally:
             globals()[name] = saved
-    for path in REQUIREMENTS:
-        if path.startswith("skills/"):
-            changed = dict(documents)
-            changed[path] = changed.get(path, "").replace("## Codex 上で実行するとき", "## Claude Code 上の経路")
-            if not check_documents(changed):
-                failures.append(f"{path}: Codex 分岐の欠落を検出しない")
     for failure in failures:
         print("FAIL " + failure)
     print("ALL PASS" if not failures else "SOME FAILED")

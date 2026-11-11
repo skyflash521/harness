@@ -48,46 +48,109 @@ def command_input(command, shell=None, tool="Bash"):
 def selftest():
     cases = 0
     checks = [
-        (platform, shell, script, denied, passed, guidance)
-        for platform, shell, delete, setter, reader in (
-            ("win32", "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        (f"{row}: {script} は拒否し Codex 向けの案内だけを出す", platform, shell, script, denied, guidance)
+        for row, platform, shell, delete, setter, reader in (
+            ("Codex の Windows PowerShell 絶対パス", "win32",
+             "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
              "Remove-Item 検査.txt", "Set-Date -Date '2030-01-01'", "Get-Date"),
-            ("win32", "pwsh.exe", "del 検査.txt", "w32tm /resync", "Get-Date"),
-            ("win32", "cmd.exe", "del 検査.txt", "date 2030-01-01", "date /t"),
-            ("darwin", "/bin/zsh", "rm 検査.txt", "date 010203002030", "date"),
-            ("linux", "/bin/bash", "rm 検査.txt", "date --set=2030-01-01", "date"),
-            ("win32", "/bin/bash", "rm 検査.txt", "date -s 2030", "date"),
-            ("win32", None, "Remove-Item 検査.txt", "Set-Date", "Get-Date"),
-            ("darwin", None, "rm 検査.txt", "date 010203", "date"),
+            ("Codex の pwsh", "win32", "pwsh.exe", "del 検査.txt", "w32tm /resync", "Get-Date"),
+            ("Codex の cmd.exe", "win32", "cmd.exe", "del 検査.txt", "date 2030-01-01", "date /t"),
+            ("Codex の macOS の zsh", "darwin", "/bin/zsh", "rm 検査.txt", "date 010203002030", "date"),
+            ("Codex の Linux の bash", "linux", "/bin/bash", "rm 検査.txt", "date --set=2030-01-01", "date"),
+            ("Codex の Windows の bash", "win32", "/bin/bash", "rm 検査.txt", "date -s 2030", "date"),
+            ("Codex の Windows の shell 指定なしは PowerShell", "win32", None,
+             "Remove-Item 検査.txt", "Set-Date", "Get-Date"),
+            ("Codex の macOS の shell 指定なしは Bash", "darwin", None, "rm 検査.txt", "date 010203", "date"),
         )
-        for script, denied, passed, guidance in (
-            ("guard-rm.py", delete, "git status --short", "trash.py"),
-            ("guard-time.py", setter, reader, reader),
+        for script, denied, guidance in (
+            ("guard-rm.py", delete, "trash.py"),
+            ("guard-time.py", setter, reader),
         )
     ] + [
-        ("win32", None, "guard-root-scan.py", "rg --files /", "rg --files plugins", "rg --files"),
-        ("win32", None, "guard-rm.py", "rm -rf 検査 <<EOF\nx\nEOF", "cat <<EOF\nrm x\nEOF", "trash.py"),
+        ("Codex のルート起点の rg --files は拒否する", "win32", None, "guard-root-scan.py", "rg --files /",
+         "rg --files"),
+        ("Codex の here-doc を伴う rm は拒否する", "win32", None, "guard-rm.py", "rm -rf 検査 <<EOF\nx\nEOF",
+         "trash.py"),
     ]
-    for platform, shell, script, denied, passed, guidance in checks:
+    passes = [
+        (f"{row}: {script} は {passed!r} を通す", platform, shell, script, passed)
+        for row, platform, shell, reader in (
+            ("Codex の Windows PowerShell 絶対パス", "win32",
+             "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe", "Get-Date"),
+            ("Codex の pwsh", "win32", "pwsh.exe", "Get-Date"),
+            ("Codex の cmd.exe", "win32", "cmd.exe", "date /t"),
+            ("Codex の macOS の zsh", "darwin", "/bin/zsh", "date"),
+            ("Codex の Linux の bash", "linux", "/bin/bash", "date"),
+            ("Codex の Windows の bash", "win32", "/bin/bash", "date"),
+            ("Codex の Windows の shell 指定なしは PowerShell", "win32", None, "Get-Date"),
+            ("Codex の macOS の shell 指定なしは Bash", "darwin", None, "date"),
+        )
+        for script, passed in (("guard-rm.py", "git status --short"), ("guard-time.py", reader))
+    ] + [
+        ("Codex のリポジトリ配下の rg --files は通す", "win32", None, "guard-root-scan.py", "rg --files plugins"),
+        ("Codex の here-doc 本文の rm は通す", "win32", None, "guard-rm.py", "cat <<EOF\nrm x\nEOF"),
+    ]
+    for name, platform, shell, script, denied, guidance in checks:
         reason = invoke(script, command_input(denied, shell), platform=platform)
-        assert reason and guidance in reason, (platform, shell, script, reason)
-        assert "Glob ツール" not in reason and "sandbox.excludedCommands" not in reason
-        assert invoke(script, command_input(passed, shell), platform=platform) is None
-        cases += 2
-    for script in ("guard-rm.py", "guard-time.py", "guard-root-scan.py", "guard-gh-write.py"):
-        for malformed in ([], {"tool_name": "Bash", "tool_input": []},
-                          command_input(123), command_input("rm x", tool="Read")):
-            assert invoke(script, malformed) is None
+        assert reason and guidance in reason, (name, reason)
+        assert "Glob ツール" not in reason and "sandbox.excludedCommands" not in reason, name
+        cases += 1
+    for name, platform, shell, script, passed in passes:
+        assert invoke(script, command_input(passed, shell), platform=platform) is None, name
+        cases += 1
+    for name, denied in (
+        ("cmd.exe の time による時刻の設定は拒否する", "time 12:00"),
+        ("cmd.exe の w32tm は拒否する", "w32tm /resync"),
+        ("cmd.exe の & の後段の date は拒否する", "echo x & date 2030-01-01"),
+        ("cmd.exe の大文字の DATE による設定は拒否する", "DATE 2030-01-01"),
+    ):
+        assert invoke("guard-time.py", command_input(denied, "cmd.exe")), name
+        cases += 1
+    assert invoke("guard-time.py", command_input("DATE /T", "cmd.exe")) is None, "cmd.exe の大文字の DATE /T は通す"
+    cases += 1
+    for name, platform, shell in (
+        ("Codex の shell が空文字なら Windows では PowerShell とみなす", "win32", ""),
+        ("Codex の shell が文字列でなければ Windows では PowerShell とみなす", "win32", 123),
+        ("Codex の shell 名は大文字とバックスラッシュのパスでも PowerShell と見分ける", "linux",
+         "C:\\Windows\\PowerShell.EXE"),
+    ):
+        assert invoke("guard-rm.py", command_input("Remove-Item 検査.txt", shell), platform=platform), name
+        cases += 1
+    for script, blocked in (
+        ("guard-rm.py", "rm x"),
+        ("guard-time.py", "Set-Date"),
+        ("guard-root-scan.py", "rg --files /"),
+        ("guard-gh-write.py", "gh pr merge 1"),
+    ):
+        for name, malformed in (
+            ("JSON が辞書でない入力は通す", []),
+            ("tool_input が辞書でない入力は通す", {"tool_name": "Bash", "tool_input": []}),
+            ("command が文字列でない入力は通す", command_input(123)),
+            ("対象外のツールの入力は通す", command_input(blocked, tool="Read")),
+        ):
+            assert invoke(script, malformed) is None, f"{script}: {name}"
             cases += 1
-    for patch, denied in (
-        ("*** Begin Patch\n*** Delete File: 検査.txt\n*** End Patch", True),
-        ("*** Begin Patch\n*** Update File: 検査.txt\n@@\n-a\n+b\n*** End Patch", False),
-        ("*** Begin Patch\n*** Add File: 検査.txt\n+*** Delete File: x\n*** End Patch", False),
+    for name, malformed in (
+        ("JSON が辞書でない入力は通す", []),
+        ("tool_input が辞書でない入力は通す", {"tool_name": "apply_patch", "tool_input": []}),
+        ("command が文字列でない入力は通す", command_input(123, tool="apply_patch")),
+        ("apply_patch 以外のツールの入力は通す",
+         command_input("*** Begin Patch\n*** Delete File: 検査.txt\n*** End Patch")),
+    ):
+        assert invoke("guard-delete-patch.py", malformed) is None, f"guard-delete-patch.py: {name}"
+        cases += 1
+    for name, patch, denied in (
+        ("ファイルを削除するパッチは拒否し trash.py へ誘導する",
+         "*** Begin Patch\n*** Delete File: 検査.txt\n*** End Patch", True),
+        ("ファイルを更新するパッチは通す",
+         "*** Begin Patch\n*** Update File: 検査.txt\n@@\n-a\n+b\n*** End Patch", False),
+        ("追加するファイルの本文にある削除の行は通す",
+         "*** Begin Patch\n*** Add File: 検査.txt\n+*** Delete File: x\n*** End Patch", False),
     ):
         reason = invoke("guard-delete-patch.py", command_input(patch, tool="apply_patch"))
-        assert bool(reason) == denied
+        assert bool(reason) == denied, name
         if denied:
-            assert "trash.py" in reason
+            assert "trash.py" in reason, name
         cases += 1
     for script, denied, guidance in (
         ("guard-rm.py", "rm 検査.txt", "sandbox.excludedCommands"),
@@ -95,8 +158,9 @@ def selftest():
         ("guard-root-scan.py", "rg --files /", "Glob ツール"),
     ):
         reason = invoke(script, command_input(denied), codex=False)
-        assert reason and guidance in reason
-        assert invoke(script, command_input("git status --short"), codex=False) is None
+        assert reason and guidance in reason, f"Claude Code の Bash: {script} は拒否し {guidance} を案内する"
+        assert invoke(script, command_input("git status --short"), codex=False) is None, \
+            f"Claude Code の Bash: {script} は git status を通す"
         cases += 2
     for script, denied, guidance in (
         ("guard-rm.py", "Remove-Item 検査.txt", "Bash ツールへ移り"),
@@ -104,16 +168,30 @@ def selftest():
         ("guard-root-scan.py", "rg --files /", "Glob ツール"),
     ):
         reason = invoke(script, command_input(denied, tool="PowerShell"), codex=False)
-        assert reason and guidance in reason
+        assert reason and guidance in reason, f"Claude Code の PowerShell: {script} は拒否し {guidance} を案内する"
         cases += 1
-    assert invoke("guard-time.py", command_input("Get-Date", tool="PowerShell"), codex=False) is None
+    assert invoke("guard-time.py", command_input("Get-Date", tool="PowerShell"), codex=False) is None, \
+        "Claude Code の PowerShell: guard-time.py は Get-Date を通す"
     cases += 1
+    reason = invoke("guard-rm.py", command_input("rm 検査.txt"), codex=False)
+    assert (ROOT / "scripts" / "trash.py").as_posix() in reason, "rm の拒否文は第1引数のプラグインルート配下の trash.py を示す"
+    assert "Bash ツールへ移り" not in reason, "Claude Code の Bash での rm の拒否文は Bash ツールへの移動を案内しない"
+    assert "Bash ツールへ移り" not in invoke("guard-rm.py", command_input("Remove-Item 検査.txt")), \
+        "Codex の PowerShell での削除の拒否文は Bash ツールへの移動を案内しない"
+    cases += 3
+    breadth = "w32tm は状態を見るだけ"
+    assert breadth in invoke("guard-time.py", command_input("Set-Date", tool="PowerShell"), codex=False), \
+        "PowerShell での時計の拒否文は w32tm を巻き込むことを注記する"
+    assert breadth not in invoke("guard-time.py", command_input("date -s 2030"), codex=False), \
+        "Bash での時計の拒否文は w32tm の注記を出さない"
+    cases += 2
     for tool in ("Bash", "PowerShell"):
         reason = invoke("guard-gh-write.py", command_input("gh pr merge 1", tool=tool),
                         codex=False, decision="ask")
-        assert reason and "gh pr merge" in reason
+        assert reason and "gh pr merge" in reason, f"Claude Code の {tool}: gh の書き込みは確認を求める"
         cases += 1
-    assert invoke("guard-gh-write.py", command_input("gh pr view 1"), codex=False) is None
+    assert invoke("guard-gh-write.py", command_input("gh pr view 1"), codex=False) is None, \
+        "Claude Code の Bash: gh の読み取りは通す"
     cases += 1
     claude = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
     codex = json.loads((HOOKS / "codex-hooks.json").read_text(encoding="utf-8"))

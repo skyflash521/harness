@@ -136,14 +136,20 @@ def selftest():
         ("短フラグ束に紛れた set", "date -us2030", "deny"),
         ("読み取りフラグだけの束", "date -uR", "deny"),
         ("位置引数による日時指定", "date 010203", "deny"),
+        ("2文字の位置引数", "date 12", "deny"),
         ("起動子の後ろの set", "sudo date -s 2020-01-01", "deny"),
         ("起動子のオプション値の後ろの set", "sudo -u root date -s 2020", "deny"),
         ("起動子の後ろの読み取り", "sudo date +%s", None),
-        ("起動子と数値の後ろの読み取り", "timeout 5 date", None),
         ("複合コマンド", "date -s 2030; ls", None),
+        ("&& で繋いだ複合コマンド", "date -s 2030 && ls", None),
+        ("パイプ", "date -s 2030 | cat", None),
+        ("改行で区切った複合コマンド", "date -s 2030\nls", None),
         ("コマンド置換", "date `x`", None),
+        ("変数展開", "date $x", None),
         ("リダイレクト", "date > out", None),
-        ("date でないコマンド", "ls", None),
+        ("入力のリダイレクト", "date -s 2030 < f", None),
+        ("引用が閉じていない形", "date -s 'x", None),
+        ("date でないコマンド", "ls 010203", None),
         ("空のコマンド", "", None),
     ]
     ps_cases = [
@@ -151,6 +157,7 @@ def selftest():
         ("パイプラインの後ろに置いた設定", "Get-Date | Set-Date", "deny"),
         ("時刻同期ツール", "w32tm /resync", "deny"),
         ("設定を言及しただけの形", "Write-Output 'Set-Date'", None),
+        ("引用が閉じていない形", "Set-Date 'x", None),
         ("空のコマンド", "", None),
     ]
     ok = True

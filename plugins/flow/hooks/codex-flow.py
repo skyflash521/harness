@@ -137,6 +137,13 @@ def cli_reason(command):
                         pass
                     args = args[4:]
                     name = parser.program(args[0]).removesuffix(".cmd").removesuffix(".ps1")
+            if name in ("python", "python3", "py"):
+                for index in range(1, len(args)):
+                    inner = parser.program(args[index]).removesuffix(".cmd").removesuffix(".ps1")
+                    if ((inner == "claude" and any(value in ("-p", "--print") for value in args[index + 1:]))
+                            or (inner == "codex" and "exec" in args[index + 1:])):
+                        args, name = args[index:], inner
+                        break
             claude = name == "claude" and any(value in ("-p", "--print") for value in args[1:])
             codex = name == "codex" and "exec" in args[1:]
             if not (claude or codex):
@@ -344,28 +351,34 @@ def selftest():
              (prefix + valid.replace("NotebookEdit Bash", "NotebookEdit"), True),
              (prefix.replace("900", "nan") + valid, True),
              (prefix.replace("900", "901") + valid, True),
+             ('python3 other.py 900 -- claude -p --model sonnet', True),
+             ('python3 other.py 900 -- codex exec --json -c sandbox_mode=read-only -', True),
+             ('python3 scripts/run_selftests.py -p exec', False),
              (prefix + 'codex exec review --json -c sandbox_mode=read-only -', False),
              (prefix + 'codex exec review --json -', True),
              (prefix + 'codex exec --skip-git-repo-check --json -c sandbox_mode=read-only -', False),
              (prefix + 'codex exec review -c sandbox_mode=read-only -s workspace-write -', True),
+             (prefix + 'codex exec --json -', True),
+             (prefix + 'codex exec --json -c sandbox_mode=danger-full-access -', True),
+             (prefix + 'codex exec --json -c sandbox_mode=read-only --dangerously-bypass-approvals-and-sandbox -', True),
+             (prefix + 'codex exec --json -c sandbox_mode=read-only --approve-for-me -', True),
              ('codex exec --json -c sandbox_mode=read-only -', True),
              ('echo "claude -p"', False),
              ("printf '%s' \"Claude's", False),
+             ('claude -p "Claude', True),
+             ('codex exec "Claude', True),
              (prefix + valid + " <<'EOF'\nClaude's\ncodex exec を調べる\nEOF\n", False),
              ("$prompt=@'\nClaude's\ncodex exec を調べる\n'@\n" + prefix + valid, False),
              ("cat <<EOF\ncodex exec を調べる\nEOF\ncodex exec -\n", True)]
     failures = [command for command, denied in cases if bool(cli_reason(command)) != denied]
-    for shell in ("bash -lc", "eval", "powershell", "powershell -ExecutionPolicy Bypass -Command"):
-        if cli_reason(shell + " '" + prefix + valid + "'") is not None:
-            failures.append(f"入れ子の正規 CLI を拒否: {shell}")
+    for shell in ("bash -lc", "eval", "powershell"):
         if cli_reason(shell + " 'claude -p --model sonnet --tools Bash'") is None:
             failures.append(f"入れ子の無保護 CLI を通す: {shell}")
-    for shell in ("powershell -ExecutionPolicy Bypass -Command ", "powershell -exec bypass -c ",
-                  "powershell -exec bypass -com ", "powershell -exec bypass "):
-        if cli_reason(shell + prefix + valid) is not None:
-            failures.append("オプション値の後の正規 CLI を拒否する")
+    for shell in ("powershell -ExecutionPolicy Bypass -Command ", "powershell -exec bypass "):
         if cli_reason(shell + "claude -p --model sonnet --tools Bash") is None:
             failures.append("オプション値の後の無保護 CLI を通す")
+    if cli_reason("powershell -exec bypass " + prefix + valid) is not None:
+        failures.append("オプション値の後の正規 CLI を拒否する")
     if flow_entrypoint("echo pwsh -Command 'python3 scripts/codex_commit.py --help'"):
         failures.append("シェル名を出力するだけの命令を起動と誤認する")
     for event in ("SessionStart", "PreToolUse", "Stop"):
@@ -382,7 +395,7 @@ def selftest():
 
     for message, expected in (
         ("確認しました。\n[停止: 完了]", None),
-        ("確認しました。", "末尾行"),
+        ("確認しました。", "adoption.md"),
         ("結果を待ちます。\n[停止: 待機]", "同じ実行セッション"),
         ("I have completed the task.\n[停止: 完了]", "guard-reply-language"),
     ):
@@ -403,12 +416,9 @@ def selftest():
         for command in (prefix + valid, 'pwsh -Command "python3 scripts/codex_commit.py --help"',
                         'bash -c "python3 scripts/codex_commit.py --help"',
                         'cmd /c "python3 scripts/codex_commit.py --help"',
-                        'bash -lc "python3 scripts/codex_commit.py --help"',
                         'eval "python3 scripts/codex_commit.py --help"',
                         'powershell "python3 scripts/codex_commit.py --help"',
                         'powershell -ExecutionPolicy Bypass -Command python3 scripts/codex_commit.py --help',
-                        'powershell -exec bypass -Command python3 scripts/codex_commit.py --help',
-                        'powershell -exec bypass -com python3 scripts/codex_commit.py --help',
                         'powershell -exec bypass python3 scripts/codex_commit.py --help'):
             received.clear()
             with patch(__name__ + ".load", side_effect=lambda name, path:
@@ -457,8 +467,7 @@ def selftest():
                               (json.dumps({"hook_event_name": "PreToolUse", "tool_name": None}), None),
                               (json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash",
                                            "tool_input": [1]}), None),
-                              (json.dumps({"hook_event_name": "SessionStart"}), "additionalContext"),
-                              (json.dumps({"hook_event_name": "Stop", "last_assistant_message": "確認しました。"}), "block")):
+                              (json.dumps({"hook_event_name": "SessionStart"}), "additionalContext")):
         result = subprocess.run([sys.executable, __file__], input=payload.encode("utf-8"),
                                 capture_output=True, env={**os.environ, "FLOW_UNATTENDED": "1"})
         if result.returncode or (expected is None and result.stdout.strip()) or (

@@ -47,11 +47,12 @@ def selftest():
         ok = False
         print(f"FAIL 正本の規約が無い: {GUIDANCE}")
 
-    for leaked in ("Fable", "Codex", "取り直す。", "Sonnet"):
-        cases += 1
-        if leaked in context.replace(str(GUIDANCE), ""):
-            ok = False
-            print(f"FAIL 規約の中身を文脈へ写している: {leaked}")
+    cases += 1
+    leaked = [word for word in ("Fable", "Codex", "取り直す。", "Sonnet")
+              if word in context.replace(str(GUIDANCE), "")]
+    if leaked:
+        ok = False
+        print(f"FAIL 規約の中身を文脈へ写している: {leaked}")
 
     payload = json.dumps({"hook_event_name": "SessionStart"}, ensure_ascii=False).encode("utf-8")
     result = subprocess.run(

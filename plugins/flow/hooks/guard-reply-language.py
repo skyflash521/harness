@@ -200,11 +200,14 @@ This condition and "合わせるのは踵から指の付け根まで" can't both
 def _judge_ok():
     done = "[停止: 完了]"
     cases = [
-        ("日本語の応答", f"変更しました。\n\n{done}", False),
-        ("英語の応答", f"I have updated the file.\n\n{done}", True),
         ("宣言なしの英語", "Done.", True),
         ("日本語を引用した英語の応答", QUOTING_REPLY, True),
-        ("日本語の中に英文が1行", f"直しました。\nThe hook now checks each line.\n\n{done}", True),
+        ("鉤括弧で日本語を引いた英文", "I fixed 「サンダルの傾き」 as you asked today.", True),
+        ("二重鉤括弧で日本語を引いた英文", "I fixed 『サンダルの傾き』 as you asked today.", True),
+        ("全角引用符で引いた英語の出力",
+         "原因: “No such file or directory was found.”", False),
+        ("英文の行が閾値ちょうどの語数", f"直しました。\nThe hook checks lines.\n\n{done}", True),
+        ("英文の行が閾値に1語足りない", f"直しました。\nThe hook checks.\n\n{done}", False),
         ("識別子を含む日本語", f"`decide()` を直しました。see README and the hook docs\n\n{done}", False),
         ("裸のパスを並べた行", f"次を変えた。\n- plugins/flow/hooks/hooks.json AGENTS.md README.md x.py\n{done}",
          False),
@@ -309,8 +312,10 @@ def _roundtrip_ok():
             out = json.loads(result.stdout.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             out = {}
-        blocked = out.get("decision") == "block" or (
-            (out.get("hookSpecificOutput") or {}).get("permissionDecision") == "deny")
+        if event == "PreToolUse":
+            blocked = (out.get("hookSpecificOutput") or {}).get("permissionDecision") == "deny"
+        else:
+            blocked = out.get("decision") == "block"
         if not blocked or TAG not in json.dumps(out, ensure_ascii=False):
             ok = False
             print(f"FAIL stdin roundtrip {event}: block が出ない: {result.stdout[:200]!r}")

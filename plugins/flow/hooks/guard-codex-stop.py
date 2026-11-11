@@ -30,7 +30,7 @@ WATCHDOG_DOC = ("skills", "codex-watchdog", "SKILL.md")
 FIELD = "Codex停止事由"
 GROUNDS = ("ハング", "起動失敗", "ユーザー指示")
 GROUND_LINE = re.compile(
-    r"^\s*[>*_\-\s]*{field}[*_\s]*(?:は)?[*_\s]*[::]\s*[*_`]*\s*({grounds})".format(
+    r"^\s*[>*_\-\s]*{field}[*_\s]*(?:は)?[*_\s]*[:\uff1a]\s*[*_`]*\s*({grounds})".format(
         field=FIELD, grounds="|".join(GROUNDS),
     ),
     re.MULTILINE,
@@ -239,6 +239,8 @@ def selftest():
           launch + [read_result("`OUTCOME=4 bad-arg` で戻る")], "a1", True)
     check("事由を宣言している: " + GROUNDS[0],
           launch + [said("{}: {}".format(FIELD, GROUNDS[0]))], "a1", False)
+    check("全角コロンの宣言も読む",
+          launch + [said("{}\uff1a{}".format(FIELD, GROUNDS[0]))], "a1", False)
     check("装飾付きの宣言も読む",
           launch + [said("- **{}**: {} と判断した".format(FIELD, GROUNDS[0]))], "a1", False)
     check("列挙に無い事由は宣言に数えない",

@@ -153,18 +153,36 @@ def selftest() -> int:
              "plugins/flow/skills/sample/x.md", "各スキルの *SKILL.md を見る。\n", False),
         Case("リンクの中は対象外", "docs/a.md", "[表示](docs/module.md)\n", False),
         Case("追跡ファイルへ解決しない参照は対象外", "docs/a.md", "外部の other.md を指す。\n", False),
+        Case("1行目の見出しは対象外", "docs/a.md", "# docs/module.md の説明\n", False),
+        Case("コードブロック内は対象外", "docs/a.md", "```\ndocs/module.md\n```\n", False),
+        Case("インラインコード内は対象外", "docs/a.md", "`docs/module.md` を見る。\n", False),
+        Case("山括弧の内側は対象外", "docs/a.md", "書式は <docs/module.md> の形。\n", False),
     ]
     failures = []
     for case in cases:
         got = bool(check_bare_md(case.path, case.text, tracked))
         if got != case.expect_violation:
             failures.append(f"FAIL {case.why}: expect={case.expect_violation} got={got}")
+    located = check_bare_md("docs/a.md", "一行目\n詳細は docs/module.md を見る。\n", tracked)
+    if not located or not located[0].startswith("docs/a.md:2:"):
+        failures.append("FAIL 裸の参照の違反が行番号を伴わない")
     if not check_section_tokens("docs/a.md", "詳細は §2 を見る。\n"):
         failures.append("FAIL 平文の節参照が検出されない")
+    if not check_section_tokens("docs/a.md", "詳細は § 2 を見る。\n"):
+        failures.append("FAIL 空白を挟んだ平文の節参照が検出されない")
+    if check_section_tokens("docs/a.md", "[§2 の説明](b.md#2-見出し)\n"):
+        failures.append("FAIL アンカー付きリンクの表示にある節参照を違反にしている")
+    unanchored = check_section_tokens("docs/a.md", "[§2 の説明](b.md)\n")
+    if not unanchored or "アンカー" not in unanchored[0]:
+        failures.append("FAIL アンカーの無いリンクの節参照が検出されない")
+    if check_section_tokens("docs/a.md", "[節](b.md#§2)\n"):
+        failures.append("FAIL リンク先の中の節記号を違反にしている")
+    if strip_frontmatter("---\nref: docs/module.md\n---\n本文\n") != "\n\n\n本文\n":
+        failures.append("FAIL frontmatter を行数を保ったまま除けていない")
     if failures:
         print("\n".join(failures))
         return 1
-    print(f"ALL PASS ({len(cases)} cases + 平文の節参照 1 件)")
+    print(f"ALL PASS ({len(cases)} cases + 個別の確認 7 件)")
     return 0
 
 

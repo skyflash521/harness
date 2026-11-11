@@ -100,12 +100,11 @@ def selftest():
     if missing:
         ok = False
         print(f"FAIL 正本の宣言が文脈に無い: {missing}")
-    markers = ("[停止: 完了]", "[停止: 要判断]", "[停止: 待機]", "[停止: 応答]")
-    for marker in markers:
-        cases += 1
-        if f"`{marker}`" in context:
-            ok = False
-            print(f"FAIL 宣言を囲み記号で包んで提示している: {marker}")
+    cases += 1
+    wrapped = [m for m in guard.MARKERS if f"`{m}`" in context]
+    if wrapped:
+        ok = False
+        print(f"FAIL 宣言を囲み記号で包んで提示している: {wrapped}")
     cases += 1
     if "PushNotification" not in context:
         ok = False

@@ -269,8 +269,8 @@ def selftest():
           job_state({"pid": os.getpid(), "updatedAt": fresh}, now) == "live")
     check("進行中のプロセスでもログが停滞閾値を越えたら stalled",
           job_state({"pid": os.getpid(), "updatedAt": idle}, now) == "stalled")
-    check("プロセスが消えていればログが新しくても gone",
-          job_state({"pid": ended.pid, "updatedAt": fresh}, now) == "gone")
+    check("プロセスが消えていればログが停滞していても gone",
+          job_state({"pid": ended.pid, "updatedAt": idle}, now) == "gone")
     check("時刻を読めない記録は進行中のプロセスに従う",
           job_state({"pid": os.getpid(), "updatedAt": "いつか"}, now) == "live")
 

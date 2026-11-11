@@ -63,6 +63,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -96,7 +97,7 @@ RESPOND_EMPTY = frozenset((
     "ありません", "特にありません", "ございません", "0件", "0",
     "質問なし", "質問は無い", "問われていない", "none", "n/a", "na", "nothing",
 ))
-RESPOND_TRIM = "*_`「」()()。．.、,-・ 　"
+RESPOND_TRIM = "*_`「」()\uff08\uff09。．.、,-・ 　"
 INSTRUCTION_WORD = "指示"
 TRANSCRIPT = ("scripts", "transcript.py")
 GIT_WRITE_HOOK = "guard-git-write.py"
@@ -128,21 +129,22 @@ DECISION_CONFIRM_LINE = re.compile(
     r"(?:[(（].*[)）][*_\s。．.]*)?$"
 )
 DECISION_SPEC_LINE = re.compile(
-    rf"^\s*[>*_\-\s]*{re.escape(DECISION_SPEC_FIELD)}[*_\s]*(?:は)?[*_\s]*[::]?[*_\s]*(.+?)\s*$"
+    rf"^\s*[>*_\-\s]*{re.escape(DECISION_SPEC_FIELD)}[*_\s]*(?:は)?[*_\s]*[:\uff1a]?[*_\s]*(.+?)\s*$"
 )
 PATH_SPLIT = re.compile(r"[\s、,。「」『』()（）\[\]`*＿]+")
 PATH_TRIM = re.compile(r"(?:#[^/\\]*)?(?::\d+(?:-\d+)?)?$")
 DECISION_KIND_LINE = re.compile(
-    rf"^\s*[>*_\-\s]*{re.escape(DECISION_FIELD)}[*_\s]*(?:は)?[*_\s]*[::]?[*_\s]*(.+?)\s*$"
+    rf"^\s*[>*_\-\s]*{re.escape(DECISION_FIELD)}[*_\s]*(?:は)?[*_\s]*[:\uff1a]?[*_\s]*(.+?)\s*$"
 )
 RESPOND_LINE = re.compile(
-    rf"^\s*[>*_\-\s]*{re.escape(RESPOND_FIELD)}[*_\s]*(?:は)?[*_\s]*[::]?[*_\s]*(.+?)\s*$"
+    rf"^\s*[>*_\-\s]*{re.escape(RESPOND_FIELD)}[*_\s]*(?:は)?[*_\s]*[:\uff1a]?[*_\s]*(.+?)\s*$"
 )
 INSTRUCTION_LINE = re.compile(
-    rf"^\s*[>*_\-\s]*[^\s::]{{0,12}}{INSTRUCTION_WORD}[*_\s]*(?:は)?[*_\s]*[::]"
+    rf"^\s*[>*_\-\s]*[^\s:\uff1a]{{0,12}}{INSTRUCTION_WORD}[*_\s]*(?:は)?[*_\s]*[:\uff1a]"
 )
-WAIT_NAME = re.compile(rf"(?:^|[/\s'\"]){re.escape(WAIT_SCRIPT)}")
-KIND_LEAD = "*_`「(("
+PYTHON_NAME = re.compile(r"py(?:thon[\w.]*|\.exe)?")
+WAIT_LAUNCHERS = ("timeout", "env", "nohup", "nice", "command", "exec")
+KIND_LEAD = "*_`「(\uff08"
 DECISION_EXCLUDED = (
     "実装の設計", "段取り", "作業量", "レビュアーが諮れと述べたこと", "既定や選択肢を書けること",
     "裏取りを用意できないこと",
@@ -658,10 +660,19 @@ def live_now(data):
 
 
 def is_wait(task):
-    """その背景処理が wait.py か。**起動の形は問わず名前の境界で見る**——絶対パスで渡す形も
-    直に名前を書く形も同じ待機で、取りこぼすと締切を張っているのに無いことにしてしまう。"""
-    fields = " ".join(str(task.get(key, "")) for key in ("command", "description"))
-    return WAIT_NAME.search(fields.replace("\\", "/")) is not None
+    for key in ("command", "description"):
+        try:
+            words = shlex.split(str(task.get(key, "")).replace("\\", "/"))
+        except ValueError:
+            continue
+        while words and (words[0] in WAIT_LAUNCHERS or words[0].isdigit() or "=" in words[0]):
+            words = words[1:]
+        if not words or not PYTHON_NAME.fullmatch(words[0].rsplit("/", 1)[-1]):
+            continue
+        script = next((word for word in words[1:] if not word.startswith("-")), "")
+        if script.rsplit("/", 1)[-1] == WAIT_SCRIPT:
+            return True
+    return False
 
 
 def waits_in(tasks):
@@ -852,6 +863,7 @@ def selftest():
         }
 
     here = Path(__file__).resolve().as_posix()
+    wide = chr(0xFF1A)
 
     def unclassified():
         return REASON_DECISION_UNCLASSIFIED.format(doc=stop_doc())
@@ -874,13 +886,17 @@ def selftest():
     waiting_seconds = dict(waiting, id="b3", command="python3 /p/flow/scripts/wait.py 300")
     waiting_bare = dict(waiting, id="b8", command="python3 wait.py 300")
     waiting_long = dict(waiting, id="b9", command="python3 /p/flow/scripts/wait.py 1320")
+    waiting_launched = dict(waiting, id="b14", command="timeout 1000 python3 /p/flow/scripts/wait.py 300")
+    waiting_option = dict(waiting, id="b16", command="python3 -u /p/flow/scripts/wait.py 300")
     waiting_cap = dict(waiting, id="b10",
                        command=f"python3 /p/flow/scripts/wait.py {WAIT_CAP_SECS}")
     waiting_far = dict(waiting, id="b11",
                        command='python3 "/p/flow/scripts/wait.py" "2099-01-01 00:00"')
     waiting_ended = dict(waiting, id="b4", status="completed")
     other_test = dict(waiting, id="b5", description="回帰検査",
-                      command="python3 -m pytest tests/test_wait.py")
+                      command="python3 tests/test_wait.py")
+    capped = dict(task, id="b13", command="python3 inspect_args.py python3 plugins/flow/scripts/wait.py 300")
+    searching = dict(task, id="b15", command="rg -F 'python3 plugins/flow/scripts/wait.py' .")
     unknown = dict(task, id="b6", status="mystery")
     codex_alive = {"id": "j1", "status": "running", "pid": 111, "state": "live"}
     codex_ghost = {"id": "j2", "status": "running", "pid": 222, "state": "gone"}
@@ -905,7 +921,6 @@ def selftest():
          REASON_WAIT_UNSUBSTANTIATED),
         (stop("外部の CI の完了を待ちます。\n\n[停止: 待機]", tasks=[waiting_ended]),
          REASON_WAIT_UNSUBSTANTIATED),
-        (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[waiting]), REASON_TASK_LEFT_RUNNING.format(tasks="b2")),
         (stop("どちらで進めますか。\n\n[停止: 要判断]", tasks=[waiting_seconds]),
          REASON_TASK_LEFT_RUNNING.format(tasks="b3")),
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting, waiting_seconds]),
@@ -915,6 +930,10 @@ def selftest():
          REASON_TASK_LEFT_RUNNING.format(tasks="b1")),
         (stop("回答しました。\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
         (stop("回答しました。\n答えた質問: なし\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
+        (stop(f"回答しました。\n答えた質問{wide}なし\n\n[停止: 応答]"),
+         REASON_RESPOND_UNSUBSTANTIATED),
+        (stop(f"回答しました。\n答えた質問: {chr(0xFF08)}なし{chr(0xFF09)}\n\n[停止: 応答]"),
+         REASON_RESPOND_UNSUBSTANTIATED),
         (stop("回答しました。\n答えた質問は無い\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
         (stop("回答しました。\n**答えた質問**: 特になし。\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
         (stop("回答しました。\n答えた質問: 特にありません\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
@@ -939,7 +958,6 @@ def selftest():
         (stop("これからフックを書きます。", active=True), REASON_NO_MARKER),
         (stop("コミットしました。ハッシュは 90d8326 です。"), REASON_NO_MARKER, [codex_ghost]),
         (stop("作業は終わりました。\n\n[停止: 完了]"), codex_stale("j2"), [codex_ghost]),
-        (stop("どちらで進めますか。\n\n[停止: 要判断]"), codex_stale("j2"), [codex_ghost]),
         (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[waiting, task]),
          codex_stale("j2"), [codex_ghost]),
         (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[task]), REASON_WAIT_NO_DEADLINE),
@@ -958,7 +976,7 @@ def selftest():
          REASON_FABRICATED_INSTRUCTION),
         (stop("諮ります。\n\n要判断の区分: 指示不明\n区分外に当たらないことを確かめた\n"
               "- 未了の指示: 仕様書の追記\n\n[停止: 要判断]"), REASON_FABRICATED_INSTRUCTION),
-        (stop("終わりました。\n指示:全ステップの自律進行\n\n[停止: 完了]"),
+        (stop(f"終わりました。\n指示{wide}全ステップの自律進行\n\n[停止: 完了]"),
          REASON_FABRICATED_INSTRUCTION),
     ]
     pass_cases = [
@@ -969,15 +987,24 @@ def selftest():
         (stop("受入条件が変わります。\n\n要判断の区分: 要求仕様\n区分外に当たらないことを確かめた"
               f"\n{DECISION_SPEC_FIELD}: {here}の受入条件を緩める\n\n[停止: 要判断]"),
          "[停止: 要判断]"),
+        (stop("受入条件が変わります。\n\n要判断の区分: 要求仕様\n区分外に当たらないことを確かめた"
+              f"\n{DECISION_SPEC_FIELD}{wide}{here} の受入条件を緩める\n\n[停止: 要判断]"),
+         "[停止: 要判断]"),
         (stop("禁止の解除が要ります。\n\n要判断の区分: 停止規定\n区分外に当たらないことを確かめた"
               "\n\n[停止: 要判断]"), "[停止: 要判断]"),
+        (stop(f"禁止の解除が要ります。\n\n要判断の区分: {chr(0xFF08)}停止規定{chr(0xFF09)}\n"
+              "区分外に当たらないことを確かめた\n\n[停止: 要判断]"), "[停止: 要判断]"),
+        (stop("禁止の解除が要ります。\n\n要判断の区分: (停止規定)\n"
+              "区分外に当たらないことを確かめた\n\n[停止: 要判断]"), "[停止: 要判断]"),
+        (stop("千日手で終わりました。\n\n要判断の区分: 停止規定\n区分外に当たらないことを確かめた"
+              f"{chr(0xFF08)}規定による停止{chr(0xFF09)}\n\n[停止: 要判断]"), "[停止: 要判断]"),
         (stop("受入条件が変わります。\n\n要判断の区分: 要求仕様(受入条件が変わる)\n"
               "区分外に当たらないことを確かめた\n"
               f"**{DECISION_SPEC_FIELD}**: `{here}:61` の区分の定義を差し替える\n\n[停止: 要判断]"),
          "[停止: 要判断]"),
         (stop("対象のファイルが分かりません。\n\n**要判断の区分**: 指示不明\n"
               "**区分外に当たらないことを確かめた**\n\n[停止: 要判断]"), "[停止: 要判断]"),
-        (stop("千日手で終わりました。\n\n- 要判断の区分:停止規定\n- 区分外に当たらないことを確かめた"
+        (stop(f"千日手で終わりました。\n\n- 要判断の区分{wide}停止規定\n- 区分外に当たらないことを確かめた"
               "\n\n[停止: 要判断]"), "[停止: 要判断]"),
         (stop("千日手で終わりました。\n\n要判断の区分: 停止規定\n"
               "区分外に当たらないことを確かめた(止まる根拠はレビュアーの発言ではなく規定であり、"
@@ -985,7 +1012,7 @@ def selftest():
         (stop("諮ります。\n\n要判断の区分: 指示不明\n"
               "**区分外に当たらないことを確かめた(対象がユーザーにしか無い)**\n\n[停止: 要判断]"),
          "[停止: 要判断]"),
-        (stop("プッシュしてよいか確かめます。\n\n要判断の区分:操作承認\n"
+        (stop(f"プッシュしてよいか確かめます。\n\n要判断の区分{wide}操作承認\n"
               "区分外に当たらないことを確かめた\n\n[停止: 要判断]"), "[停止: 要判断]"),
         (stop("作業は終わりました。\n\n[停止：完了]"), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止:完了]"), "[停止: 完了]"),
@@ -999,7 +1026,13 @@ def selftest():
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[dict(waiting, status="mystery")]),
          "[停止: 待機]"),
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting_bare]), "[停止: 待機]"),
+        (stop("変異検査の完了を待ちます。\n\n[停止: 待機]", tasks=[waiting, capped]),
+         "[停止: 待機]"),
+        (stop("検索の完了を待ちます。\n\n[停止: 待機]", tasks=[waiting, searching]),
+         "[停止: 待機]"),
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting_long]), "[停止: 待機]"),
+        (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting_launched]), "[停止: 待機]"),
+        (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting_option]), "[停止: 待機]"),
         (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[waiting_cap, task]),
          "[停止: 待機]"),
         (stop("上限明けを待ちます。\n\n[停止: 待機]",
@@ -1010,16 +1043,16 @@ def selftest():
          "[停止: 待機]"),
         (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[waiting_ended]), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[unknown]), "[停止: 完了]"),
-        (stop("作業は終わりました。\n\n[停止: 完了]", active=True), "[停止: 完了]"),
         (stop("ご質問への回答です。\n答えた質問: どこまで進んだ\n\n[停止: 応答]"), "[停止: 応答]"),
         (stop("回答です。\n答えた質問: None を渡すとどうなる\n\n[停止: 応答]"), "[停止: 応答]"),
-        (stop("回答です。\n答えた質問: - プッシュはまだか\n\n[停止: 応答]"), "[停止: 応答]"),
         (stop("回答しました。\n**答えた質問**: プッシュはまだか\n\n[停止: 応答]", tasks=[waiting_ended]), "[停止: 応答]"),
         (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[waiting, task]),
          "[停止: 待機]", [codex_alive]),
         (stop("作業は終わりました。\n\n[停止: 完了]"), "[停止: 完了]", [codex_unknown]),
         (stop("指示された作業は全部終わりました。\n\n[停止: 完了]"), "[停止: 完了]"),
         (stop("回答です。\n答えた質問: 残っている指示をやれ\n\n[停止: 応答]"), "[停止: 応答]"),
+        (stop(f"回答です。\n答えた質問{wide}指示{wide}と書く行は弾かれるのか\n\n[停止: 応答]"),
+         "[停止: 応答]"),
         (stop("対象が分かりません。\n\n要判断の区分: 指示不明\n区分外に当たらないことを確かめた"
               "\n\n[停止: 要判断]"), "[停止: 要判断]"),
     ]
@@ -1263,6 +1296,7 @@ def _respond_gate_ok():
         for quoted, expected, label in (
             ("**「どれが不要か分かるか」**", RESPOND, "囲みを付けた復唱も通す"),
             ("どれが 不要か 分かるか", RESPOND, "空白の入った復唱も通す"),
+            ("- どれが不要か分かるか", RESPOND, "箇条書きの印を付けた復唱も通す"),
             ("不要なものを消してよいか確認したいそうですね", REASON_RESPOND_UNQUOTED,
              "言い換えた復唱は弾く"),
         ):

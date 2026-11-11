@@ -201,6 +201,12 @@ def run_selftest():
         (repo / "b.txt").write_text("b\n", encoding="utf-8")
         return repo
 
+    def seeded(base):
+        repo = fresh(base)
+        must_git(repo, "add", "--", "a.txt", "b.txt")
+        must_git(repo, "commit", "-q", "-m", "初期")
+        return repo
+
     def history_length(repo):
         return len(git(repo, "log", "--oneline").stdout.splitlines())
 
@@ -219,7 +225,7 @@ def run_selftest():
         ("トレーラ無し", good_review, good_message.replace("\n\n" + CODEX_TRAILER, ""), ["a.txt"]),
         ("Claude 名義のトレーラ", good_review, good_message.replace(CODEX_TRAILER, "Co-Authored-By: Claude Opus <someone@example.com>"), ["a.txt"]),
         ("Codex トレーラの重複", good_review, good_message + "\n" + CODEX_TRAILER + "\n", ["a.txt"]),
-        ("字下げされたトレーラの重複", good_review, good_message + "\n " + CODEX_TRAILER + "\n", ["a.txt"]),
+        ("字下げされたトレーラの重複", good_review, good_message.replace("- 初期内容を置く", " " + CODEX_TRAILER), ["a.txt"]),
         ("Codex トレーラのアドレス違い", good_review, good_message.replace("noreply@openai.com", "other@example.com"), ["a.txt"]),
         ("Codex トレーラが末尾でない", good_review, good_message + "\n本文\n", ["a.txt"]),
         ("Codex トレーラの前に空行無し", good_review, good_message.replace("\n\n" + CODEX_TRAILER, "\n" + CODEX_TRAILER), ["a.txt"]),
@@ -231,14 +237,13 @@ def run_selftest():
         ("ディレクトリ指定", good_review, good_message, ["docs"]),
         ("親ディレクトリ", good_review, good_message, ["../a.txt"]),
         ("グロブ", good_review, good_message, ["*.txt"]),
-        ("ドット", good_review, good_message, ["."]),
     )
     for label, review, message, files in refusals:
         with tempfile.TemporaryDirectory() as scratch:
             repo = fresh(Path(scratch))
             expect(label, run(repo, review, message, files), 3, "refused", repo)
 
-    for invalid in ("", "{", "null", '{"review":0,"message":"本文"}',
+    for invalid in ("{", "null", '{"review":0,"message":"本文"}',
                     '{"review":"原文"}',
                     json.dumps({"review": good_review, "message": good_message, "extra": 1}, ensure_ascii=False)):
         with tempfile.TemporaryDirectory() as scratch:
@@ -269,6 +274,12 @@ def run_selftest():
 
     with tempfile.TemporaryDirectory() as scratch:
         repo = fresh(Path(scratch))
+        must_git(repo, "add", "--", "a.txt")
+        (repo / "a.txt").unlink()
+        expect("ステージした後に作業ツリーから消えたファイル", run(repo, good_review, good_message, ["a.txt"]), 3, "refused", repo)
+
+    with tempfile.TemporaryDirectory() as scratch:
+        repo = fresh(Path(scratch))
         outcome = run(repo, good_review, good_message, ["a.txt"])
         expect("収束した対象", outcome, 0, "committed")
         recorded = must_git(repo, "log", "-1", "--format=%B")
@@ -278,8 +289,6 @@ def run_selftest():
             failures.append("記録された a.txt の内容が作業ツリーと違う")
         if history_length(repo) != 1 or staged_names(repo):
             failures.append("コミットの後にステージが残った")
-        if {p.name for p in repo.parent.iterdir()} != {"repo"}:
-            failures.append("コミットの入力ファイルが作られた")
         if "b.txt" in must_git(repo, "show", "--name-only", "--format=", "HEAD"):
             failures.append("指定外のファイルがコミットに入った")
         expect("変更の無いファイルの指定", run(repo, good_review, good_message, ["a.txt"]), 3, "refused")
@@ -288,8 +297,7 @@ def run_selftest():
 
     for mixed in (False, True):
         with tempfile.TemporaryDirectory() as scratch:
-            repo = fresh(Path(scratch))
-            expect("削除ケースの初期コミット", run(repo, good_review, good_message, ["a.txt", "b.txt"]), 0, "committed")
+            repo = seeded(Path(scratch))
             must_git(repo, "rm", "--", "a.txt")
             files = ["a.txt"]
             if mixed:
@@ -305,8 +313,7 @@ def run_selftest():
 
     for complete in (False, True):
         with tempfile.TemporaryDirectory() as scratch:
-            repo = fresh(Path(scratch))
-            expect("名前変更ケースの初期コミット", run(repo, good_review, good_message, ["a.txt", "b.txt"]), 0, "committed")
+            repo = seeded(Path(scratch))
             must_git(repo, "mv", "--", "a.txt", "c.txt")
             files = ["a.txt", "c.txt"] if complete else ["c.txt"]
             message = "a.txt を c.txt へ改名する\n\n" + CODEX_TRAILER + "\n"

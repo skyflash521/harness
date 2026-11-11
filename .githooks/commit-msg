@@ -70,12 +70,16 @@ def main():
 def selftest():
     Case = namedtuple("Case", "why message")
     bad = [
-        Case("ヒアドキュメントがそのまま件名になった形", "$(cat <<'EOF'\nmocapvmd: テスト追加\nEOF\n)"),
         Case("本文にヒアドキュメントの開始が混入", "件名\n\n本文 <<'EOF' が混入"),
         Case("裸のヒアドキュメント", "<<EOF\nx\nEOF"),
+        Case("ダッシュ付きのヒアドキュメント", "件名\n\n本文 <<-EOF が混入"),
         Case("行頭が # でも検出する", "# メモ <<'EOF'"),
         Case("cat 以外のコマンド置換", "$(printf x)"),
+        Case("空行の後に始まるコマンド置換", "\n\n$(printf x)"),
+        Case("字下げされたコマンド置換", "  $(printf x)"),
         Case("本文中のコマンド置換", "件名\n\n本文 $(cat file)"),
+        Case("空白を挟んだコマンド置換の cat", "件名\n\n本文 $( cat file)"),
+        Case("引数の無いコマンド置換の cat", "件名\n\n本文 $(cat)"),
     ]
     good = [
         Case("ドル記号とバッククォートと不等号を含む本文", "$5 のコストを `code` で表現\n\n- a > b の比較"),

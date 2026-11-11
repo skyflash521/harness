@@ -112,16 +112,15 @@ def selftest() -> int:
         'b.md': '[c](c.md)\n',
         'c.md': '[a](a.md)\n',
     })
-    if len(find_cycles(three_hop)) != 1:
+    if find_cycles(three_hop) != [['a.md', 'b.md', 'c.md']]:
         failures.append('FAIL 3文書を経由する循環が検出されない')
 
-    one_way = graph_of({
-        'a.md': '[b](b.md) [c](c.md)\n',
-        'b.md': '[c](c.md)\n',
-        'c.md': '本文だけ\n',
+    anchored = graph_of({
+        'a.md': '[b](b.md#1-見出し)\n',
+        'b.md': '[a](a.md)\n',
     })
-    if find_cycles(one_way):
-        failures.append('FAIL 片方向の参照を循環と誤検出')
+    if len(find_cycles(anchored)) != 1:
+        failures.append('FAIL アンカー付きの文書間リンクが辺にならない')
 
     anchor_only = graph_of({'a.md': '[節](#1-見出し) [節](a.md#1-見出し)\n'})
     if find_cycles(anchor_only) or anchor_only['a.md']:

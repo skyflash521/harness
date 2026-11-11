@@ -48,13 +48,13 @@ SETTLED_FIELD = "対応済み"
 WHOLE = "全ステップ"
 QUOTE_CUT = 40
 SCOPE_LINE = re.compile(
-    rf"^\s*[>*_\-\s]*{SCOPE_FIELD}[*_\s]*(?:は)?[*_\s]*[::]\s*[*_`]*\s*"
+    rf"^\s*[>*_\-\s]*{SCOPE_FIELD}[*_\s]*(?:は)?[*_\s]*[:\uff1a]\s*[*_`]*\s*"
     rf"(?:(\d+)\s*[-–~〜]\s*(\d+)|(\d+)|({WHOLE}))"
 )
 STEP_LINE = re.compile(
-    rf"^\s*[>*_\-\s]*{STEP_FIELD}[*_\s]*(?:は)?[*_\s]*[::]\s*[*_`]*\s*(\d+)(?!\d)(?!\s*[(（])")
+    rf"^\s*[>*_\-\s]*{STEP_FIELD}[*_\s]*(?:は)?[*_\s]*[:\uff1a]\s*[*_`]*\s*(\d+)(?!\d)(?!\s*[(（])")
 SETTLED_LINE = re.compile(
-    rf"^\s*[>*_\-\s]*{SETTLED_FIELD}[*_\s]*(?:は)?[*_\s]*[::]\s*(.+?)\s*$")
+    rf"^\s*[>*_\-\s]*{SETTLED_FIELD}[*_\s]*(?:は)?[*_\s]*[:\uff1a]\s*(.+?)\s*$")
 BLOCKED_MARK = "Stop hook feedback"
 PLAN_STEPS = re.compile(r"^##+\s*実装ステップ\s*$")
 PLAN_ROW = re.compile(r"^\s*\|\s*(\d+)\s*\|")
@@ -450,6 +450,7 @@ def selftest():
 
     guard = load("_guard_idle_stop", GUARD)
     ok, cases = True, 0
+    wide = chr(0xFF1A)
 
     def check(label, actual, expected):
         nonlocal ok, cases
@@ -488,9 +489,13 @@ def selftest():
     check("全体の指定を読む", scope_of(f"{SCOPE_FIELD}: {WHOLE}"), (1, None))
     check("装飾を付けた範囲も読む", scope_of(f"**{SCOPE_FIELD}**: `1-3`"), (1, 3))
     check("波ダッシュの幅も読む", scope_of(f"{SCOPE_FIELD}: 1〜3"), (1, 3))
+    check("全角コロンの範囲も読む", scope_of(f"{SCOPE_FIELD}{wide}1-3"), (1, 3))
     check("範囲の行が無ければ None", scope_of("着手します"), None)
     check("済んだ番号を読む", steps_of(f"{STEP_FIELD}: 3"), {3})
     check("装飾を付けた完了も読む", steps_of(f"- **{STEP_FIELD}**: 12"), {12})
+    check("全角コロンの完了も読む", steps_of(f"{STEP_FIELD}{wide}3"), {3})
+    check("全角括弧で一部と断った行も数えない",
+          steps_of(f"{STEP_FIELD}: 1{chr(0xFF08)}テストだけ{chr(0xFF09)}"), set())
     check("番号でない完了は拾わない", steps_of(f"{STEP_FIELD}: 全部"), set())
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -592,6 +597,8 @@ def selftest():
         check("残っている発言を名指しする", "台帳の重複" in (opened or ""), True)
         write([asked, mark])
         check("記録を残せば通す", decide(stop(done)), None)
+        write([asked, said(f"{SETTLED_FIELD}{wide}台帳の重複を整理しろ")])
+        check("全角コロンの記録も読む", decide(stop(done)), None)
         write([asked, said(f"{guard.RESPOND_FIELD}: 台帳の重複を整理しろ")])
         check("問いの復唱は記録に数えない", decide(stop(done)) is not None, True)
         write([asked, said(f"{SETTLED_FIELD}: 索引を作り直した")])
