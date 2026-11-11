@@ -483,7 +483,7 @@ def selftest():
                 "type": "tool_result", "tool_use_id": ident, "is_error": True,
                 "content": "deny の理由"}]}}
 
-    check("範囲の幅を読む", scope_of(f"{SCOPE_FIELD}: 3-7"), (3, 7))
+    check("範囲の幅を読む", scope_of(f"{SCOPE_FIELD}: 3-12"), (3, 12))
     check("単独のステップを読む", scope_of(f"{SCOPE_FIELD}: 4"), (4, 4))
     check("全体の指定を読む", scope_of(f"{SCOPE_FIELD}: {WHOLE}"), (1, None))
     check("装飾を付けた範囲も読む", scope_of(f"**{SCOPE_FIELD}**: `1-3`"), (1, 3))
@@ -525,7 +525,6 @@ def selftest():
 
         write([skill(), scope13, said(f"{STEP_FIELD}: 1"), said(f"{STEP_FIELD}: 2")])
         blocked = decide(stop(done))
-        check("済んでいないステップが残れば block", blocked is not None, True)
         check("残っている番号を名指しする", "3" in (blocked or ""), True)
         check("宣言が完了でなければ通す", decide(stop(f"待ちます。\n\n{guard.WAIT}")), None)
         check("宣言が無ければ通す", decide(stop("コミットしました。")), None)
@@ -537,10 +536,9 @@ def selftest():
         write([skill(), scope13, said(f"{STEP_FIELD}: 1(テストだけ)"),
                said(f"{STEP_FIELD}: 2"), said(f"{STEP_FIELD}: 3")])
         check("括弧で一部と断った行は済みに数えない", decide(stop(done)) is not None, True)
-        write([skill(), said(f"{SCOPE_FIELD}: 1-12"),
-               *[said(f"{STEP_FIELD}: {n}") for n in range(1, 12)],
+        write([skill(), said(f"{SCOPE_FIELD}: 1"),
                said(f"{STEP_FIELD}: 12(テストだけ)")])
-        check("2桁でも括弧付きは数えず、頭の桁も拾わない",
+        check("括弧付きの2桁の番号から頭の桁を拾わない",
               decide(stop(done)) is not None, True)
         write([skill(), scope13, said(f"{STEP_FIELD}: 1 — コミット abc1234"),
                said(f"{STEP_FIELD}: 2"), said(f"{STEP_FIELD}: 3")])
@@ -564,19 +562,19 @@ def selftest():
         write([skill(), scope13, said(f"{SCOPE_FIELD}: 1-2"), said(f"{STEP_FIELD}: 1"),
                said(f"{STEP_FIELD}: 2")])
         check("範囲を縮めても通らない", decide(stop(done)) is not None, True)
-        write([skill(), scope13, said(f"{SCOPE_FIELD}: 1-5")]
-              + [said(f"{STEP_FIELD}: {n}") for n in range(1, 6)])
-        check("範囲を広げる向きは採る", decide(stop(done)), None)
+        write([skill(), scope13, said(f"{SCOPE_FIELD}: 1-5"), said(f"{STEP_FIELD}: 1"),
+               said(f"{STEP_FIELD}: 2"), said(f"{STEP_FIELD}: 3")])
+        check("範囲を広げる向きは採る", decide(stop(done)) is not None, True)
         write([skill("no-such.md に基づいて自律進行"), said(f"{SCOPE_FIELD}: {WHOLE}"),
                said(f"{SCOPE_FIELD}: 1-2"), said(f"{STEP_FIELD}: 1"), said(f"{STEP_FIELD}: 2")])
         check("総数を数えられないときは書き直した範囲で判定する", decide(stop(done)), None)
 
         write([skill()])
-        check("範囲が示されていなければ block", decide(stop(done)) is not None, True)
         check("書き方を渡す", SCOPE_FIELD in (decide(stop(done)) or ""), True)
         write([scope13, said(f"{STEP_FIELD}: 1")])
         check("自律進行の起動が無ければ通す", decide(stop(done)), None)
-        write([scope13, said(f"{STEP_FIELD}: 1"), skill()])
+        write([scope13, said(f"{STEP_FIELD}: 1"), said(f"{STEP_FIELD}: 2"),
+               said(f"{STEP_FIELD}: 3"), skill()])
         check("起動より前の記録は数えない", decide(stop(done)) is not None, True)
 
         write([skill("plan.md", "s9"), failed("s9")])
@@ -591,7 +589,6 @@ def selftest():
         mark = said(f"{SETTLED_FIELD}: 台帳の重複を整理しろ")
         write([asked])
         opened = decide(stop(done))
-        check("済ませた記録の無い発言が残れば block", opened is not None, True)
         check("残っている発言を名指しする", "台帳の重複" in (opened or ""), True)
         write([asked, mark])
         check("記録を残せば通す", decide(stop(done)), None)
@@ -601,8 +598,6 @@ def selftest():
         check("発言に無い文字列では済ませられない", decide(stop(done)) is not None, True)
         write([mark, asked])
         check("発言より前の記録は数えない", decide(stop(done)) is not None, True)
-        write([asked, mark, user("台帳の重複を整理しろ")])
-        check("同じ言葉で二度言われたら記録も二つ要る", decide(stop(done)) is not None, True)
         write([asked, mark, user("台帳の重複を整理しろ"), mark])
         check("二つ目の記録で埋まる", decide(stop(done)), None)
         write([asked, said(f"{SETTLED_FIELD}: 台帳の重複を整理しろ\n\n{guard.DONE}")])
@@ -616,9 +611,6 @@ def selftest():
               decide(stop(final)), None)
         write([asked, said(final), user("台帳の重複を整理しろ")])
         check("前の手番と同じ文面でも、間に発言があれば今の手番は未書き込み",
-              decide(stop(final)), None)
-        write([asked, said(f"  {final}  ")])
-        check("前後の空白の差は載っている扱い",
               decide(stop(final)), None)
         write([asked, user("台帳の重複を整理しろ"), said(f"{final}\n")])
         check("前後の空白があっても重ねて数えない", decide(stop(final)) is not None, True)

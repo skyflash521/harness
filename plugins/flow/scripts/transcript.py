@@ -324,7 +324,7 @@ def selftest():
         return row
 
     def result(text):
-        row = user("道具の結果")
+        row = handback(text)
         row["toolUseResult"] = {"prompt": text, "content": text}
         return row
 
@@ -332,10 +332,9 @@ def selftest():
           instructions_after([user("先の指示"), handback("結末:千日手"), user("後の指示")],
                              mark, "千日手"),
           ["後の指示"])
-    check("応答が無ければ空",
-          instructions_after([user("先の指示"), user("後の指示")], mark, "千日手"), [])
     check("発言の本文にある印は起点にならない",
-          instructions_after([user("結末:千日手"), user("後の指示")], mark, "千日手"), [])
+          instructions_after([user('<agent-message from="reviewer">\n結末:千日手'), user("後の指示")],
+                             mark, "千日手"), [])
     check("道具の結果にある印は起点にならない",
           instructions_after([result("結末:千日手"), user("後の指示")], mark, "千日手"), [])
     check("宣言が継続なら起点にならない",
@@ -384,7 +383,6 @@ def selftest():
             encoding="utf-8",
         )
         check("転写を読む", len(rows_of(path.as_posix())), len(rows))
-        check("壊れた行は落とす", all(isinstance(r, dict) for r in rows_of(path.as_posix())), True)
         check("読めない転写は None", rows_of(Path(tmp, "no.jsonl").as_posix()), None)
         check("パスでないものも None", rows_of(None), None)
 

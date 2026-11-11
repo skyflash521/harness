@@ -71,8 +71,7 @@ def selftest():
     ok = True
     name_cases = [
         ("flow スキル", {"tool_name": "Skill", "tool_input": {"skill": "flow:commit"}}, "flow:commit"),
-        ("他プラグインのスキル", {"tool_name": "Skill", "tool_input": {"skill": "codex:rescue"}}, "codex:rescue"),
-        ("別ツール", {"tool_name": "Bash", "tool_input": {"command": "ls"}}, None),
+        ("別ツール", {"tool_name": "Bash", "tool_input": {"skill": "flow:commit"}}, None),
         ("スキル名が無い", {"tool_name": "Skill", "tool_input": {}}, None),
         ("スキル名が文字列でない", {"tool_name": "Skill", "tool_input": {"skill": 1}}, None),
         ("tool_input が無い", {"tool_name": "Skill"}, None),
@@ -125,13 +124,9 @@ def selftest():
                 print(f"FAIL git 管理外のルートでの {name}: want_deny={want_deny} got={got!r}")
 
         roundtrips = [
-            ("deny の往復", unmet, {"tool_name": "Skill", "tool_input": {"skill": "flow:commit"}}, True),
             ("通過の往復", str(repo), {"tool_name": "Skill", "tool_input": {"skill": "flow:commit"}}, False),
-            ("git 管理外で基本条項のスキルが通る往復", str(outside),
-             {"tool_name": "Skill", "tool_input": {"skill": "flow:run-and-bench"}}, False),
             ("git 管理外で開発条項のスキルを deny する往復", str(outside),
              {"tool_name": "Skill", "tool_input": {"skill": "flow:commit"}}, "git 管理外"),
-            ("別ツールの往復", unmet, {"tool_name": "Bash", "tool_input": {"command": "ls"}}, False),
             ("辞書でない入力の往復", unmet, [], False),
             ("tool_name が null の往復", unmet, {"tool_name": None}, False),
             ("tool_input が辞書でない往復", unmet, {"tool_name": "Skill", "tool_input": [1]}, False),

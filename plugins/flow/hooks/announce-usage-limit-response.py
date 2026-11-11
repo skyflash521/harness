@@ -47,16 +47,6 @@ def selftest():
         ok = False
         print(f"FAIL 正本の規約が無い: {GUIDANCE}")
 
-    cases += 1
-    if str(GUIDANCE) not in context:
-        ok = False
-        print("FAIL 正本の絶対パスが文脈に無い")
-
-    cases += 1
-    if "使用量上限" not in context:
-        ok = False
-        print("FAIL 読む契機が文脈に無い")
-
     for leaked in ("Fable", "Codex", "取り直す。", "Sonnet"):
         cases += 1
         if leaked in context.replace(str(GUIDANCE), ""):

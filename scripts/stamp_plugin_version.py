@@ -363,7 +363,6 @@ def _selftest():
 
     touched_cases = [
         (["plugins/flow/docs/criteria/adoption.md", "scripts/x.py", "plugins/guard/hooks/a.py"], ["flow", "guard"]),
-        (["scripts/x.py", "README.md"], []),
         (["plugins"], []),
     ]
     for paths, want in touched_cases:

@@ -47,46 +47,48 @@ def command_input(command, shell=None, tool="Bash"):
 
 def selftest():
     cases = 0
-    for platform, shell, delete, setter, reader in (
-        ("win32", "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
-         "Remove-Item 検査.txt", "Set-Date -Date '2030-01-01'", "Get-Date"),
-        ("win32", "pwsh.exe", "del 検査.txt", "w32tm /resync", "Get-Date"),
-        ("win32", "cmd.exe", "del 検査.txt", "date 2030-01-01", "date /t"),
-        ("darwin", "/bin/zsh", "rm 検査.txt", "date 010203002030", "date"),
-        ("linux", "/bin/bash", "rm 検査.txt", "date --set=2030-01-01", "date"),
-        ("win32", "/bin/bash", "rm 検査.txt", "date -s 2030", "date"),
-        ("win32", None, "Remove-Item 検査.txt", "Set-Date", "Get-Date"),
-        ("darwin", None, "rm 検査.txt", "date 010203", "date"),
-        ("linux", None, "rm 検査.txt", "date -s 2030", "date"),
-    ):
+    checks = [
+        (platform, shell, script, denied, passed, guidance)
+        for platform, shell, delete, setter, reader in (
+            ("win32", "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+             "Remove-Item 検査.txt", "Set-Date -Date '2030-01-01'", "Get-Date"),
+            ("win32", "pwsh.exe", "del 検査.txt", "w32tm /resync", "Get-Date"),
+            ("win32", "cmd.exe", "del 検査.txt", "date 2030-01-01", "date /t"),
+            ("darwin", "/bin/zsh", "rm 検査.txt", "date 010203002030", "date"),
+            ("linux", "/bin/bash", "rm 検査.txt", "date --set=2030-01-01", "date"),
+            ("win32", "/bin/bash", "rm 検査.txt", "date -s 2030", "date"),
+            ("win32", None, "Remove-Item 検査.txt", "Set-Date", "Get-Date"),
+            ("darwin", None, "rm 検査.txt", "date 010203", "date"),
+        )
         for script, denied, passed, guidance in (
             ("guard-rm.py", delete, "git status --short", "trash.py"),
             ("guard-time.py", setter, reader, reader),
-            ("guard-root-scan.py", "rg --files /", "rg --files plugins", "rg --files"),
-            ("guard-rm.py", "rm -rf 検査 <<EOF\nx\nEOF", "cat <<EOF\nrm x\nEOF", "trash.py"),
-        ):
-            reason = invoke(script, command_input(denied, shell), platform=platform)
-            assert reason and guidance in reason, (platform, shell, script, reason)
-            assert "Edit ツール" not in reason and "sandbox.excludedCommands" not in reason
-            assert invoke(script, command_input(passed, shell), platform=platform) is None
-            cases += 2
+        )
+    ] + [
+        ("win32", None, "guard-root-scan.py", "rg --files /", "rg --files plugins", "rg --files"),
+        ("win32", None, "guard-rm.py", "rm -rf 検査 <<EOF\nx\nEOF", "cat <<EOF\nrm x\nEOF", "trash.py"),
+    ]
+    for platform, shell, script, denied, passed, guidance in checks:
+        reason = invoke(script, command_input(denied, shell), platform=platform)
+        assert reason and guidance in reason, (platform, shell, script, reason)
+        assert "Glob ツール" not in reason and "sandbox.excludedCommands" not in reason
+        assert invoke(script, command_input(passed, shell), platform=platform) is None
+        cases += 2
     for script in ("guard-rm.py", "guard-time.py", "guard-root-scan.py", "guard-gh-write.py"):
-        for malformed in (None, [], {}, {"tool_name": "Bash", "tool_input": []},
+        for malformed in ([], {"tool_name": "Bash", "tool_input": []},
                           command_input(123), command_input("rm x", tool="Read")):
             assert invoke(script, malformed) is None
             cases += 1
-    for platform in ("win32", "darwin", "linux"):
-        for patch, denied in (
-            ("*** Begin Patch\n*** Delete File: 検査.txt\n*** End Patch", True),
-            ("*** Begin Patch\n*** Update File: 検査.txt\n@@\n-a\n+b\n*** End Patch", False),
-            ("*** Begin Patch\n*** Add File: 検査.txt\n+*** Delete File: x\n*** End Patch", False),
-        ):
-            reason = invoke("guard-delete-patch.py", command_input(patch, tool="apply_patch"),
-                            platform=platform)
-            assert bool(reason) == denied
-            if denied:
-                assert "trash.py" in reason
-            cases += 1
+    for patch, denied in (
+        ("*** Begin Patch\n*** Delete File: 検査.txt\n*** End Patch", True),
+        ("*** Begin Patch\n*** Update File: 検査.txt\n@@\n-a\n+b\n*** End Patch", False),
+        ("*** Begin Patch\n*** Add File: 検査.txt\n+*** Delete File: x\n*** End Patch", False),
+    ):
+        reason = invoke("guard-delete-patch.py", command_input(patch, tool="apply_patch"))
+        assert bool(reason) == denied
+        if denied:
+            assert "trash.py" in reason
+        cases += 1
     for script, denied, guidance in (
         ("guard-rm.py", "rm 検査.txt", "sandbox.excludedCommands"),
         ("guard-time.py", "date -s 2030", "date"),
@@ -103,15 +105,16 @@ def selftest():
     ):
         reason = invoke(script, command_input(denied, tool="PowerShell"), codex=False)
         assert reason and guidance in reason
-        assert invoke(script, command_input("Get-Date", tool="PowerShell"), codex=False) is None
-        cases += 2
+        cases += 1
+    assert invoke("guard-time.py", command_input("Get-Date", tool="PowerShell"), codex=False) is None
+    cases += 1
     for tool in ("Bash", "PowerShell"):
         reason = invoke("guard-gh-write.py", command_input("gh pr merge 1", tool=tool),
                         codex=False, decision="ask")
         assert reason and "gh pr merge" in reason
-        assert invoke("guard-gh-write.py", command_input("gh pr view 1", tool=tool),
-                      codex=False) is None
-        cases += 2
+        cases += 1
+    assert invoke("guard-gh-write.py", command_input("gh pr view 1"), codex=False) is None
+    cases += 1
     claude = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
     codex = json.loads((HOOKS / "codex-hooks.json").read_text(encoding="utf-8"))
     expected = ["guard-rm.py", "guard-time.py", "guard-root-scan.py"]

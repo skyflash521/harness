@@ -123,7 +123,7 @@ def selftest() -> int:
     if find_cycles(one_way):
         failures.append('FAIL 片方向の参照を循環と誤検出')
 
-    anchor_only = graph_of({'a.md': '[節](#1-見出し)\n'})
+    anchor_only = graph_of({'a.md': '[節](#1-見出し) [節](a.md#1-見出し)\n'})
     if find_cycles(anchor_only) or anchor_only['a.md']:
         failures.append('FAIL 同一文書内のアンカー参照を辺にしている')
 
@@ -134,7 +134,10 @@ def selftest() -> int:
     if find_cycles(fenced):
         failures.append('FAIL コードブロック内のリンクを辺にしている')
 
-    external = graph_of({'a.md': '[外部](https://example.com/a.md)\n'})
+    external = graph_of({
+        'a.md': '[外部](https://example.com/a.md)\n',
+        'https:/example.com/a.md': '本文だけ\n',
+    })
     if external['a.md']:
         failures.append('FAIL 外部リンクを辺にしている')
 

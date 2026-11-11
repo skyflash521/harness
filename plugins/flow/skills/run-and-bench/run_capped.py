@@ -169,7 +169,7 @@ def selftest():
                                env={**os.environ, "PATH": path}, timeout=60, check=False)
         if found.returncode != 0 or b"probe" not in found.stdout:
             failures.append(f"PATH 上のコマンドを起動できない: {found.returncode} {found.stderr!r}")
-    for args in (["0", "--", "x"], ["5", "x"], ["5", "--"]):
+    for args in (["0", "--", "x"], ["5", "x", sys.executable, "-c", ""], ["5", "--"]):
         result = subprocess.run([sys.executable, __file__, *args], capture_output=True, check=False)
         if result.returncode != 2:
             failures.append(f"使い方の誤りで 2 を返さない: {args}")

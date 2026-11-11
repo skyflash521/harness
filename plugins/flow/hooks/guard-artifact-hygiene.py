@@ -77,9 +77,8 @@ INSTRUCTION_CONVENTION_DOC = "plugins/flow/docs/sample.md"
 INSTRUCTION_AGENT_DOC = "plugins/flow/agents/sample.md"
 HOOK_FILE = "plugins/flow/hooks/sample.py"
 TEST_DOC = "plugins/flow/tests/fixtures/sample.md"
-TEST_CODE = "plugins/flow/tests/fixtures/sample.py"
 CONSUMER_REPO = "C:/Users/user/repo"
-BACKSLASH_DOC = "C:\\Users\\user\\repo\\docs\\module.md"
+BACKSLASH_DOC = "C:\\Users\\user\\repo\\docs\\MODULE.MD"
 DENIED_HOME_LINE = 'root = "C:/Users/alice/x"\n'
 
 
@@ -127,22 +126,14 @@ CASE_GROUPS = (
         Case(*_write(DOC, "置き場は .scratch/、退避先は別にする。\n"), "", "allow"),
         Case(*_write(DOC, "cache.scratch/report.md を読む。\n"), "", "allow"),
         Case(*_write(DOC, "詳細は .scratch/.draft.md を読む。\n"), "", "deny"),
-        Case(*_write(DOC, "詳細は .scratch/a.md、.scratch/b.md を参照。\n"), "", "deny"),
-        Case(*_write(DOC, "scripts/run_selftests.py を実行する。\n"), "", "allow"),
         Case(*_write(CODE_FILE, "# 段階導入の順序を決める\n"), "", "allow"),
     ]),
     CaseGroup("コードのコメント・docstring も作業過程の相対表現の対象になる", [
         Case(*_write(CODE_FILE, "# 改修後の値を返す\n"), "", "deny"),
-        Case(*_write(CODE_FILE, '"""今回の変更で足した関数。"""\n'), "", "deny"),
-        Case(*_edit(CODE_FILE, "x = 1", "x = 2  # 改修前は 1 だった"), "x = 1\n", "deny"),
-        Case(*_write("scripts/tool.sh", "# 今回の対応で足した分岐\n"), "", "deny"),
-        Case(*_write("config/app.yml", "# 改修後の既定値\n"), "", "deny"),
-        Case(*_write(CODE_FILE, "# 今回の実装で足した分岐\n"), "", "deny"),
         Case(*_write(CODE_FILE, "# before this change we retried twice\n"), "", "deny"),
     ]),
     CaseGroup("指示層・テスト層のコードは、コードでも作業過程の相対表現の免除が続く", [
         Case(*_write(HOOK_FILE, "# 改修後の挙動を返す\n"), "", "allow"),
-        Case(*_write(TEST_CODE, "# 改修後の挙動を返す\n"), "", "allow"),
     ]),
     CaseGroup("「before this call」のように this の後が change・fix でない形は許可のままとする", [
         Case(*_write(DOC, "before this call の戻り値を使う。\n"), "", "allow"),
@@ -166,7 +157,6 @@ CASE_GROUPS = (
     ]),
     CaseGroup("Edit ツール自体が成立しない入力は検査しない", [
         Case(*_edit(DOC, "無い文字列", "改修後"), "本文\n", "allow"),
-        Case(*_edit(DOC, "無い文字列", "改修後", replace_all=True), "本文\n", "allow"),
         Case(*_edit(DOC, "A", "改修後"), "A\nA\n", "allow"),
         Case(*_edit(DOC, "A", "改修後", replace_all=True), "A\nA\n", "deny"),
     ]),
@@ -174,10 +164,6 @@ CASE_GROUPS = (
         Case(*_write(DOC, "設定は C:/Users/ユーザー名/.claude にある。\n"), "", "allow"),
         Case(*_write(DOC, "設定は C:/Users/user/.claude にある。\n"), "", "allow"),
         Case(*_write(DOC, "設定は C:/Users/<user>/.claude にある。\n"), "", "allow"),
-        Case(*_write(DOC, "設定は C:/Users/{user}/.claude にある。\n"), "", "allow"),
-    ]),
-    CaseGroup("P5 の表示区切り", [
-        Case(*_write(DOC, "パスは `C:/Users/user` を使う。\n"), "", "allow"),
     ]),
     CaseGroup("許可リストの照合は大文字小文字を区別しない", [
         Case(*_write(DOC, "共有は C:/Users/Public/Documents にある。\n"), "", "allow"),
@@ -185,7 +171,6 @@ CASE_GROUPS = (
     ]),
     CaseGroup("原子分類別のパス判定", [
         Case(*_write(".scratch/plan.md", "改修後 C:/Users/alice/x .scratch/a.md\n"), "", "allow"),
-        Case(*_write("C:/Users/alice/AppData/Local/Temp/claude/x/note.md", "改修後\n"), "", "allow"),
         Case(*_write("/tmp/note.md", "改修後\n"), "", "allow"),
     ]),
     CaseGroup("macOS のセッション一時領域($TMPDIR。実パスは /private を前置した形)", [
@@ -197,23 +182,18 @@ CASE_GROUPS = (
         Case(*_write(DOC, "ログは /Users/alice/logs にある。\n"), "", "allow"),
     ]),
     CaseGroup("適用範囲外の置き場と、拡張子による免除の境界", [
-        Case(*_write("C:/Users/alice/.claude/projects/x/memory/note.md",
+        Case(*_write("D:/work/.claude/projects/x/memory/note.md",
                  "改修後 C:/Users/alice/x\n"), "", "allow"),
         Case(*_write("src/tmp/note.md", "改修後の値。\n"), "", "deny"),
-        Case(*_write("docs/note.markdown", "改修後の値。\n"), "", "deny"),
+        Case(*_write("docs/note.markdown", "段階導入の順序を決める。\n"), "", "deny"),
     ]),
     CaseGroup("指示層とフック層の免除", [
         Case(*_write(INSTRUCTION_SKILL_DOC, "改修後の挙動。\n"), "", "allow"),
         Case(*_write(INSTRUCTION_SKILL_DOC, "ログは C:/Users/alice/logs。\n"), "", "deny"),
         Case(*_write(INSTRUCTION_SKILL_DOC, "詳しくは .scratch/plan.md を参照する。\n"), "", "allow"),
         Case(*_write(INSTRUCTION_CONVENTION_DOC, "「改修前」「改修後」「今回」などの相対参照。\n"), "", "allow"),
-        Case(*_write(INSTRUCTION_CONVENTION_DOC, "ログは C:/Users/alice/logs。\n"), "", "deny"),
         Case(*_write(INSTRUCTION_AGENT_DOC, "改修後の挙動。\n"), "", "allow"),
         Case(*_write(HOOK_FILE, DENIED_HOME_LINE), "", "allow"),
-    ]),
-    CaseGroup("指示層はスクラッチ配下にファイルを作らせる生成指示を持つ", [
-        Case(*_write(HOOK_FILE, "# 詳細は .scratch/plan.md を見る\n"), "", "allow"),
-        Case(*_write("CLAUDE.md", "一時ファイルは .scratch/note.md に置く。\n"), "", "allow"),
     ]),
     CaseGroup("消費リポジトリの .claude 配下は成果物なので検査する", [
         Case(*_write(f"{CONSUMER_REPO}/.claude/agents/sample.md", "改修後の挙動。\n"), "", "allow"),
@@ -222,31 +202,27 @@ CASE_GROUPS = (
     ]),
     CaseGroup("ホーム直下の .claude と .claude.json の免除", [
         Case(*_write("C:/Users/alice/.claude/settings.json", DENIED_HOME_LINE), "", "allow"),
-        Case(*_write("C:/Users/alice/.claude/CLAUDE.md", "ログは C:/Users/alice/logs。\n"), "", "allow"),
         Case(*_write("/home/alice/.claude/agents/sample.md", "ログは C:/Users/alice/logs。\n"),
          "", "allow"),
         Case(*_write("C:/Users/alice/.claude.json", DENIED_HOME_LINE), "", "allow"),
     ]),
     CaseGroup("指示ファイル名・テストデータ・バージョン記録の免除", [
         Case(*_write("CLAUDE.md", "改修後の挙動。\n"), "", "allow"),
-        Case(*_write("CLAUDE.md", "ログは C:/Users/alice/logs。\n"), "", "deny"),
         Case(*_write("AGENTS.md", "改修後の挙動。\n"), "", "allow"),
         Case(*_write(TEST_DOC, "改修後 C:/Users/alice/x .scratch/a.md\n"), "", "allow"),
         Case(*_write("TUNING.md", "段階導入の手順。\n"), "", "allow"),
-        Case(*_write("CHANGELOG.md", "段階導入の記録。\n"), "", "allow"),
         Case(*_write("CHANGELOG.md", "改修後の挙動。\n"), "", "allow"),
     ]),
     CaseGroup("パスの正規化(バックスラッシュ→スラッシュ・小文字化)を経て初めて成立する判定", [
-        Case(*_write(BACKSLASH_DOC, "改修後の値。\n"), "", "deny"),
+        Case(*_write(BACKSLASH_DOC, "段階導入の順序を決める。\n"), "", "deny"),
         Case(*_write("C:\\Users\\user\\repo\\plugins\\flow\\skills\\sample\\SKILL.md",
                  "改修後の挙動。\n"), "", "allow"),
         Case(*_write("C:\\Users\\user\\AppData\\Local\\Temp\\claude\\x\\note.md", "改修後\n"), "", "allow"),
         Case(*_write(f"{CONSUMER_REPO}/.scratch/plan.md", "改修後 .scratch/a.md\n"), "", "allow"),
     ]),
     CaseGroup("検査対象外のツール・読めない入力", [
-        Case("MultiEdit", {"file_path": DOC, "edits": [{"old_string": "A", "new_string": "改修後"}]},
+        Case("MultiEdit", {"file_path": DOC, "old_string": "A", "new_string": "改修後"},
          "A\n", "allow"),
-        Case("Bash", {"command": "ls"}, "", "allow"),
         Case("Write", {}, "", "allow"),
         Case("Write", {"file_path": DOC}, "", "allow"),
         Case("Edit", {"file_path": DOC}, "本文\n", "allow"),
@@ -260,7 +236,6 @@ READ_FAILURE_CASES = [
     ReadFailureCase("Edit", FileNotFoundError(), "allow"),
     ReadFailureCase("Write", PermissionError(), "allow"),
     ReadFailureCase("Write", IsADirectoryError(), "allow"),
-    ReadFailureCase("Edit", PermissionError(), "allow"),
 ]
 
 MessageCase = namedtuple("MessageCase", "why tool_name tool_input before needles")

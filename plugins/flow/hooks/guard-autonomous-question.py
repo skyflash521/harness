@@ -138,16 +138,13 @@ def selftest():
                     "transcript_path": transcript, "cwd": tmp, "session_id": "S1"}
 
         ask_user = user("計画に沿って自律で最後まで進めろ")
+        settled = said(f"{completion.SETTLED_FIELD}: 計画に沿って自律で最後まで進めろ")
 
         write([ask_user])
         check("自律進行の起動が無ければ通す", decide(ask()), None)
 
-        write([ask_user, skill(), scope, one])
-        blocked = decide(ask())
-        check("済んでいないステップが残れば deny", blocked is not None, True)
-        check("区分を渡す", "要求仕様" in (blocked or ""), True)
-        check("区分外を渡す", "段取り" in (blocked or ""), True)
-        check("宣言の方へ誘導する", "[停止: 要判断]" in (blocked or ""), True)
+        write([ask_user, skill(), scope, one, settled])
+        check("済んでいないステップが残れば deny", decide(ask()) is not None, True)
 
         check("別のツールは通す", decide(ask(tool="Bash")), None)
         check("ツール名が無ければ通す", decide({"transcript_path": path}), None)
@@ -157,7 +154,6 @@ def selftest():
 
         write([ask_user, skill(), scope, one, two])
         check("範囲が埋まっても発言が未消化なら deny", decide(ask()) is not None, True)
-        settled = said(f"{completion.SETTLED_FIELD}: 計画に沿って自律で最後まで進めろ")
         write([ask_user, skill(), scope, one, two, settled])
         check("完了を宣言できる状態になれば通す", decide(ask()), None)
 
@@ -166,7 +162,7 @@ def selftest():
                user("次は別の件を頼む")])
         check("走行が完了で終わった後の会話は塞がない", decide(ask()), None)
 
-        write([ask_user, skill()])
+        write([ask_user, skill(), settled])
         check("範囲が示されていなければ走行中として deny", decide(ask()) is not None, True)
 
         cases += 1

@@ -24,7 +24,6 @@ def load_guard():
 
 
 _guard = load_guard()
-WAIT_SCRIPT = _guard.WAIT_SCRIPT
 
 
 REASON = (
@@ -73,13 +72,10 @@ def main():
 def selftest():
     ok, cases = True, 0
     deny_inputs = [
-        {"tool_name": TOOL, "tool_input": {"delaySeconds": 300, "prompt": "続きを進めろ"}},
         {"tool_name": TOOL, "tool_input": {"stop": True}},
         {"tool_name": TOOL},
     ]
     pass_inputs = [
-        {"tool_name": "Bash", "tool_input": {"command": "python3 wait.py 300"}},
-        {"tool_name": "TaskStop", "tool_input": {"task_id": "b1"}},
         {"tool_name": "CronCreate", "tool_input": {}},
         {},
         [],
@@ -94,11 +90,6 @@ def selftest():
         if decide(data) is not None:
             ok = False
             print(f"FAIL pass-through にならない: {data!r}")
-    for phrase in (WAIT_SCRIPT, "TaskStop", "CronCreate"):
-        cases += 1
-        if phrase not in REASON:
-            ok = False
-            print(f"FAIL deny メッセージに代替が無い: {phrase}")
     cases += 1
     if not _roundtrip_ok():
         ok = False

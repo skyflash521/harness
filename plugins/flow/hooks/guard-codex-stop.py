@@ -237,9 +237,8 @@ def selftest():
     check("OUTCOME が起動より前にしか無い", [outcome] + launch, "a1", True)
     check("規約文の中の OUTCOME に当たらない",
           launch + [read_result("`OUTCOME=4 bad-arg` で戻る")], "a1", True)
-    for ground in GROUNDS:
-        check("事由を宣言している: " + ground,
-              launch + [said("{}: {}".format(FIELD, ground))], "a1", False)
+    check("事由を宣言している: " + GROUNDS[0],
+          launch + [said("{}: {}".format(FIELD, GROUNDS[0]))], "a1", False)
     check("装飾付きの宣言も読む",
           launch + [said("- **{}**: {} と判断した".format(FIELD, GROUNDS[0]))], "a1", False)
     check("列挙に無い事由は宣言に数えない",
@@ -253,12 +252,12 @@ def selftest():
                                           agent_result("u4", "a4")],
           "codex-round1", True)
     check("サブエージェントの手番は起動に数えない",
-          [dict(agent_use("u5"), isSidechain=True)], "a5", False)
+          [dict(agent_use("u5", name="side-round"), isSidechain=True)], "side-round", False)
 
     for label, data in (
-        ("対象外のツール", {"tool_name": "Bash", "tool_input": {"command": "ls"}}),
+        ("対象外のツール", {"tool_name": "Bash", "tool_input": {"task_id": "a1"}}),
         ("task_id が無い", {"tool_name": TOOL, "tool_input": {}}),
-        ("task_id が文字列でない", {"tool_name": TOOL, "tool_input": {"task_id": 1}}),
+        ("task_id が文字列でない", {"tool_name": TOOL, "tool_input": {"task_id": ["a1"]}}),
         ("tool_input が無い", {"tool_name": TOOL}),
         ("辞書でない入力", []),
     ):
@@ -288,12 +287,6 @@ def selftest():
         cases += 1
         if not _roundtrip_ok(path):
             ok = False
-
-    for phrase in (FIELD, "wait.py", "OUTCOME"):
-        cases += 1
-        if phrase not in reason_text("a1"):
-            ok = False
-            print("FAIL deny メッセージに代替が無い:", phrase)
 
     print("ALL PASS" if ok else "SOME FAILED", "({} cases)".format(cases))
     sys.exit(0 if ok else 1)

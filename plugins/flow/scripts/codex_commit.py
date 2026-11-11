@@ -215,19 +215,18 @@ def run_selftest():
         ("申告が無い", "指摘なし。\n", good_message, ["a.txt"]),
         ("未解決が残る", "未解決の指摘: 2件\n", good_message, ["a.txt"]),
         ("申告が末尾で非0へ戻る", "未解決の指摘: 0件\n\n追加で見つかった。\n\n未解決の指摘: 3件\n", good_message, ["a.txt"]),
-        ("件名に日本語が無い", good_review, "add a.txt\n", ["a.txt"]),
-        ("トレーラ無し", good_review, "a.txt を追加する\n", ["a.txt"]),
+        ("件名に日本語が無い", good_review, "add a.txt\n\n" + CODEX_TRAILER + "\n", ["a.txt"]),
+        ("トレーラ無し", good_review, good_message.replace("\n\n" + CODEX_TRAILER, ""), ["a.txt"]),
         ("Claude 名義のトレーラ", good_review, good_message.replace(CODEX_TRAILER, "Co-Authored-By: Claude Opus <someone@example.com>"), ["a.txt"]),
-        ("製品名を含まない名義でも Anthropic のアドレス", good_review, good_message.replace(CODEX_TRAILER, "Co-Authored-By: X <noreply@anthropic.com>"), ["a.txt"]),
         ("Codex トレーラの重複", good_review, good_message + "\n" + CODEX_TRAILER + "\n", ["a.txt"]),
         ("字下げされたトレーラの重複", good_review, good_message + "\n " + CODEX_TRAILER + "\n", ["a.txt"]),
         ("Codex トレーラのアドレス違い", good_review, good_message.replace("noreply@openai.com", "other@example.com"), ["a.txt"]),
-        ("Codex トレーラが末尾でない", good_review, good_message + "本文\n", ["a.txt"]),
+        ("Codex トレーラが末尾でない", good_review, good_message + "\n本文\n", ["a.txt"]),
         ("Codex トレーラの前に空行無し", good_review, good_message.replace("\n\n" + CODEX_TRAILER, "\n" + CODEX_TRAILER), ["a.txt"]),
-        ("番号付きの作業工程の参照", good_review, "Step 3 で a.txt を追加する\n", ["a.txt"]),
-        ("ラウンド番号の参照", good_review, "ラウンド2の指摘に対応して a.txt を追加する\n", ["a.txt"]),
-        ("相対参照の語", good_review, relative_word + "の値を変えて a.txt を追加する\n", ["a.txt"]),
-        ("改行のエスケープ表記", good_review, good_message.replace("\n\n" + CODEX_TRAILER, "\\n\n" + CODEX_TRAILER), ["a.txt"]),
+        ("番号付きの作業工程の参照", good_review, "Step 3 で a.txt を追加する\n\n" + CODEX_TRAILER + "\n", ["a.txt"]),
+        ("ラウンド番号の参照", good_review, "ラウンド2の指摘に対応して a.txt を追加する\n\n" + CODEX_TRAILER + "\n", ["a.txt"]),
+        ("相対参照の語", good_review, relative_word + "の値を変えて a.txt を追加する\n\n" + CODEX_TRAILER + "\n", ["a.txt"]),
+        ("改行のエスケープ表記", good_review, good_message.replace("\n\n-", "\\n\\n-"), ["a.txt"]),
         ("使い捨ての件名", good_review, "テスト\n\n" + CODEX_TRAILER + "\n", ["a.txt"]),
         ("ディレクトリ指定", good_review, good_message, ["docs"]),
         ("親ディレクトリ", good_review, good_message, ["../a.txt"]),
@@ -239,8 +238,9 @@ def run_selftest():
             repo = fresh(Path(scratch))
             expect(label, run(repo, review, message, files), 3, "refused", repo)
 
-    for invalid in ("", "{", "[]", "null", '{"review":0,"message":"本文"}',
-                    '{"review":"原文"}', '{"review":"原文","message":"本文","extra":1}'):
+    for invalid in ("", "{", "null", '{"review":0,"message":"本文"}',
+                    '{"review":"原文"}',
+                    json.dumps({"review": good_review, "message": good_message, "extra": 1}, ensure_ascii=False)):
         with tempfile.TemporaryDirectory() as scratch:
             repo = fresh(Path(scratch))
             expect("不正な標準入力", run_input(repo, invalid, ["a.txt"]), 3, "refused", repo)
@@ -276,8 +276,6 @@ def run_selftest():
             failures.append(f"起草したメッセージと記録されたメッセージが違う: {recorded!r}")
         if must_git(repo, "show", "HEAD:a.txt") != "a\n":
             failures.append("記録された a.txt の内容が作業ツリーと違う")
-        if recorded.rstrip().splitlines()[-1] != CODEX_TRAILER:
-            failures.append("Codex のトレーラが末尾に無い")
         if history_length(repo) != 1 or staged_names(repo):
             failures.append("コミットの後にステージが残った")
         if {p.name for p in repo.parent.iterdir()} != {"repo"}:

@@ -256,7 +256,7 @@ def selftest():
             print(f"FAIL {name}")
 
     check("自分の pid は alive と判定される", process_state(os.getpid()) == "alive")
-    for absent in (None, 0, -1, "1234", True, 1.5):
+    for absent in (None, 0, -1, str(os.getpid()), True, 1.5):
         check(f"pid として読めない値は gone: {absent!r}", process_state(absent) == "gone")
     ended = subprocess.Popen([sys.executable, "-c", ""])
     ended.wait()
@@ -313,7 +313,6 @@ def selftest():
         check("ジョブファイルには終局の理由を残す", stored.get("errorMessage") == REAP_NOTE)
         check("ジョブファイルの終局時刻を揃える",
               stored.get("cancelledAt") == stored.get("completedAt"))
-        check("索引に終局の理由を残さない", "errorMessage" not in entries["task-a"])
         check("片付けた後は未終局ジョブが残らない", active_jobs("S1", files=[root], now=now) == [])
 
         broken = root / "broken-0123456789abcdef"

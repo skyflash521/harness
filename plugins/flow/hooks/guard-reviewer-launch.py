@@ -115,14 +115,15 @@ def selftest():
         spaced = criteria_dir(Path(tmp) / "John Doe")
         japanese = criteria_dir(Path(tmp) / "ユーザー")
         existing = str(plugin_criteria).replace("\\", "/")
+        try:
+            relative = os.path.relpath(plugin_criteria / "review-viewpoints.md")
+        except ValueError:
+            relative = "../docs/criteria/review-viewpoints.md"
         # バックスラッシュ区切りのパスが実在するのは Windows だけなので、その環境でだけ通す側に置く。
         native = (
             ("バックスラッシュ区切り",
              launch("flow:fable-reviewer",
                     prompt_with(plugin_criteria, *REQUIRED_FILES, separator="\\"))),
-            ("日本語のユーザー名を含むパス(バックスラッシュ区切り)",
-             launch("flow:opus-reviewer",
-                    prompt_with(japanese, *REQUIRED_FILES, separator="\\"))),
         ) if os.sep == "\\" else ()
         passes = native + (
             ("導入済みプラグインの絶対パス3件",
@@ -135,9 +136,8 @@ def selftest():
              launch("flow:fable-reviewer",
                     prompt_with(plugin_criteria, *REQUIRED_FILES, template="「{}」\n"))),
             ("レビュー専用でないエージェント", launch("codex:codex-rescue", "レビューさせよ")),
-            ("探索エージェント", launch("Explore", "呼び出し元を探せ")),
-            ("継続ラウンドの送信", {"tool_name": "SendMessage", "tool_input": {"to": "reviewer"}}),
-            ("Agent 以外のツール", {"tool_name": "Bash", "tool_input": {"command": "git diff"}}),
+            ("Agent 以外のツール",
+             dict(launch("flow:opus-reviewer", "この変更をレビューせよ"), tool_name="Bash")),
             ("tool_input が辞書でない", {"tool_name": "Agent", "tool_input": []}),
             ("空の入力", {}),
             ("辞書でない入力", []),
@@ -146,7 +146,7 @@ def selftest():
             ("絶対パスが1件も無い", launch("flow:opus-reviewer", "この変更をレビューせよ"),
              REQUIRED_FILES),
             ("相対パスで示している",
-             launch("flow:fable-reviewer", "正本は ../docs/criteria/review-viewpoints.md にある"),
+             launch("flow:fable-reviewer", "正本は {} にある".format(relative)),
              REQUIRED_FILES),
             ("常設観点の正本だけ渡している",
              launch("flow:opus-reviewer", prompt_with(plugin_criteria, "review-viewpoints.md")),

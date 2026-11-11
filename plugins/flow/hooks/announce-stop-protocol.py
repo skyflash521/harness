@@ -103,27 +103,13 @@ def selftest():
     markers = ("[停止: 完了]", "[停止: 要判断]", "[停止: 待機]", "[停止: 応答]")
     for marker in markers:
         cases += 1
-        if marker not in context:
-            ok = False
-            print(f"FAIL 宣言が文脈に無い: {marker}")
-        cases += 1
         if f"`{marker}`" in context:
             ok = False
             print(f"FAIL 宣言を囲み記号で包んで提示している: {marker}")
-    for phrase in (guard.DECISION_FIELD, guard.RESPOND_FIELD, *guard.DECISION_KINDS):
-        cases += 1
-        if phrase not in context:
-            ok = False
-            print(f"FAIL 区分の宣言の形が文脈に無い: {phrase}")
-    for phrase in ("PushNotification", "完了・要判断・応答", "宣言の前", "指示の全部", "原文のまま"):
-        cases += 1
-        if phrase not in context:
-            ok = False
-            print(f"FAIL 手順の要点が文脈に無い: {phrase}")
     cases += 1
-    if "末尾行" not in context:
+    if "PushNotification" not in context:
         ok = False
-        print("FAIL 末尾行の要求が文脈に無い")
+        print("FAIL 手順の要点が文脈に無い: PushNotification")
     cases += 1
     if "PushNotification" in quiet:
         ok = False

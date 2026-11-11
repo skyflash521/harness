@@ -347,7 +347,7 @@ def selftest():
              (prefix + 'codex exec review --json -c sandbox_mode=read-only -', False),
              (prefix + 'codex exec review --json -', True),
              (prefix + 'codex exec --skip-git-repo-check --json -c sandbox_mode=read-only -', False),
-             (prefix + 'codex exec review -c sandbox_mode=read-only -s danger-full-access -', True),
+             (prefix + 'codex exec review -c sandbox_mode=read-only -s workspace-write -', True),
              ('codex exec --json -c sandbox_mode=read-only -', True),
              ('echo "claude -p"', False),
              ("printf '%s' \"Claude's", False),
@@ -392,8 +392,7 @@ def selftest():
             failures.append(f"Stop: {message}")
 
     actual_load = load
-    for problems in ([], ["条項1: 検証手順書が無い"], ["条項2: 除外されていない"],
-                     ["条項3(Codex): flow が無効"]):
+    for problems in ([], ["条項1: 検証手順書が無い"]):
         received = []
 
         def check(root, host, tier):

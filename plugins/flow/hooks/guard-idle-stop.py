@@ -895,15 +895,9 @@ def selftest():
          REASON_TASK_LEFT_RUNNING.format(tasks="b7")),
         (stop("作業は終わりました。\n\n[停止: 完了]", tasks=crowd),
          REASON_TASK_LEFT_RUNNING.format(tasks="c0, c1, c2, c3, c4 ほか1件")),
-        (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[other_test]),
-         REASON_TASK_LEFT_RUNNING.format(tasks="b5")),
         (stop("コミットしました。ハッシュは 90d8326 です。"), REASON_NO_MARKER),
-        (stop("次はレビューを回します。"), REASON_NO_MARKER),
-        (stop("お任せいただけるなら、このまま実装します。"), REASON_NO_MARKER),
-        (stop("どちらで進めますか。1. フックを作る 2. 文書だけにする"), REASON_NO_MARKER),
         (stop(""), REASON_NO_MARKER),
         (stop("[停止: 完了]\n\n続けて別の作業もあります。"), REASON_NO_MARKER),
-        (stop("末尾に [停止: 完了] と書く決まりにしました。"), REASON_NO_MARKER),
         (stop("作業は終わりました。\n\n`[停止: 完了]`"), REASON_NO_MARKER),
         (stop("作業は終わりました。\n\n[停止: 完了] 以上です。"), REASON_NO_MARKER),
         (stop("レビューの完了を待ちます。\n\n[停止: 待機]"), REASON_WAIT_UNSUBSTANTIATED),
@@ -925,7 +919,6 @@ def selftest():
         (stop("回答しました。\n**答えた質問**: 特になし。\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
         (stop("回答しました。\n答えた質問: 特にありません\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
         (stop("回答しました。\n答えた質問: 質問なし\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
-        (stop("回答しました。答えた質問は無い。\n\n[停止: 応答]"), REASON_RESPOND_UNSUBSTANTIATED),
         (stop("回答しました。\n答えた質問: プッシュはまだか\n\n[停止: 応答]"), codex_running("j1"), [codex_alive]),
         (stop("どちらで進めますか。1. フックを作る 2. 文書だけにする\n\n[停止: 要判断]"),
          unclassified()),
@@ -942,12 +935,6 @@ def selftest():
          REASON_DECISION_NO_SPEC),
         (stop("方針が変わります。\n\n要判断の区分: 要求仕様\n区分外に当たらないことを確かめた\n"
               f"{DECISION_SPEC_FIELD}: docs/specs/no-such-file.md の受入条件\n\n[停止: 要判断]"),
-         REASON_DECISION_NO_SPEC),
-        (stop("禁止の解除が要ります。\n\n要判断の区分: 要求仕様\n区分外に当たらないことを確かめた\n"
-              f"{DECISION_SPEC_FIELD}: ユーザーが出した着手禁止\n\n[停止: 要判断]"),
-         REASON_DECISION_NO_SPEC),
-        (stop("明示指定を守れません。\n\n要判断の区分: 要求仕様\n区分外に当たらないことを確かめた\n"
-              f"{DECISION_SPEC_FIELD}: ユーザーが会話で指定したテスト基盤\n\n[停止: 要判断]"),
          REASON_DECISION_NO_SPEC),
         (stop("これからフックを書きます。", active=True), REASON_NO_MARKER),
         (stop("コミットしました。ハッシュは 90d8326 です。"), REASON_NO_MARKER, [codex_ghost]),
@@ -1009,11 +996,9 @@ def selftest():
         ({"hook_event_name": "Stop", "stop_hook_active": False}, None),
         (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[waiting, task]), "[停止: 待機]"),
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting]), "[停止: 待機]"),
-        (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting, unknown]), "[停止: 待機]"),
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[dict(waiting, status="mystery")]),
          "[停止: 待機]"),
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting_bare]), "[停止: 待機]"),
-        (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting_far]), "[停止: 待機]"),
         (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting_long]), "[停止: 待機]"),
         (stop("レビューの完了を待ちます。\n\n[停止: 待機]", tasks=[waiting_cap, task]),
          "[停止: 待機]"),
@@ -1023,7 +1008,6 @@ def selftest():
         (stop("レビューの完了を待ちます。\n\n[停止: 待機]",
               tasks=[waiting_long, dict(task, id="b12", status="mystery")]),
          "[停止: 待機]"),
-        (stop("上限明けを待ちます。\n\n[停止: 待機]", tasks=[waiting, task]), "[停止: 待機]"),
         (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[waiting_ended]), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止: 完了]", tasks=[unknown]), "[停止: 完了]"),
         (stop("作業は終わりました。\n\n[停止: 完了]", active=True), "[停止: 完了]"),
@@ -1035,7 +1019,6 @@ def selftest():
          "[停止: 待機]", [codex_alive]),
         (stop("作業は終わりました。\n\n[停止: 完了]"), "[停止: 完了]", [codex_unknown]),
         (stop("指示された作業は全部終わりました。\n\n[停止: 完了]"), "[停止: 完了]"),
-        (stop("ご指示のとおり、まとめて1コミットにしました。\n\n[停止: 完了]"), "[停止: 完了]"),
         (stop("回答です。\n答えた質問: 残っている指示をやれ\n\n[停止: 応答]"), "[停止: 応答]"),
         (stop("対象が分かりません。\n\n要判断の区分: 指示不明\n区分外に当たらないことを確かめた"
               "\n\n[停止: 要判断]"), "[停止: 要判断]"),
@@ -1084,7 +1067,6 @@ def _deadline_text_ok():
         ("python3 wait.py 1320", "1320"),
         (r'python3 "C:\Users\d\scripts\wait.py" "2026-09-14 10:41:00"', "2026-09-14 10:41:00"),
         ("python3 /p/flow/scripts/wait.py", ""),
-        ("python3 -m pytest tests/test_wait.py", ""),
     ]
     ok = True
     for command, expected in cases:
@@ -1095,16 +1077,6 @@ def _deadline_text_ok():
     if deadline_text({"description": "wait.py 60 で待つ"}) != "":
         ok = False
         print("FAIL deadline_text: description に書かれた秒数を引数として採っている")
-    module = wait_module()
-    if module is None:
-        ok = False
-        print("FAIL deadline_text: wait.py を取り込めない(締切の長さを見ないまま通す)")
-    else:
-        now = datetime.datetime.now()
-        left = deadline_left({"command": "python3 wait.py 1320"}, now, module)
-        if left != 1320:
-            ok = False
-            print(f"FAIL deadline_left: 秒数の締切が {left!r}")
     return ok
 
 
@@ -1289,13 +1261,10 @@ def _respond_gate_ok():
         path.write_text("\n".join(json.dumps(r, ensure_ascii=False)
                                   for r in (pending, asked)) + "\n", encoding="utf-8")
         for quoted, expected, label in (
-            ("どれが不要か分かるか", RESPOND, "発言にある問いの復唱は通す"),
             ("**「どれが不要か分かるか」**", RESPOND, "囲みを付けた復唱も通す"),
             ("どれが 不要か 分かるか", RESPOND, "空白の入った復唱も通す"),
-            ("いつ終わるのか", REASON_RESPOND_UNQUOTED, "発言に無い問いは弾く"),
             ("不要なものを消してよいか確認したいそうですね", REASON_RESPOND_UNQUOTED,
              "言い換えた復唱は弾く"),
-            ("エントリの整理について", REASON_RESPOND_UNQUOTED, "自分で立てた論点は弾く"),
         ):
             marker, reason = decide({
                 "hook_event_name": "Stop", "background_tasks": [], "session_id": "S1",

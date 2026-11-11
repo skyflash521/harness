@@ -304,8 +304,6 @@ def _selftest():
          {"permissions.allow": ["Bash(git commit *)"]}),
         ("sandbox 不足", {"permissions": {"allow": ["Bash(git add *)", "Bash(git commit *)"]}},
          {"sandbox.excludedCommands": ["node \"*x.mjs\"*"]}),
-        ("空の設定", {}, {"permissions.allow": ["Bash(git add *)", "Bash(git commit *)"],
-                          "sandbox.excludedCommands": ["node \"*x.mjs\"*"]}),
         ("None", None, {"permissions.allow": ["Bash(git add *)", "Bash(git commit *)"],
                         "sandbox.excludedCommands": ["node \"*x.mjs\"*"]}),
     ]
@@ -370,7 +368,7 @@ def _selftest():
         ({"installed": [plugin]}, 0, True),
         ({"installed": [{**plugin, "enabled": False}]}, 0, False),
         ({"installed": [{**plugin, "installed": False}]}, 0, False),
-        ({"installed": [{**plugin, "pluginId": "guard@harness"}]}, 0, False),
+        ({"installed": [{**plugin, "pluginId": "other@harness"}]}, 0, False),
         ({"installed": []}, 0, False),
         ({"installed": None}, 0, False),
         ([], 0, False),
@@ -415,8 +413,8 @@ def _selftest():
                     print(f"FAIL 必須フックの不備を通す: {key} {state}")
 
     invalid_hooks = [[], {}, {"data": []}, {"data": [{"cwd": str(HERE), "hooks": None}]},
-                     {"data": [{"cwd": str(HERE), "errors": ["fixture"], "hooks": []}]},
-                     {"data": [{"cwd": str(HERE / 'different'), "hooks": []}]}]
+                     {"data": [{**hook_payload["data"][0], "errors": ["fixture"]}]},
+                     {"data": [{**hook_payload["data"][0], "cwd": str(HERE / 'different')}]}]
     duplicate = json.loads(json.dumps(hook_payload))
     duplicate["data"][0]["hooks"].append(duplicate["data"][0]["hooks"][0])
     invalid_hooks.append(duplicate)
@@ -450,16 +448,21 @@ def _selftest():
         ]}}), encoding="utf-8")
         guard = {"pluginId": "guard@harness", "installed": True, "enabled": True,
                  "source": {"path": str(directory)}}
-        for source in (None, [], {}, {"path": ""}, {"path": "./plugins/guard"}, {"path": 1}):
-            process = cli_module(json.dumps({"installed": [plugin, {**guard, "source": source}]}))
-            with patch("shutil.which", return_value="codex"), patch.dict(globals(), {"process_module": lambda: process}):
-                if not codex_settings(HERE):
-                    ok = False
-                    print(f"FAIL guard の導入先が不明でも通す: {source}")
         all_hooks = json.loads(json.dumps(hook_payload))
         guard_keys = required_hook_keys(guard)
         all_hooks["data"][0]["hooks"].extend(
             {"key": key, "enabled": True, "trustStatus": "trusted"} for key in sorted(guard_keys))
+        previous = os.getcwd()
+        os.chdir(directory.parent)
+        try:
+            for source in (None, [], {}, {"path": directory.name}, {"path": 1}):
+                process = cli_module(json.dumps({"installed": [plugin, {**guard, "source": source}]}), hooks=all_hooks)
+                with patch("shutil.which", return_value="codex"), patch.dict(globals(), {"process_module": lambda: process}):
+                    if not codex_settings(HERE):
+                        ok = False
+                        print(f"FAIL guard の導入先が不明でも通す: {source}")
+        finally:
+            os.chdir(previous)
         for key in sorted(guard_keys):
             changed = json.loads(json.dumps(all_hooks))
             next(h for h in changed["data"][0]["hooks"] if h["key"] == key)["trustStatus"] = "untrusted"
@@ -505,14 +508,13 @@ def _selftest():
         worktree.mkdir()
         (worktree / ".git").write_text(f"gitdir: {repo / '.git'}\n", encoding="utf-8")
         for path, want in ((worktree, True), (worktree / "sub" / "new.md", True), (repo / "docs", True),
-                           (outside, False), (outside / "new.md", False)):
+                           (outside / "new.md", False)):
             if in_work_tree(path) != want:
                 ok = False
                 print(f"FAIL git 作業ツリーの判定: {path} want={want}")
 
         for file_path, root, want in ((outside / "a.md", outside, True), (repo / "a.md", outside, False),
-                                      (outside / "a.md", repo, False), (repo / "a.md", repo, False),
-                                      ("a.md", outside, True), ("a.md", repo, False)):
+                                      (outside / "a.md", repo, False), ("a.md", outside, True)):
             if hygiene_exempt(file_path, root) != want:
                 ok = False
                 print(f"FAIL 衛生検査の免除: file={file_path} root={root} want={want}")

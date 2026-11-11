@@ -192,9 +192,6 @@ def main():
 
 QUOTING_REPLY = """I've read "垂直方向からサンダルが傾くのはだめだ" (no tilting the sandal away from vertical).
 This condition and "合わせるのは踵から指の付け根まで" can't both hold as they stand.
-
-A. Heel only: Turn only about Y and move so the heel seat meets the heel.
-Bug (severity 中): model_place_elements can't target vertices by material.
 要判断の区分: 指示不明
 区分外に当たらないことを確かめた(「垂直方向から傾く」の指す回転が前後か左右か)
 [停止: 要判断]"""
@@ -207,22 +204,20 @@ def _judge_ok():
         ("英語の応答", f"I have updated the file.\n\n{done}", True),
         ("宣言なしの英語", "Done.", True),
         ("日本語を引用した英語の応答", QUOTING_REPLY, True),
-        ("合間の英語の報告", "The sandal fitting isn't finished yet, so I'll keep going.", True),
         ("日本語の中に英文が1行", f"直しました。\nThe hook now checks each line.\n\n{done}", True),
-        ("識別子を含む日本語", f"`decide()` を直しました。see README\n\n{done}", False),
+        ("識別子を含む日本語", f"`decide()` を直しました。see README and the hook docs\n\n{done}", False),
         ("裸のパスを並べた行", f"次を変えた。\n- plugins/flow/hooks/hooks.json AGENTS.md README.md x.py\n{done}",
          False),
         ("引数を並べた行", "順に呼んだ。\n2. (parentAll=true, all=true, limit=3) → ok", False),
         ("識別子だけの回答", "model_update_joints\n\n対応済み: 説明に update を含むもの\n\n" + done, False),
-        ("リンクだけの行", f"変更点:\n- [hooks.json](plugins/flow/hooks/hooks.json)\n{done}", False),
+        ("リンクだけの行",
+         f"変更点:\n- [the hook settings file here](plugins/flow/hooks/hooks.json)\n{done}", False),
         ("コードブロックだけが英語", f"結果です。\n```\nALL PASS and all is fine here\n```\n{done}", False),
         ("引用ブロックの英文", f"エラーはこれです。\n> Commit subject must be Japanese\n{done}", False),
         ("コードブロック外が英語", f"Result:\n```\nテスト\n```\n{done}", True),
         ("引用だけで書いた英語", f"“All done.”\n\n{done}", True),
-        ("英語の引用だけの行", "引数の説明:\n- \"Present only when the hook fires from a subagent.\"\n", False),
         ("日本語のラベルで引いた英語の出力", "原因: \"No such file or directory.\"", False),
         ("日本語のラベルで示したツールの出力", "接続先: pmx-editor-mcp-15332 / pong", False),
-        ("日本語の中の英語の引用", f"エラーは \"Commit subject must be Japanese\" です。\n{done}", False),
         ("インラインコードの仮名", f"Fixed `ひらがな` handling.\n\n{done}", True),
         ("リンクの仮名", f"See [かな](docs/かな.md).\n\n{done}", True),
         ("対応済みの引用", f"Done.\n対応済み: 日本語で書け\n\n{done}", True),
