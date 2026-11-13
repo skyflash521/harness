@@ -57,7 +57,7 @@ def build_context(codex=False):
         + f"- {guard.RESPOND} — ユーザーに問われたことへ答えた(問われていないなら使えない)。"
         f"末尾行の前に「{guard.RESPOND_FIELD}: <直近のユーザー発言から、問うた部分を原文のまま>」の1行を置く"
         "(指示が残っているかどうかは問わない)\n"
-        + ("完了・要判断・応答は、宣言の前に PushNotification を送る。"
+        + ("完了・要判断は、宣言の前に PushNotification を送る。"
            if guard.attended() and not codex else "")
     )
 

@@ -90,9 +90,9 @@ user スコープで導入した場合は、2つの `plugin update` の `--scope
 
 #### claude を非対話で呼ぶとき
 
-flow は完了・要判断・応答の停止で音を鳴らし、PushNotification を送らせる。**答えを受け取るだけで
-誰も画面を見ていないなら、環境変数 `FLOW_UNATTENDED=1` を渡して `claude -p` を呼ぶ。** 渡せば音も
-通知も出ない。
+flow は完了・要判断・応答の停止で音を鳴らし、完了・要判断では PushNotification も送らせる。
+**答えを受け取るだけで誰も画面を見ていないなら、環境変数 `FLOW_UNATTENDED=1` を渡して `claude -p` を
+呼ぶ。** 渡せば音も通知も出ない。
 
 ### Codex
 
