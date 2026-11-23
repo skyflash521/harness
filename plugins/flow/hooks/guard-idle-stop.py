@@ -90,6 +90,7 @@ DECISION_CONFIRM = "区分外に当たらないことを確かめた"
 DECISION_KINDS = ("要求仕様", "指示不明", "停止規定", "操作承認")
 DECISION_SPEC_KIND = "要求仕様"
 DECISION_UNCLEAR_KIND = "指示不明"
+DECISION_STOP_KIND = "停止規定"
 DECISION_SPEC_FIELD = "変わる要求仕様"
 RESPOND_FIELD = "答えた質問"
 RESPOND_EMPTY = frozenset((
@@ -127,6 +128,17 @@ DRY_RUN = {
 DECISION_CONFIRM_LINE = re.compile(
     rf"^\s*[>*_\-\s]*{re.escape(DECISION_CONFIRM)}[*_\s。．.]*"
     r"(?:[(（].*[)）][*_\s。．.]*)?$"
+)
+STALEMATE = "千日手"
+STOP_RULE_FIELD = "発火した停止規定"
+STOP_RULES = (STALEMATE, "連続失敗", "使用量上限", "ユーザーの禁止や明示指定", "その他の規定")
+STOP_RULE_LINE = re.compile(
+    rf"^\s*[>*_\-\s]*{re.escape(STOP_RULE_FIELD)}[*_\s]*[:：][*_\s]*"
+    r"([^\s*_(（]+)[*_\s]*(?:[(（].*[)）][*_\s。．.]*)?$"
+)
+STALEMATE_KEPT = "千日手の再掲項目はすべて反証・受容を維持している"
+STALEMATE_KEPT_LINE = re.compile(
+    rf"^\s*[>*_\-\s]*{re.escape(STALEMATE_KEPT)}[*_\s。．.]*(?:[(（].*[)）][*_\s。．.]*)?$"
 )
 DECISION_SPEC_LINE = re.compile(
     rf"^\s*[>*_\-\s]*{re.escape(DECISION_SPEC_FIELD)}[*_\s]*(?:は)?[*_\s]*[:\uff1a]?[*_\s]*(.+?)\s*$"
@@ -296,6 +308,20 @@ REASON_DECISION_UNCONFIRMED = (
     "どれかに当たるなら止まる場面ではない——自分で決めて進み、決めた理由を報告に残す。"
     f"どれにも当たらないと確かめたなら、区分の行に続けて「{DECISION_CONFIRM}」の1行を置いて宣言し直す。"
     "確かめた根拠を添えるなら、その行の末尾に括弧で書く。"
+)
+REASON_DECISION_NO_RULE = (
+    f"{DECISION} と区分「{DECISION_STOP_KIND}」が申告されているが、**どの停止規定が発火したのかの申告が"
+    "無い**。まだ発火していない規定は止まる根拠にならない。"
+    f"取るべき行動は、区分の行に続けて「{STOP_RULE_FIELD}: <規定>」の1行を置いて宣言し直すこと。"
+    f"<規定>は {'・'.join(STOP_RULES)} のどれか1つをそのまま書き、説明を添えるなら後ろに括弧で書く。"
+)
+REASON_DECISION_STALEMATE = (
+    f"{DECISION} と区分「{DECISION_STOP_KIND}」で、発火した停止規定に{STALEMATE}が申告されているが、"
+    "再掲された項目のすべてで反証・受容を維持していると確かめた旨が無い。"
+    f"**{STALEMATE}で止まってよいのはその場合だけである。** 反証・受容を取り下げて直すと判断した項目"
+    "(レビュアーの案をユーザーへ推奨として示せる項目を含む)が1件でもあれば、止まる場面ではない"
+    "——修正に仕分け直して直し、次ラウンドへ進む。"
+    f"すべて維持していると確かめたなら、区分の行に続けて「{STALEMATE_KEPT}」の1行を置いて宣言し直す。"
 )
 REASON_DECISION_NO_SPEC = (
     f"{DECISION} と区分「{DECISION_SPEC_KIND}」が申告されているが、"
@@ -607,6 +633,20 @@ def worked_since_instruction(data):
     return None if calls is None else any(is_work(block) for block in calls)
 
 
+def stop_rule(message):
+    """申告された発火した停止規定。決まった語彙のどれでもなければ None。行単位で見る。"""
+    for line in message.splitlines():
+        found = STOP_RULE_LINE.match(line)
+        if found and found.group(1) in STOP_RULES:
+            return found.group(1)
+    return None
+
+
+def stalemate_kept(message):
+    """千日手の再掲項目をすべて維持していると申告されているか。行単位で見る。"""
+    return any(STALEMATE_KEPT_LINE.match(line) for line in message.splitlines())
+
+
 def confirmed(message):
     """区分外の確認が申告されているか。文中の言及と区別するため行単位で見る。"""
     return any(DECISION_CONFIRM_LINE.match(line) for line in message.splitlines())
@@ -828,6 +868,12 @@ def decide(data, codex=()):
             return None, REASON_DECISION_NO_SPEC
         if kind == DECISION_UNCLEAR_KIND and worked_since_instruction(data):
             return None, REASON_DECISION_UNCLEAR_AFTER_WORK
+        if kind == DECISION_STOP_KIND:
+            rule = stop_rule(message)
+            if not rule:
+                return None, REASON_DECISION_NO_RULE
+            if rule == STALEMATE and not stalemate_kept(message):
+                return None, REASON_DECISION_STALEMATE
     if names_instruction(message):
         return None, REASON_FABRICATED_INSTRUCTION
     return found[0], None
@@ -991,13 +1037,16 @@ def selftest():
               f"\n{DECISION_SPEC_FIELD}{wide}{here} の受入条件を緩める\n\n[停止: 要判断]"),
          "[停止: 要判断]"),
         (stop("禁止の解除が要ります。\n\n要判断の区分: 停止規定\n区分外に当たらないことを確かめた"
-              "\n\n[停止: 要判断]"), "[停止: 要判断]"),
+              f"\n{STOP_RULE_FIELD}: ユーザーの禁止や明示指定\n\n[停止: 要判断]"), "[停止: 要判断]"),
         (stop(f"禁止の解除が要ります。\n\n要判断の区分: {chr(0xFF08)}停止規定{chr(0xFF09)}\n"
-              "区分外に当たらないことを確かめた\n\n[停止: 要判断]"), "[停止: 要判断]"),
+              f"区分外に当たらないことを確かめた\n{STOP_RULE_FIELD}: ユーザーの禁止や明示指定\n\n[停止: 要判断]"),
+         "[停止: 要判断]"),
         (stop("禁止の解除が要ります。\n\n要判断の区分: (停止規定)\n"
-              "区分外に当たらないことを確かめた\n\n[停止: 要判断]"), "[停止: 要判断]"),
+              f"区分外に当たらないことを確かめた\n{STOP_RULE_FIELD}: ユーザーの禁止や明示指定\n\n[停止: 要判断]"),
+         "[停止: 要判断]"),
         (stop("千日手で終わりました。\n\n要判断の区分: 停止規定\n区分外に当たらないことを確かめた"
-              f"{chr(0xFF08)}規定による停止{chr(0xFF09)}\n\n[停止: 要判断]"), "[停止: 要判断]"),
+              f"{chr(0xFF08)}規定による停止{chr(0xFF09)}\n{STOP_RULE_FIELD}: {STALEMATE}\n"
+              f"{STALEMATE_KEPT}\n\n[停止: 要判断]"), "[停止: 要判断]"),
         (stop("受入条件が変わります。\n\n要判断の区分: 要求仕様(受入条件が変わる)\n"
               "区分外に当たらないことを確かめた\n"
               f"**{DECISION_SPEC_FIELD}**: `{here}:61` の区分の定義を差し替える\n\n[停止: 要判断]"),
@@ -1005,10 +1054,12 @@ def selftest():
         (stop("対象のファイルが分かりません。\n\n**要判断の区分**: 指示不明\n"
               "**区分外に当たらないことを確かめた**\n\n[停止: 要判断]"), "[停止: 要判断]"),
         (stop(f"千日手で終わりました。\n\n- 要判断の区分{wide}停止規定\n- 区分外に当たらないことを確かめた"
-              "\n\n[停止: 要判断]"), "[停止: 要判断]"),
+              f"\n- {STOP_RULE_FIELD}{wide}{STALEMATE}\n- {STALEMATE_KEPT}\n\n[停止: 要判断]"),
+         "[停止: 要判断]"),
         (stop("千日手で終わりました。\n\n要判断の区分: 停止規定\n"
               "区分外に当たらないことを確かめた(止まる根拠はレビュアーの発言ではなく規定であり、"
-              "実装の設計・段取り・作業量のいずれでもない)\n\n[停止: 要判断]"), "[停止: 要判断]"),
+              f"実装の設計・段取り・作業量のいずれでもない)\n**{STOP_RULE_FIELD}**: {STALEMATE}\n"
+              f"**{STALEMATE_KEPT}**\n\n[停止: 要判断]"), "[停止: 要判断]"),
         (stop("諮ります。\n\n要判断の区分: 指示不明\n"
               "**区分外に当たらないことを確かめた(対象がユーザーにしか無い)**\n\n[停止: 要判断]"),
          "[停止: 要判断]"),
@@ -1084,9 +1135,11 @@ def selftest():
         ok = False
     if not _attended_ok():
         ok = False
+    if not _stalemate_gate_ok():
+        ok = False
     if not _unclear_gate_ok():
         ok = False
-    total = len(block_cases) + len(pass_cases) + 6
+    total = len(block_cases) + len(pass_cases) + 7
     print("ALL PASS" if ok else "SOME FAILED", f"({total} cases)")
     sys.exit(0 if ok else 1)
 
@@ -1201,6 +1254,30 @@ def _unclear_gate_ok():
             if actual != expected:
                 ok = False
                 print(f"FAIL {label}: {actual!r}")
+    return ok
+
+
+def _stalemate_gate_ok():
+    head = f"止まります。\n\n{DECISION_FIELD}: {DECISION_STOP_KIND}\n{DECISION_CONFIRM}\n"
+    ok = True
+    for message, expected, label in (
+        (head + f"\n{DECISION}", REASON_DECISION_NO_RULE, "発火した規定を申告しない停止規定は弾く"),
+        (head + f"{STOP_RULE_FIELD}: {STALEMATE}\n\n{DECISION}", REASON_DECISION_STALEMATE,
+         "千日手で止まるのに維持を申告しないのは弾く"),
+        (head + f"{STOP_RULE_FIELD}: 連続失敗({STALEMATE}後の再レビュー)\n\n{DECISION}", DECISION,
+         "千日手でない停止規定に維持の申告を求めない"),
+        (head + f"{STOP_RULE_FIELD}: **\n\n{DECISION}", REASON_DECISION_NO_RULE, "装飾だけの申告は弾く"),
+        (head + f"{STOP_RULE_FIELD}: レビューの押し問答による終了\n\n{DECISION}", REASON_DECISION_NO_RULE,
+         "語彙に無い申告は弾く"),
+    ):
+        marker, reason = decide({
+            "hook_event_name": "Stop", "last_assistant_message": message,
+            "background_tasks": [], "session_id": "S1",
+        })
+        actual = reason if reason else marker
+        if actual != expected:
+            ok = False
+            print(f"FAIL {label}: {actual!r}")
     return ok
 
 
