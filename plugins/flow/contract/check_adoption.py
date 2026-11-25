@@ -228,6 +228,17 @@ def codex_settings(root):
         return [f"条項3(Codex): フックの実行状態を確認できない: {error}"]
 
 
+def dev_only_problems(root):
+    """開発条項のうち基本条項に無いものの不足。"""
+    root = Path(root).resolve()
+    problems = []
+    if not in_work_tree(root):
+        problems.append(f"git 管理外: ルート {root} が git 作業ツリーでない")
+    if not (root / VERIFICATION_DOC).is_file():
+        problems.append(f"条項1: 検証手順書 {VERIFICATION_DOC} が無い")
+    return problems
+
+
 def check(root, host="claude", tier=TIER_DEV):
     """tier の区分で欠けている条項の説明を並べて返す。空ならその区分の条項をすべて満たす。"""
     root = Path(root).resolve()
@@ -235,10 +246,7 @@ def check(root, host="claude", tier=TIER_DEV):
     work_tree = in_work_tree(root)
 
     if tier == TIER_DEV:
-        if not work_tree:
-            problems.append(f"git 管理外: ルート {root} が git 作業ツリーでない")
-        if not (root / VERIFICATION_DOC).is_file():
-            problems.append(f"条項1: 検証手順書 {VERIFICATION_DOC} が無い")
+        problems += dev_only_problems(root)
 
     if work_tree and not ignored(root, SCRATCH_DIR):
         problems.append(f"条項2: スクラッチ置き場 {SCRATCH_DIR}/ が除外設定に入っていない")

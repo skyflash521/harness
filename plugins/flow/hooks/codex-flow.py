@@ -36,7 +36,7 @@ def session_context():
             f"Codex の起動・監視・停止は {execution} に従う。"
             "待機中は実行ツールのセッションを監視し、手番を終了しない。"
             "自律進行の着手範囲は終端番号を含む n-m の形で申告する。"
-            f"flow スキルに着手する前に {adoption} の Codex 用導入検査を実行する。")
+            f"flow スキルに着手する前に {adoption} の Codex 用導入検査を確認する。")
 
 
 def flow_entrypoint(command):
@@ -274,10 +274,15 @@ def decide(data):
     if event == "SessionStart":
         context = session_context()
         contract = load("check_adoption", ROOT / "contract" / "check_adoption.py")
-        problems = contract.check(data.get("cwd") or Path.cwd(), host="codex", tier="base")
+        root = data.get("cwd") or Path.cwd()
+        dev_lacking = contract.dev_only_problems(root)
+        problems = contract.check(root, host="codex", tier="base")
         if problems:
             context = ("導入契約に不足がある。最初の応答でユーザーへ伝える:\n" + "\n".join(problems)
                        + f"\n{contract.ADOPTION_DOC} を確認する。\n\n" + context)
+        else:
+            tiers = "基本条項" if dev_lacking else "基本条項・開発条項"
+            context = f"Codex 用導入検査: {tiers} 合格(対象ルート: {Path(root).resolve()})\n\n" + context
         return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}
     if event == "Stop":
         language = hook("guard-reply-language")
@@ -401,14 +406,16 @@ def selftest():
                         "フックの増減は codex-flow.py で行う")
 
     actual_load = load
-    for problems in ([], ["条項3(Codex): 必須フックが無効または未信頼"]):
+    for problems, dev_lacking in (([], []), ([], ["条項1: 検証手順書が無い"]),
+                                  (["条項3(Codex): 必須フックが無効または未信頼"], [])):
         received = []
 
         def check(root, host, tier):
             received.append((root, host, tier))
             return problems
 
-        contract = SimpleNamespace(check=check, ADOPTION_DOC=ROOT / "docs" / "criteria" / "adoption.md")
+        contract = SimpleNamespace(check=check, dev_only_problems=lambda root: dev_lacking,
+                                   ADOPTION_DOC=ROOT / "docs" / "criteria" / "adoption.md")
         with patch(__name__ + ".load", side_effect=lambda name, path:
                    contract if name == "check_adoption" else actual_load(name, path)):
             context = decide({"hook_event_name": "SessionStart", "cwd": str(ROOT)})["hookSpecificOutput"]
@@ -416,11 +423,16 @@ def selftest():
                 clause not in context["additionalContext"] for clause in (
                     "[停止: 完了]", "着手範囲", "execution.md", "adoption.md", "手番を終了しない")):
             failures.append("SessionStart: Codex の実行・停止・導入の文脈が不足する")
-        if received != [(str(ROOT), "codex", "base")]:
+        if set(received) != {(str(ROOT), "codex", "base")}:
             failures.append(f"SessionStart: Codex の導入検査に cwd・host・区分を渡していない: {received}")
         if ("最初の応答でユーザーへ伝える" in context["additionalContext"]) != bool(problems) or any(
                 problem not in context["additionalContext"] for problem in problems):
             failures.append("SessionStart: 導入契約の不足を文脈へ示さない、または不足が無いのに示す")
+        tiers = "基本条項" if dev_lacking else "基本条項・開発条項"
+        passed = f"Codex 用導入検査: {tiers} 合格(対象ルート: {ROOT})"
+        if (problems and "合格(" in context["additionalContext"]) or (
+                not problems and not context["additionalContext"].startswith(passed)):
+            failures.append("SessionStart: 満たした区分の合格を対象ルート付きで示さない、または不足があるのに示す")
 
     for message, expected in (
         ("確認しました。\n[停止: 完了]", None),
@@ -453,7 +465,7 @@ def selftest():
                        contract if name == "check_adoption" else actual_load(name, path)):
                 result = decide({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(ROOT),
                                  "tool_input": {"command": command}})
-            if received != [(str(ROOT), "codex", "base" if command == prefix + valid else "dev")]:
+            if set(received) != {(str(ROOT), "codex", "base" if command == prefix + valid else "dev")}:
                 failures.append(f"PreToolUse: Codex の導入検査に cwd・host・区分を渡していない: {received}")
             if (not problems and result is not None) or (problems and (
                     not result or result["hookSpecificOutput"].get("permissionDecision") != "deny"
