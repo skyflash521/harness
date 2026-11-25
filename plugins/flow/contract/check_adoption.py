@@ -7,6 +7,7 @@
        ルート省略時は Claude Code のみ CLAUDE_PROJECT_DIR を使い、未設定または Codex は現在のディレクトリ。
        Codex の一覧取得は、公式フック既定上限600秒の半分300秒を実行に割り当てる。
        残りは判定とプロセス停止に残す。https://learn.chatgpt.com/docs/hooks
+       --codex-verified <ルート> は codex-flow.py だけが付ける。対象ルートと一致すれば条項3(Codex)の取得を省く。
 終了コード: 指定した区分の条項をすべて満たせば 0、1つでも欠ければ 1。
 """
 import importlib.util
@@ -239,7 +240,7 @@ def dev_only_problems(root):
     return problems
 
 
-def check(root, host="claude", tier=TIER_DEV):
+def check(root, host="claude", tier=TIER_DEV, codex_verified=None):
     """tier の区分で欠けている条項の説明を並べて返す。空ならその区分の条項をすべて満たす。"""
     root = Path(root).resolve()
     problems = []
@@ -252,7 +253,8 @@ def check(root, host="claude", tier=TIER_DEV):
         problems.append(f"条項2: スクラッチ置き場 {SCRATCH_DIR}/ が除外設定に入っていない")
 
     if host == "codex":
-        return problems + codex_settings(root)
+        verified = codex_verified is not None and Path(codex_verified).resolve() == root
+        return problems + ([] if verified else codex_settings(root))
 
     registered, unreadable = registered_entries(root)
     note = ""
@@ -270,22 +272,30 @@ def check(root, host="claude", tier=TIER_DEV):
     return problems
 
 
+def arguments(argv):
+    """コマンドライン引数を (host, tier, codex_verified, ルートの並び) に分ける。不正なら ValueError。"""
+    options = {"--host": "claude", "--tier": TIER_DEV, "--codex-verified": None}
+    choices = {"--host": ("claude", "codex"), "--tier": TIERS}
+    while argv[:1] and argv[0] in options:
+        allowed = choices.get(argv[0])
+        if len(argv) < 2 or (allowed and argv[1] not in allowed):
+            raise ValueError(f"{argv[0]} は {' または '.join(allowed or ('対象ルート',))} を指定する")
+        options[argv[0]], argv = argv[1], argv[2:]
+    if len(argv) > 1:
+        raise ValueError("対象リポジトリは1つだけ指定する")
+    return options["--host"], options["--tier"], options["--codex-verified"], argv
+
+
 def main(argv):
     if "--selftest" in argv:
         return _selftest()
-    options = {"--host": "claude", "--tier": TIER_DEV}
-    while argv[:1] and argv[0] in options:
-        choices = ("claude", "codex") if argv[0] == "--host" else TIERS
-        if len(argv) < 2 or argv[1] not in choices:
-            print(f"{argv[0]} は {' または '.join(choices)} を指定する")
-            return 1
-        options[argv[0]], argv = argv[1], argv[2:]
-    host, tier = options["--host"], options["--tier"]
-    if len(argv) > 1:
-        print("対象リポジトリは1つだけ指定する")
+    try:
+        host, tier, codex_verified, argv = arguments(argv)
+    except ValueError as error:
+        print(error)
         return 1
     root = argv[0] if argv else (os.environ.get("CLAUDE_PROJECT_DIR") if host == "claude" else None) or os.getcwd()
-    problems = check(root, host=host, tier=tier)
+    problems = check(root, host=host, tier=tier, codex_verified=codex_verified)
     if problems:
         print("導入契約を満たしていない条項がある:")
         for problem in problems:
@@ -478,6 +488,15 @@ def _selftest():
                 if not codex_settings(HERE):
                     ok = False
                     print(f"FAIL 有効な guard の未信頼フックを通す: {key}")
+
+    with tempfile.TemporaryDirectory() as base:
+        base = Path(base)
+        with patch.dict(globals(), {"codex_settings": lambda root: ["取得した不足"]}):
+            for verified, want in ((None, ["取得した不足"]), (base, []), (base / "other", ["取得した不足"])):
+                got = check(base, host="codex", tier=TIER_BASE, codex_verified=verified)
+                if got != want:
+                    ok = False
+                    print(f"FAIL 検査済みルートとの一致: {verified} want={want} got={got}")
 
     def kinds(root, tier):
         return {problem.split(":", 1)[0] for problem in check(root, tier=tier)} - {"条項3"}

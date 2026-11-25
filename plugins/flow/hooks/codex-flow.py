@@ -70,6 +70,27 @@ def flow_entrypoint(command):
     return "dev" if "dev" in tiers else "base" if "base" in tiers else None
 
 
+def adoption_command(command, cwd):
+    """単独で実行する同梱の Codex 用導入検査なら (対象ルート, 区分, 検査済みのルートを付けたコマンド)。ほかは None。"""
+    word = r"""(?:"[^"$`%\r\n]+"|'[^"'$`%\r\n]+'|[\w./\\:-]+)"""
+    if not re.fullmatch(rf"(?:python3?|py)(?:[ \t]+{word})+", command.strip()):
+        return None
+    words = re.findall(word, command)
+    args = [value[1:-1] if value[0] in "\"'" else value for value in words]
+    contract = load("check_adoption", ROOT / "contract" / "check_adoption.py")
+    try:
+        if (Path(cwd) / args[1]).resolve() != ROOT / "contract" / "check_adoption.py":
+            return None
+        host, tier, _, roots = contract.arguments(args[2:])
+    except (ValueError, OSError):
+        return None
+    root = (Path(cwd) / (roots[0] if roots else ".")).resolve()
+    if host != "codex" or re.search(r'["$`%]', str(root)):
+        return None
+    target = words[-len(roots):] if roots else []
+    return root, tier, " ".join([*words[:2], f'--host codex --tier {tier} --codex-verified "{root}"', *target])
+
+
 def command_text(command, parser):
     output = []
     documents = []
@@ -316,6 +337,16 @@ def decide(data):
                 problems = contract.check(data.get("cwd") or Path.cwd(), host="codex", tier=tier)
                 if problems:
                     reason = "導入契約に不足がある:\n" + "\n".join(problems) + f"\n{contract.ADOPTION_DOC} を確認する。"
+            adoption = adoption_command(command, data.get("cwd") or Path.cwd()) if (
+                isinstance(command, str) and reason is None and not tier) else None
+            if adoption:
+                root, tier, updated = adoption
+                contract = load("check_adoption", ROOT / "contract" / "check_adoption.py")
+                problems = contract.check(root, host="codex", tier=tier)
+                if not problems:
+                    return {"hookSpecificOutput": {"hookEventName": event, "permissionDecision": "allow",
+                                                   "updatedInput": {**tool_input, "command": updated}}}
+                reason = "導入契約に不足がある:\n" + "\n".join(problems) + f"\n{contract.ADOPTION_DOC} を確認する。"
         if reason is None and data.get("tool_name") == "apply_patch" and isinstance(tool_input, dict):
             command = tool_input.get("command")
             if isinstance(command, str):
@@ -471,6 +502,38 @@ def selftest():
                     not result or result["hookSpecificOutput"].get("permissionDecision") != "deny"
                     or problems[0] not in result["hookSpecificOutput"].get("permissionDecisionReason", ""))):
                 failures.append("PreToolUse: 導入検査の結果を許可・拒否へ接続していない")
+
+    script = ROOT / "contract" / "check_adoption.py"
+    contract = actual_load("check_adoption", script)
+    repository = ROOT.parents[1]
+    for problems, command, expected, checked in (
+            ([], f'python3 "{script}" --host codex plugins', "allow", (repository / "plugins", "dev")),
+            ([], f"python3 '{script}' --host codex --tier base", "allow", (repository, "base")),
+            ([], f"python3 '{script}' --host codex \"o'brien (archive)\"", "allow", (repository / "o'brien (archive)", "dev")),
+            (["不足"], f'python3 "{script}" --host codex .', "deny", (repository, "dev")),
+            ([], f'python3 "{script}" --host claude .', None, None),
+            ([], f'python3 "{script}" --host codex . ; echo done', None, None),
+            ([], f'python3 "{script}" --host codex #note', None, None),
+            ([], f"python3 '{script}' --host codex 'o''brien'", None, None),
+            ([], 'python3 other/check_adoption.py --host codex .', None, None)):
+        received = []
+
+        def check(root, host, tier):
+            received.append((root, tier))
+            return problems
+
+        with patch.object(contract, "check", check), patch(
+                __name__ + ".load", side_effect=lambda name, path:
+                contract if name == "check_adoption" else actual_load(name, path)):
+            result = decide({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(repository),
+                             "tool_input": {"command": command}})
+        output = result["hookSpecificOutput"] if result else {}
+        updated = (output.get("updatedInput") or {}).get("command", "")
+        want = f'--tier {checked[1]} --codex-verified "{checked[0]}"' if expected == "allow" else ""
+        if output.get("permissionDecision") != expected or set(received) != ({checked} if checked else set()) or (
+                want not in updated or bool(want) != bool(updated)) or (
+                expected == "deny" and "不足" not in output.get("permissionDecisionReason", "")):
+            failures.append(f"PreToolUse: 導入検査のコマンドへの検査結果の反映: {command} {result}")
 
     for content, denied in (("確認できます。", False), ("今回の変更です。", True)):
         command = f"*** Begin Patch\n*** Add File: docs/sample.md\n+{content}\n*** End Patch"
