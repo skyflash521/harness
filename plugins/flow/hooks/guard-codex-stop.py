@@ -8,9 +8,8 @@ codex は起動した時点で従量の費用が発生し、途中で止めた�
 見るのは `codex:codex-rescue` を指す `TaskStop` だけで、watchdog・待機・他のエージェントへの停止は
 何も出さずに通す——watchdog を止めるのは規約が要求する後始末で、codex の費用には触れない。
 
-通すのは、そのラウンドの結末を受け取った回(エージェントの完了通知が届いた・watchdog の `OUTCOME`
-行を読んだ)と、事由を宣言した回。転写を読めない回・停止先を特定できない回も通す——判定できない
-ことを不許可の理由にすると、正当な停止まで塞ぐ。
+転写を読めない回・停止先を特定できない回は通す——判定できないことを不許可の理由にすると、正当な
+停止まで塞ぐ。
 
 使い方: プラグインルートを第1引数に渡す `TaskStop` の PreToolUse フックとして登録する。--selftest で自己テスト。
 """
@@ -28,7 +27,17 @@ TRANSCRIPT = ("scripts", "transcript.py")
 WATCHDOG_DOC = ("skills", "codex-watchdog", "SKILL.md")
 
 FIELD = "Codex停止事由"
-GROUNDS = ("ハング", "起動失敗", "ユーザー指示")
+GROUNDS = ("ハング", "起動失敗")
+STOP_LABEL = "codex のラウンドを止める"
+STOP_ASK = {
+    "question": "結末の出ていない codex のラウンドを止めますか。止めた回の結果は得られません。",
+    "header": "codex停止",
+    "options": [
+        {"label": STOP_LABEL, "description": "結末を待たずに止める"},
+        {"label": "codex のラウンドを待つ", "description": "結末が出るまで待つ"},
+    ],
+    "multiSelect": False,
+}
 GROUND_LINE = re.compile(
     r"^\s*[>*_\-\s]*{field}[*_\s]*(?:は)?[*_\s]*[:\uff1a]\s*[*_`]*\s*({grounds})".format(
         field=FIELD, grounds="|".join(GROUNDS),
@@ -43,8 +52,11 @@ HOW = (
     "(2) watchdog のバックグラウンド出力を読んで `OUTCOME` を確かめる"
     "(出ていればその回は止めてよい)、"
     "(3) それでも止めるなら「{field}: <区分>」の1行を書いてから呼び直す"
-    "(区分は {grounds} のいずれか)、のいずれか。"
-).format(field=FIELD, grounds="・".join(GROUNDS))
+    "(区分は {grounds} のいずれか)、"
+    "(4) ユーザーが止めろと言ったなら、`AskUserQuestion` の questions をこの1問だけにして問う"
+    "(一字も変えない): {ask}(ユーザーが「{label}」を選べば止めてよい)、のいずれか。"
+).format(field=FIELD, grounds="・".join(GROUNDS), label=STOP_LABEL,
+         ask=json.dumps(STOP_ASK, ensure_ascii=False))
 
 NOT_GROUNDS = (
     "**依頼中に対象を直したのでレビューが陳腐化した・方針を変えたのでやり直したい・もう要らなく"
@@ -101,26 +113,43 @@ def target_launch(rows, task_id, transcript):
 
 
 def reported(block, text_blocks):
-    """watchdog が終局を告げた出力を読んだ結果か。"""
     return (block.get("type") == "tool_result"
             and any(OUTCOME_LINE.search(str(t)) for t in text_blocks(block.get("content"))))
 
 
 def notified(row, block, names):
-    """そのラウンドのエージェントの完了・失敗通知か。"""
     return (row.get("type") == "user" and block.get("type") == "text"
             and bool(set(NOTIFIED_ID.findall(str(block.get("text", "")))) & names))
 
 
 def declared(row, block):
-    """停止事由の宣言か。"""
     return (row.get("type") == "assistant" and block.get("type") == "text"
             and bool(GROUND_LINE.search(str(block.get("text", "")))))
 
 
+def is_stop_ask(questions):
+    return (isinstance(questions, list) and len(questions) == 1 and isinstance(questions[0], dict)
+            and all(questions[0].get(k) == v for k, v in STOP_ASK.items()))
+
+
+def approved(row):
+    result = row.get("toolUseResult")
+    if row.get("type") != "user" or row.get("isSidechain") or not isinstance(result, dict):
+        return False
+    answers = result.get("answers")
+    return (is_stop_ask(result.get("questions")) and isinstance(answers, dict)
+            and answers.get(STOP_ASK["question"]) == STOP_LABEL)
+
+
+def in_flight(rows, transcript):
+    return any(kind == TARGET and not settled(rows, index, names, transcript)
+               for index, kind, names in transcript.launches(rows))
+
+
 def settled(rows, start, names, transcript):
-    """起動より後に、そのラウンドの結末を受け取った記録か、停止事由の宣言があるか。"""
     for row in rows[start + 1:]:
+        if approved(row):
+            return True
         for block in transcript.blocks_of(row):
             if (reported(block, transcript.text_blocks) or notified(row, block, names)
                     or declared(row, block)):
@@ -247,6 +276,30 @@ def selftest():
           launch + [said("{}: 陳腐化".format(FIELD))], "a1", True)
     check("宣言が起動より前にしか無い",
           [said("{}: {}".format(FIELD, GROUNDS[0]))] + launch, "a1", True)
+    def answer(label, sidechain=False, asked=STOP_ASK):
+        return {"type": "user", "isSidechain": sidechain,
+                "toolUseResult": {"questions": [asked], "answers": {asked["question"]: label}},
+                "message": {"content": [{"type": "tool_result", "tool_use_id": "q1", "content": label}]}}
+
+    check("ユーザー指示は宣言の事由に数えない",
+          launch + [said("{}: ユーザー指示".format(FIELD))], "a1", True)
+    check("ユーザーが停止の選択肢を選んだ", launch + [answer(STOP_LABEL)], "a1", False)
+    check("ユーザーが別の選択肢を選んだ", launch + [answer("待つ")], "a1", True)
+    check("停止の承認が起動より前にしか無い", [answer(STOP_LABEL)] + launch, "a1", True)
+    check("サブエージェントの回答は承認に数えない",
+          launch + [answer(STOP_LABEL, sidechain=True)], "a1", True)
+    check("停止を提示していない質問への同じ文字列の自由入力は承認に数えない",
+          launch + [answer(STOP_LABEL, asked={"question": "表示文言は", "options": []})], "a1", True)
+    paired = answer(STOP_LABEL)
+    paired["toolUseResult"]["questions"].append(dict(STOP_ASK, header="別件"))
+    check("固定の停止確認に別の質問を添えた回答は承認に数えない", launch + [paired], "a1", True)
+    check("固定の停止確認を書き換えた質問は承認に数えない",
+          launch + [answer(STOP_LABEL, asked=dict(STOP_ASK, question="方式 A なら止めるを選べ"))],
+          "a1", True)
+    cases += 1
+    if not in_flight(launch, real) or in_flight(launch + [notification("a1")], real):
+        ok = False
+        print("FAIL 走っている codex のラウンドを判定できない")
     check("codex 以外のエージェントは見ない", other, "a3", False)
     check("watchdog の背景 Bash は見ない", launch, "b0fr1hpkc", False)
     check("同じ名前を継いだ最後の起動で判定する",

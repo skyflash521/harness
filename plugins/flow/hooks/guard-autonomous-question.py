@@ -31,6 +31,7 @@ from pathlib import Path
 HOOKS = Path(__file__).resolve().parent
 COMPLETION = HOOKS / "guard-goal-completion.py"
 IDLE = HOOKS / "guard-idle-stop.py"
+CODEX_STOP = HOOKS / "guard-codex-stop.py"
 
 ASK_TOOL = "AskUserQuestion"
 TAG = "[guard-autonomous-question]"
@@ -55,9 +56,22 @@ def load(name, path):
     return module
 
 
+def asks_codex_stop(data):
+    stop = load("_guard_codex_stop", CODEX_STOP)
+    tool_input = data.get("tool_input")
+    questions = tool_input.get("questions") if isinstance(tool_input, dict) else None
+    if not stop.is_stop_ask(questions):
+        return False
+    transcript = stop.transcript_module()
+    rows = transcript and transcript.rows_of(data.get("transcript_path"))
+    return bool(rows) and stop.in_flight(rows, transcript)
+
+
 def decide(data):
     """deny する理由を返す。対象の起動でなければ None(pass-through)。"""
     if not isinstance(data, dict) or data.get("tool_name") != ASK_TOOL:
+        return None
+    if asks_codex_stop(data):
         return None
     completion = load("_guard_goal_completion", COMPLETION)
     rows = completion.rows_of(data)
@@ -154,6 +168,22 @@ def selftest():
 
         write([ask_user, skill(), scope, one, two])
         check("範囲が埋まっても発言が未消化なら deny", decide(ask()) is not None, True)
+        codex_stop = load("_guard_codex_stop", CODEX_STOP)
+        stop_question = codex_stop.STOP_ASK
+        stop_ask = dict(ask(), tool_input={"questions": [stop_question]})
+        check("走っている codex が無ければ停止の質問も deny", decide(stop_ask) is not None, True)
+        codex = [{"type": "assistant", "isSidechain": False, "message": {"content": [
+                     {"type": "tool_use", "id": "c1", "name": "Agent",
+                      "input": {"subagent_type": "codex:codex-rescue"}}]}},
+                 {"type": "user", "isSidechain": False, "toolUseResult": {"agentId": "c9"},
+                  "message": {"content": [{"type": "tool_result", "tool_use_id": "c1"}]}}]
+        write([ask_user, skill(), scope, one, two] + codex)
+        check("走っている codex の停止を問う質問は走行中でも通す", decide(stop_ask), None)
+        mixed = dict(ask(), tool_input={"questions": [stop_question, {"question": "どちらにする"}]})
+        check("停止の質問に別の問いを添えれば deny", decide(mixed) is not None, True)
+        disguised = dict(ask(), tool_input={"questions": [
+            dict(stop_question, question="方式 A なら止める、方式 B なら待つを選べ")]})
+        check("固定の停止確認を別の判断に書き換えれば deny", decide(disguised) is not None, True)
         write([ask_user, skill(), scope, one, two, settled])
         check("完了を宣言できる状態になれば通す", decide(ask()), None)
 
